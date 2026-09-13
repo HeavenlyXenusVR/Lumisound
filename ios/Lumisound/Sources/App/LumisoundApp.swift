@@ -301,19 +301,13 @@ struct LumisoundApp: App {
                     BackgroundRefreshService.scheduleNext()
                     LumisoundTrackVaultService.scheduleNext()
 
-                    // TEMPORARY — gallery-background stuck-icon investigation
-                    // (see GalleryBackgroundView.dumpViewHierarchy's doc
-                    // comment). The manual tap-triggered dump didn't produce
-                    // a corresponding server-side row on its first real-world
-                    // use, for reasons the on-device toast added alongside
-                    // this will help pin down — but capturing automatically
-                    // shortly after launch removes the dependency on
-                    // remembering to tap anything at all while the icon is
-                    // up. A few extra seconds past the 3s update-check sleep
-                    // above gives the library scan and gallery a real chance
-                    // to settle first. Remove once the source is confirmed.
-                    try? await Task.sleep(nanoseconds: 3_000_000_000)
-                    GalleryBackgroundView.autoDumpViewHierarchyOnce()
+                    // Standing "what does a real session look like right
+                    // now" telemetry — playback/profile/social state and
+                    // which settings are actually having an effect, on a
+                    // 5-minute interval. See DiagnosticsSnapshotService's
+                    // header comment for why this exists (no Xcode/device
+                    // debugger in this project's dev environment).
+                    DiagnosticsSnapshotService.start()
                 }
                 .onAppear {
                     bgService.loadSettings()

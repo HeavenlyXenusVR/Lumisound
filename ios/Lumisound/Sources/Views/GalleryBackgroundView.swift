@@ -9,98 +9,14 @@ struct GalleryBackgroundView: View {
     @AppStorage(GalleryBackgroundSource.storageKey) private var backgroundSource = GalleryBackgroundSource.photos.rawValue
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            switch backgroundSource {
-            case GalleryBackgroundSource.sonic.rawValue:
-                SonicWallpaperView()
-            case GalleryBackgroundSource.reactive.rawValue:
-                ReactiveAuraBackgroundView()
-            default:
-                photoBackground
-                    // TEMPORARY diagnostic — see the "icon stuck in gallery
-                    // background" investigation. Marks this exact view's
-                    // bounds so a screenshot can show whether the mystery
-                    // icon sits inside or outside this border: if inside,
-                    // the bug is genuinely in this file despite nothing in
-                    // it being able to draw an icon from valid image data
-                    // (worth a second look at AnimatedImageView/UIKit
-                    // interop); if outside, it's a completely different
-                    // view elsewhere in the app that happens to only be
-                    // visible while backgroundSource == .photos. Remove
-                    // this whole modifier + the debug text below once the
-                    // source is confirmed.
-                    .border(Color.red, width: 6)
-            }
-            if backgroundSource != GalleryBackgroundSource.sonic.rawValue,
-               backgroundSource != GalleryBackgroundSource.reactive.rawValue {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("GBV: en=\(bg.isEnabled ? "Y" : "N") imgs=\(bg.images.count) idx=\(bg.currentIndex) active=\(bg.isActive ? "Y" : "N")")
-                    // Every code-reading avenue is exhausted for the "icon
-                    // stuck in gallery background" investigation — this taps
-                    // into UIKit's private (App-Store-unsafe, fine for a
-                    // sideloaded build) `recursiveDescription` to dump the
-                    // ACTUAL live view hierarchy to the bridge's event log,
-                    // which is the one piece of ground truth static code
-                    // reading can never produce. Tap this label once when
-                    // the icon is visible; the dump lands in
-                    // ios_app_event_log (category "debug", event
-                    // "view_hierarchy_dump") within seconds.
-                    Text("[tap to dump view hierarchy]")
-                        .underline()
-                }
-                .font(.caption2.monospaced())
-                .padding(4)
-                .background(Color.black.opacity(0.7))
-                .foregroundStyle(Color.green)
-                .onTapGesture { Self.dumpViewHierarchy() }
-            }
+        switch backgroundSource {
+        case GalleryBackgroundSource.sonic.rawValue:
+            SonicWallpaperView()
+        case GalleryBackgroundSource.reactive.rawValue:
+            ReactiveAuraBackgroundView()
+        default:
+            photoBackground
         }
-    }
-
-    /// Guards the launch-triggered auto-dump (see `LumisoundApp`'s `.task`)
-    /// so it fires once per process, not every time that `.task` re-runs.
-    /// The manual tap-triggered path below always re-runs regardless.
-    private static var hasAutoDumped = false
-
-    static func autoDumpViewHierarchyOnce() {
-        guard !hasAutoDumped else { return }
-        hasAutoDumped = true
-        dumpViewHierarchy(trigger: "auto (post-launch)")
-    }
-
-    static func dumpViewHierarchy(trigger: String = "manual tap") {
-        guard let window = UIApplication.shared.connectedScenes
-            .compactMap({ $0 as? UIWindowScene })
-            .first?.windows.first(where: { $0.isKeyWindow })
-        else {
-            ToastCenter.shared.show("View hierarchy dump failed: no key window", category: .error)
-            return
-        }
-        let selector = Selector(("recursiveDescription"))
-        guard window.responds(to: selector),
-              let full = window.perform(selector)?.takeUnretainedValue() as? String
-        else {
-            ToastCenter.shared.show("View hierarchy dump failed: recursiveDescription unavailable", category: .error)
-            return
-        }
-        // A full app hierarchy (SwiftUI wraps every view in nested UIKit
-        // host/wrapper classes) can run to several hundred KB — large enough
-        // that a first attempt with the untruncated string produced no
-        // corresponding row server-side despite the endpoint itself
-        // returning 204, and gave no client-side signal either way that
-        // anything had gone wrong. Truncating to a size well within any
-        // reasonable request-body/column limit, plus this toast, means a
-        // failure is now visible immediately on-device instead of silently
-        // vanishing between here and the DB.
-        let maxLength = 80_000
-        let truncated = full.count > maxLength ? String(full.prefix(maxLength)) : full
-        RemoteLogger.log(
-            category: "debug",
-            event: "view_hierarchy_dump",
-            message: "\(trigger) — \(full.count) char(s) total, \(truncated.count) sent",
-            detail: ["hierarchy": truncated]
-        )
-        ToastCenter.shared.show("View hierarchy dump sent (\(truncated.count) chars)", category: .success)
     }
 
     private var photoBackground: some View {

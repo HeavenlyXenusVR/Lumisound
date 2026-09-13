@@ -29,6 +29,15 @@ final class SocialService: ObservableObject {
     @Published var errorMessage: String? = nil
     @Published var isLoading = false
 
+    /// Mirrors `AccountService.shared`/`LibraryManager.shared` — gives
+    /// non-view code (e.g. `DiagnosticsSnapshotService`) a way to reach the
+    /// live instance without needing it threaded through as a parameter.
+    static weak var shared: SocialService?
+
+    init() {
+        Self.shared = self
+    }
+
     private var account: AccountService? { AccountService.shared }
 
     // MARK: - Profile
