@@ -9,13 +9,36 @@ struct GalleryBackgroundView: View {
     @AppStorage(GalleryBackgroundSource.storageKey) private var backgroundSource = GalleryBackgroundSource.photos.rawValue
 
     var body: some View {
-        switch backgroundSource {
-        case GalleryBackgroundSource.sonic.rawValue:
-            SonicWallpaperView()
-        case GalleryBackgroundSource.reactive.rawValue:
-            ReactiveAuraBackgroundView()
-        default:
-            photoBackground
+        ZStack(alignment: .topLeading) {
+            switch backgroundSource {
+            case GalleryBackgroundSource.sonic.rawValue:
+                SonicWallpaperView()
+            case GalleryBackgroundSource.reactive.rawValue:
+                ReactiveAuraBackgroundView()
+            default:
+                photoBackground
+                    // TEMPORARY diagnostic — see the "icon stuck in gallery
+                    // background" investigation. Marks this exact view's
+                    // bounds so a screenshot can show whether the mystery
+                    // icon sits inside or outside this border: if inside,
+                    // the bug is genuinely in this file despite nothing in
+                    // it being able to draw an icon from valid image data
+                    // (worth a second look at AnimatedImageView/UIKit
+                    // interop); if outside, it's a completely different
+                    // view elsewhere in the app that happens to only be
+                    // visible while backgroundSource == .photos. Remove
+                    // this whole modifier + the debug text below once the
+                    // source is confirmed.
+                    .border(Color.red, width: 6)
+            }
+            if backgroundSource != GalleryBackgroundSource.sonic.rawValue,
+               backgroundSource != GalleryBackgroundSource.reactive.rawValue {
+                Text("GBV: en=\(bg.isEnabled ? "Y" : "N") imgs=\(bg.images.count) idx=\(bg.currentIndex) active=\(bg.isActive ? "Y" : "N")")
+                    .font(.caption2.monospaced())
+                    .padding(4)
+                    .background(Color.black.opacity(0.7))
+                    .foregroundStyle(Color.green)
+            }
         }
     }
 
