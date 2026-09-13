@@ -332,6 +332,28 @@ extension StreamingService {
         await Task.detached(priority: .utility) {
             LumisoundTrackTagger.tag(fileURL: lockedURL, trackID: track.sourceTrackID, sourceURL: track.youtubeURL)
         }.value
+        // Every caller of this function (attemptDownload's job-based path,
+        // both faster-transport paths, and prepareExistingLocalCopy) records
+        // the ledger with destURL's PRE-lock filename right before calling
+        // this — but `convert` above just deleted that file and created a
+        // differently-named one (see LumisoundExclusiveExtensionService's
+        // header comment: outer ".lms" marker appended on top of the real
+        // extension). Re-point the ledger at the actual post-lock filename
+        // here, unconditionally, or the stale pre-lock entry left behind
+        // fails BOTH `resolveDownloadDestination`'s ledger check and
+        // `presentSourceIDs`'s "is the recorded filename still on disk"
+        // filter the moment this returns — since that filename no longer
+        // exists, both report the track as missing despite a perfectly
+        // good locked copy sitting right there, and the next tracked-
+        // playlist/subscription auto-download check re-downloads it via
+        // yt-dlp from scratch. Confirmed as the actual cause of "keeps
+        // re-downloading tracks that already exist locally as locked
+        // files" — this is the common/happy path (see this function's own
+        // header comment), so essentially every synchronously-locked
+        // download hit it. `reconcilePendingDownloads.importPendingDownload`
+        // already gets this right (records AFTER its own inline convert
+        // call) — this brings the foreground path in line with that.
+        DownloadLedgerStore.shared.record(sourceTrackID: track.sourceTrackID, filename: lockedURL.lastPathComponent)
         return lockedURL
     }
 

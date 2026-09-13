@@ -141,6 +141,15 @@ USER_MUSIC_QUOTA_BYTES: int = int(os.getenv("USER_MUSIC_QUOTA_BYTES", "0"))
 SUPPORTED_AUDIO_EXTS: frozenset[str] = frozenset({
     ".mp3", ".m4a", ".aac", ".wav", ".aif", ".aiff",
     ".flac", ".opus", ".ogg", ".caf", ".mp4", ".m4v",
+    # webm/mov: the iOS client's own DocumentImportService accepts both
+    # (webm as a yt-dlp fallback container, mov as a video-with-audio
+    # container, same reasoning as mp4/m4v above already here) — they were
+    # missing from this set even though the client can legitimately import
+    # them, so /user/music/upload's filename validation 400'd EVERY backup
+    # attempt for any such track, forever, with no way for the user to fix
+    # it client-side. Confirmed in production logs: the same handful of
+    # locally-imported tracks failing hundreds-to-thousands of times a week.
+    ".webm", ".mov",
 })
 
 # The iOS client's "Lumisound Exclusive" lock (see
@@ -6915,11 +6924,30 @@ async def upload_library_inventory(
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute("DELETE FROM ios_user_library_inventory WHERE user_id = %s", (user_id,))
-                if ids:
-                    await _executemany(cur, 
-                        "INSERT INTO ios_user_library_inventory (user_id, source_id) VALUES (%s, %s) "
+                # NOT `_executemany` (one round trip per row) here — that helper's
+                # own doc comment assumes call sites "top out at ~100 rows", but a
+                # real 27GB/3300+ track library blows way past that: one
+                # sequential await per row meant 3000+ round trips held open on a
+                # single connection out of this pool's maxsize=4 (see get_pool's
+                # comment), which was measured timing out client-side ("The
+                # request timed out" — ios_app_event_log's library_inventory_sync_failed,
+                # hundreds of times/week for large libraries). Because this sync
+                # never completes, the server's inventory of what the user already
+                # has goes stale, and download dedup (this table is exactly what
+                # download_track's pre-download check above consults) can't see
+                # tracks that are actually already on-device — yt-dlp re-downloads
+                # them. Chunked multi-row INSERT keeps this to a handful of round
+                # trips regardless of library size.
+                id_list = list(ids)
+                chunk_size = 500
+                for i in range(0, len(id_list), chunk_size):
+                    chunk = id_list[i:i + chunk_size]
+                    values_sql = ", ".join(["(%s, %s)"] * len(chunk))
+                    params = [param for sid in chunk for param in (user_id, sid)]
+                    await cur.execute(
+                        f"INSERT INTO ios_user_library_inventory (user_id, source_id) VALUES {values_sql} "
                         "ON CONFLICT (user_id, source_id) DO NOTHING",
-                        [(user_id, sid) for sid in ids],
+                        params,
                     )
 
     await _retry_on_deadlock(_write)

@@ -147,7 +147,34 @@ extension AudioPlayerManager {
         // the same `.lms`-URL resolution or it can fail for the identical
         // reason right behind it (a no-op for a non-`.lms` `url`, including
         // every remote/streamed one).
-        let item   = AVPlayerItem(url: LumisoundExclusiveExtensionService.playableURL(for: url))
+        let playableSourceURL = LumisoundExclusiveExtensionService.playableURL(for: url)
+        // Personal Cloud Library streams (and any other authenticated bridge
+        // route) need `currentSong.httpHeaders`' Bearer token on every
+        // request, same as `downloadAndSchedule`'s URLSession fetch above —
+        // but `AVPlayerItem(url:)` has no way to attach custom headers at
+        // all, so this fallback was silently dropping Authorization on the
+        // floor for every http/https stream that reached it (the normal
+        // downloadAndSchedule failure path, or a remote opus/webm/ogg URL).
+        // The bridge then answered with a 401/auth-challenge body, which
+        // AVPlayer surfaced as it tried to decode that body as audio:
+        // NSURLErrorDomain -1013 (userAuthenticationRequired) chained to an
+        // underlying NSOSStatusErrorDomain decode error — confirmed in field
+        // logs (`ios_app_logs`, category "audio") as repeated bursts of
+        // exactly that pairing, several in under 5s each time, which is also
+        // why they escalated straight to "Stopping playback after repeated
+        // track-load failures" instead of just one skip. Building the asset
+        // with `AVURLAssetHTTPHeaderFieldsKey` (the documented way to attach
+        // headers AVPlayerItem's own initializer can't) fixes it; a no-op
+        // for anything with no headers to send (local files, unauthenticated
+        // streams).
+        let isRemote = ["http", "https"].contains(url.scheme?.lowercased() ?? "")
+        let asset: AVURLAsset
+        if isRemote, let headers = currentSong?.httpHeaders, !headers.isEmpty {
+            asset = AVURLAsset(url: playableSourceURL, options: [AVURLAssetHTTPHeaderFieldsKey: headers])
+        } else {
+            asset = AVURLAsset(url: playableSourceURL)
+        }
+        let item = AVPlayerItem(asset: asset)
         // Pitch-preserving time stretch — without this, AVPlayer's default
         // `.varispeed` algorithm ties pitch to rate (chipmunk/slow-mo effect),
         // which made the Speed slider feel "broken" for streamed/opus tracks.

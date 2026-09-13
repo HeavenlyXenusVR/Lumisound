@@ -27,7 +27,7 @@ struct LiquidBlobFrameArtworkView: View {
     }
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.animation(paused: !isPlaying)) { timeline in
             let p = ArtworkClock.pingPong(timeline.date, legDuration: 5.5)
 
             ZStack {

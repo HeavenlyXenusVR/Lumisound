@@ -51,12 +51,24 @@ enum LumisoundLockFormat {
     /// Swift's bounds-checked `Array` subscript with a `%` per byte — for a
     /// large lossless track (hundreds of MB) that combination was slow
     /// enough to matter: this runs on whatever thread calls `lock`/
-    /// `unlock`, and at least one call site (`playableURL(for:)`, on the
-    /// main-thread playback scheduling path) can't easily be made async
-    /// without a much larger refactor of the audio scheduling code, so
-    /// shrinking the actual wall-clock cost of the XOR pass itself is the
-    /// lower-risk lever available right now for how long that blocks the
-    /// UI. Confirmed via field logs to correlate with real freezes.
+    /// `unlock`. (Verified 2026-09-13: `playableURL(for:)`'s own main-thread
+    /// call in `AudioPlayerManager.scheduleCurrent` — the actual per-track
+    /// playback-start path — is NO LONGER a live instance of that "can't be
+    /// made async" problem this comment used to describe: `scheduleCurrent`
+    /// now checks `hasWarmPlayableCache` first and, if cold, awaits
+    /// `prewarmPlayableURL` off-thread and re-enters itself once warm,
+    /// before ever reaching its own synchronous `playableURL` call — so
+    /// that call is a guaranteed cache hit (two `stat`s, no XOR) on every
+    /// real playback start. `beginCrossfade`/`scheduleGaplessNext`'s own
+    /// synchronous `playableURL` calls for the NEXT track don't have that
+    /// same guaranteed-wait guard, but both rely on `prewarmPlayableCache`
+    /// firing as soon as a track becomes current — giving the unlock that
+    /// track's entire remaining runtime as lead time before either could
+    /// need it, not a tight window — so this is a low-probability residual,
+    /// not a per-track certainty. This raw-pointer XOR is still worth
+    /// keeping regardless, since it's free and shrinks whatever synchronous
+    /// stretch remains for that residual case or a genuinely cold first
+    /// play.)
     private static func xorInPlace(_ data: inout Data) {
         let keyBytes = key
         let keyCount = keyBytes.count

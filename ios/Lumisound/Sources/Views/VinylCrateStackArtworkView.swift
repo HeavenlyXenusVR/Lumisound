@@ -21,7 +21,7 @@ struct VinylCrateStackArtworkView: View {
     }
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.animation(paused: !isPlaying)) { timeline in
             let p = ArtworkClock.pingPong(timeline.date, legDuration: 3.0)
 
             ZStack {

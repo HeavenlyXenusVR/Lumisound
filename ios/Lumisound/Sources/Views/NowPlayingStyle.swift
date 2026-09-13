@@ -232,6 +232,13 @@ struct NowPlayingScreenStyle {
 /// `CustomNowPlayingStyle.customBackgroundMedia`; `.none` renders nothing.
 struct NowPlayingCustomBackgroundMediaView: View {
     let style: CustomNowPlayingStyle
+    // Whether the Now Playing screen is actually the front-most tab right
+    // now — see NowPlayingView.isVisibleOnScreen's doc comment. Threaded
+    // through to LoopingVideoBackgroundView, which otherwise has no way to
+    // know: an AVPlayer doesn't pause itself just because its host view
+    // scrolled off-screen inside the root TabView's always-instantiated
+    // tabs.
+    let isVisible: Bool
 
     var body: some View {
         Group {
@@ -249,7 +256,7 @@ struct NowPlayingCustomBackgroundMediaView: View {
                 }
             case .video:
                 if let filename = style.customBackgroundVideoFilename {
-                    LoopingVideoBackgroundView(url: CustomStyleMediaStore.url(for: filename))
+                    LoopingVideoBackgroundView(url: CustomStyleMediaStore.url(for: filename), isVisible: isVisible)
                 } else {
                     EmptyView()
                 }
@@ -267,15 +274,29 @@ struct NowPlayingCustomBackgroundMediaView: View {
 /// looper requires.
 struct LoopingVideoBackgroundView: UIViewRepresentable {
     let url: URL
+    let isVisible: Bool
 
     func makeUIView(context: Context) -> LoopingPlayerUIView {
         let view = LoopingPlayerUIView()
         view.configure(url: url)
+        view.setPlaying(isVisible)
         return view
     }
 
     func updateUIView(_ uiView: LoopingPlayerUIView, context: Context) {
         uiView.configure(url: url)
+        // Re-applied on every update (not just when the URL changes) so a
+        // flip of `isVisible` alone — the Now Playing tab losing/regaining
+        // focus, with the same clip still selected — actually pauses/resumes
+        // the decode. Previously `configure` unconditionally called `play()`
+        // once at setup and nothing ever paused it again: this background
+        // kept decoding and rendering an unmuted-resolution video loop
+        // indefinitely, even while the user sat on a completely different
+        // tab with the clip fully off-screen — a genuine, standalone battery/
+        // heat cost with zero visible benefit, worse than the TimelineView
+        // redraw-loop cost the other artwork styles had (real video decode,
+        // not just a Canvas redraw).
+        uiView.setPlaying(isVisible)
     }
 }
 
@@ -324,7 +345,22 @@ final class LoopingPlayerUIView: UIView {
             newPlayer?.seek(to: .zero)
             newPlayer?.play()
         }
-        newPlayer.play()
+        // Deliberately NOT starting playback here — a brand new player
+        // starts paused; `updateUIView`'s `setPlaying(isVisible)` call right
+        // after this returns is what actually starts it, so a newly-selected
+        // clip while this view is off-screen doesn't start decoding before
+        // anyone can see it.
+    }
+
+    /// Starts/stops the actual decode — safe to call every SwiftUI update,
+    /// not just on a real state change (`AVPlayer.play()`/`.pause()` are
+    /// no-ops when already in that state).
+    func setPlaying(_ playing: Bool) {
+        if playing {
+            player?.play()
+        } else {
+            player?.pause()
+        }
     }
 
     deinit {
@@ -344,6 +380,11 @@ final class LoopingPlayerUIView: UIView {
 struct NowPlayingMeshGradientBackground: View {
     let style: CustomNowPlayingStyle
     let extractedPalette: ArtworkPalette?
+    // See NowPlayingView.isVisibleOnScreen's doc comment — without this,
+    // this wash kept redrawing via TimelineView(.animation) at up to 120Hz
+    // for as long as the app ran, even while the user was on a totally
+    // different tab (the root TabView never deinits this one).
+    let isVisible: Bool
 
     private var colorA: Color {
         if style.dynamicColorExtraction, let extractedPalette {
@@ -360,7 +401,7 @@ struct NowPlayingMeshGradientBackground: View {
     }
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.animation(paused: !isVisible)) { timeline in
             let t = Float(ArtworkClock.pingPong(timeline.date, legDuration: 10))
             if #available(iOS 18.0, *) {
                 MeshGradient(

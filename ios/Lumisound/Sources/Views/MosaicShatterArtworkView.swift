@@ -34,7 +34,7 @@ struct MosaicShatterArtworkView: View {
     }()
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.animation(paused: !isPlaying)) { timeline in
             let shatter = ArtworkClock.pingPong(timeline.date, legDuration: 2.6)
 
             ZStack {

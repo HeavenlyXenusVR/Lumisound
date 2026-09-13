@@ -15,7 +15,7 @@ struct SynthwaveHorizonArtworkView: View {
     private let horizonY: CGFloat = 168
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.animation(paused: !isPlaying)) { timeline in
             // Grid keeps scrolling regardless of play state (ambient background
             // motion, same treatment as other styles' drifting elements) — only
             // the sun/frame glow reacts to isPlaying via its own opacity below.

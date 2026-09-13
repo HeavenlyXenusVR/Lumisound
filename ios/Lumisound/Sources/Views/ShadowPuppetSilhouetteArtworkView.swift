@@ -13,7 +13,7 @@ struct ShadowPuppetSilhouetteArtworkView: View {
     private let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.animation(paused: !isPlaying)) { timeline in
             let sway = -4 + 8 * ArtworkClock.pingPong(timeline.date, legDuration: 2.8)
 
             ZStack {

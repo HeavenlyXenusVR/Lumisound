@@ -16,7 +16,7 @@ struct NeonSignFlickerArtworkView: View {
     private var neon: Color { palette?.primary ?? .pink }
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.animation(paused: !isPlaying)) { timeline in
             let flicker = flickerIntensity(at: timeline.date)
 
             ZStack {

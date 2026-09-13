@@ -15,7 +15,7 @@ struct VHSScanGlitchArtworkView: View {
     private let coverSize: CGFloat = 210
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.animation(paused: !isPlaying)) { timeline in
             let glitch = glitchOffset(at: timeline.date)
             let scanlineScroll = ArtworkClock.loop(timeline.date, cycleDuration: 4) * coverSize
 

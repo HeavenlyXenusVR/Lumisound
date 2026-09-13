@@ -27,7 +27,7 @@ struct PaperLayersParallaxArtworkView: View {
     }
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.animation(paused: !isPlaying)) { timeline in
             ZStack {
                 RoundedRectangle(cornerRadius: 28, style: .continuous)
                     .fill(Color(red: 0.06, green: 0.06, blue: 0.08))

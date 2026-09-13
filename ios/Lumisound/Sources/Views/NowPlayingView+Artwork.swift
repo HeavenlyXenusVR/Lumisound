@@ -9,7 +9,7 @@ extension NowPlayingView {
         VStack(spacing: 14) {
             // ── Artwork display ──────────────────────────────────────────
             ZStack {
-                AmbientArtworkBackground(song: player.currentSong)
+                AmbientArtworkBackground(song: player.currentSong, isPlaying: artworkIsPlaying)
                     .environmentObject(library)
 
                 artworkDisplay

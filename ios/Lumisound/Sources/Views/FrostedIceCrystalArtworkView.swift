@@ -36,7 +36,7 @@ struct FrostedIceCrystalArtworkView: View {
     ]
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.animation(paused: !isPlaying)) { timeline in
             let growth = 0.3 + 0.7 * ArtworkClock.pingPong(timeline.date, legDuration: 4.2)
 
             ZStack {

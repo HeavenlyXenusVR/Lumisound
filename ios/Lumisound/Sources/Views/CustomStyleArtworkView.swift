@@ -30,7 +30,7 @@ struct CustomStyleArtworkView: View {
     }
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.animation(paused: !isPlaying)) { timeline in
             let t = timeline.date.timeIntervalSinceReferenceDate
             ZStack {
                 backgroundView
@@ -62,7 +62,7 @@ struct CustomStyleArtworkView: View {
     private var backgroundView: some View {
         switch config.backgroundKind {
         case .ambient:
-            AmbientArtworkBackground(song: song)
+            AmbientArtworkBackground(song: song, isPlaying: isPlaying)
                 .environmentObject(library)
         case .solid:
             config.backgroundColor1.color

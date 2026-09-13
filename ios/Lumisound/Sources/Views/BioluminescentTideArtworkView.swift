@@ -13,7 +13,7 @@ struct BioluminescentTideArtworkView: View {
     private let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.animation(paused: !isPlaying)) { timeline in
             let phase = ArtworkClock.loop(timeline.date, cycleDuration: 6) * 2 * .pi
 
             ZStack {

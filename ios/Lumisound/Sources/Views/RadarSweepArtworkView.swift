@@ -21,7 +21,7 @@ struct RadarSweepArtworkView: View {
     ]
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.animation(paused: !isPlaying)) { timeline in
             let sweepAngle = ArtworkClock.loop(timeline.date, cycleDuration: 3.2) * 360
             let blipPulse = 0.3 + 0.65 * ArtworkClock.pingPong(timeline.date, legDuration: 1.4)
 

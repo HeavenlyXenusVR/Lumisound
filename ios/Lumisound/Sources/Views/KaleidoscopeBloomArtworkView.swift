@@ -17,7 +17,7 @@ struct KaleidoscopeBloomArtworkView: View {
     private var c2: Color { palette?.secondary ?? AppTheme.accentSoft }
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.animation(paused: !isPlaying)) { timeline in
             let ringRotation = ArtworkClock.loop(timeline.date, cycleDuration: 26) * 360
             let haloRotation = -ArtworkClock.loop(timeline.date, cycleDuration: 14) * 360
             let bloomOffset = -86 - 22 * ArtworkClock.pingPong(timeline.date, legDuration: 2.2)

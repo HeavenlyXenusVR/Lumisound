@@ -152,6 +152,24 @@ struct NowPlayingView: View {
     }()
     @State var extractedPalette: ArtworkPalette?
 
+    // Every built-in/custom artwork style wraps its `body` in
+    // `TimelineView(.animation)` (see ArtworkClock's header comment), which
+    // schedules genuine per-frame redraws — SwiftUI does NOT stop delivering
+    // those just because this view isn't the front-most tab: `ContentView`'s
+    // root `TabView` keeps all 5 of its tagged children instantiated for as
+    // long as the app runs (that's what avoids the "collapse into More"
+    // UIKit bug documented there), so switching to Library/Queue/Playlists
+    // while a track plays left every one of these TimelineViews still firing
+    // at up to 120Hz, off-screen, for as long as the user stayed on another
+    // tab — a real, continuous CPU/GPU cost with nothing to show for it,
+    // plausible as a real contributor to "app always lags, device gets hot
+    // within ~10 minutes" for anyone who doesn't just sit on this one tab.
+    // `LiveSpectrumArtworkView` already solved the identical problem for its
+    // own FFT tap using onAppear/onDisappear (see that view's header
+    // comment) — same mechanism here, gating every OTHER style's animation
+    // schedule too via `artworkIsPlaying` (NowPlayingView+ArtworkDisplay.swift).
+    @State var isVisibleOnScreen = true
+
     var selectedBuiltinStyle: NowPlayingArtworkStyle? {
         NowPlayingArtworkStyle(rawValue: artworkStyleSelection)
     }
@@ -356,6 +374,10 @@ struct NowPlayingView: View {
             heartHaptic.prepare()
             selectHaptic.prepare()
             loadLyrics()
+            isVisibleOnScreen = true
+        }
+        .onDisappear {
+            isVisibleOnScreen = false
         }
     }
 
@@ -371,10 +393,10 @@ struct NowPlayingView: View {
             ZStack {
                 GalleryBackgroundView()
                 if custom.useMeshGradient {
-                    NowPlayingMeshGradientBackground(style: custom, extractedPalette: extractedPalette)
+                    NowPlayingMeshGradientBackground(style: custom, extractedPalette: extractedPalette, isVisible: isVisibleOnScreen)
                 }
                 if custom.customBackgroundMedia != .none {
-                    NowPlayingCustomBackgroundMediaView(style: custom)
+                    NowPlayingCustomBackgroundMediaView(style: custom, isVisible: isVisibleOnScreen)
                 }
                 Color.black.opacity(custom.backgroundDimming)
             }

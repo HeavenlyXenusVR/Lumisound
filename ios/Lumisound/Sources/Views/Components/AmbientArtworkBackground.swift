@@ -7,12 +7,18 @@ import SwiftUI
 /// presets so every style gets a less "flat" backdrop for free.
 struct AmbientArtworkBackground: View {
     let song: Song?
+    // Same visibility/playing gate every `*ArtworkView` style's own
+    // TimelineView takes (see NowPlayingView.isVisibleOnScreen's doc
+    // comment) — this wash sits behind ALL of them, so leaving it
+    // ungated meant it alone kept the per-frame redraw cost alive even for
+    // a style whose own TimelineView WAS correctly paused/off-screen-aware.
+    let isPlaying: Bool
 
     @EnvironmentObject private var library: LibraryManager
     @State private var palette: ArtworkPalette?
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.animation(paused: !isPlaying)) { timeline in
             let drift = ArtworkClock.pingPong(timeline.date, legDuration: 9) * 36
             let pulse = 1.0 + ArtworkClock.pingPong(timeline.date, legDuration: 7) * 0.18
 

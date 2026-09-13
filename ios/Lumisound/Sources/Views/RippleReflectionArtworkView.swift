@@ -15,7 +15,7 @@ struct RippleReflectionArtworkView: View {
     private let coverSize: CGFloat = 180
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.animation(paused: !isPlaying)) { timeline in
             let t = timeline.date.timeIntervalSinceReferenceDate
 
             ZStack {

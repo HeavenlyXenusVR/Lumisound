@@ -17,7 +17,7 @@ struct CircuitPulseArtworkView: View {
     private var pulseColor: Color { palette?.secondary ?? .cyan }
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        TimelineView(.animation(paused: !isPlaying)) { timeline in
             let pulseProgress = ArtworkClock.loop(timeline.date, cycleDuration: 4.5)
 
             ZStack {
