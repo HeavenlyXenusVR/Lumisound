@@ -132,15 +132,31 @@ struct GalleryBackgroundView: View {
                                 .modifier(KenBurnsModifier(isActive: bg.kenBurnsEnabled && !reduceMotion))
                                 .blur(radius: bg.blurRadius, opaque: true)
                                 .opacity(bg.opacity)
-                                // Flattens the Ken Burns transform + blur + opacity
-                                // into a single Metal-backed texture per frame
-                                // instead of Core Animation compositing them as
-                                // separate CPU layers — this view is mounted once
-                                // per tab and TabView keeps every tab alive
-                                // simultaneously (see KenBurnsModifier's comment),
-                                // so up to 6 live instances can be paying this cost
-                                // at once when Ken Burns/blur are on.
-                                .drawingGroup()
+                                // WAS `.drawingGroup()` — found via a live view-hierarchy
+                                // dump (recursiveDescription) captured while the reported
+                                // "large system-icon-looking image stuck in gallery
+                                // background" was on screen: the dump showed BackgroundService's
+                                // own state as completely healthy (enabled, 66 valid images,
+                                // rotation actively advancing) yet contained no full-screen
+                                // UIImageView anywhere in the tree — only two unrelated 4pt-tall
+                                // separator-line images. `drawingGroup()` forces SwiftUI to
+                                // rasterize its subtree into an offscreen Metal texture, which
+                                // is well-defined for pure SwiftUI drawing primitives (Shape,
+                                // Image, Text) but `AnimatedImageView` here is a
+                                // `UIViewRepresentable`-backed REAL UIKit `UIImageView`, not a
+                                // SwiftUI-drawn primitive — asking Metal to snapshot a live
+                                // embedded UIView's content into a texture is a much less
+                                // reliable operation, and evidently was failing outright rather
+                                // than falling back to just drawing the photo, explaining why no
+                                // amount of resetting the data/cache/device ever helped: the bug
+                                // was structural, not something a good state could route around.
+                                // `.compositingGroup()` gets the same "apply opacity/blur to the
+                                // whole KenBurns+blur+opacity chain as one unit rather than each
+                                // modifier separately" grouping semantics WITHOUT forcing that
+                                // texture rasterization, and is Apple's documented choice for
+                                // exactly this "group for compositing, don't force a bitmap"
+                                // case — the safer option once real UIKit content is involved.
+                                .compositingGroup()
                                 // Reduce Motion drops every transition to a plain
                                 // cross-fade — the simplest, least motion-heavy
                                 // option — regardless of the chosen animation.
