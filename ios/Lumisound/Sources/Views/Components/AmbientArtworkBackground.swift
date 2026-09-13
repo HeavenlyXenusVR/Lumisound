@@ -18,7 +18,7 @@ struct AmbientArtworkBackground: View {
     @State private var palette: ArtworkPalette?
 
     var body: some View {
-        TimelineView(.animation(paused: !isPlaying)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isPlaying)) { timeline in
             let drift = ArtworkClock.pingPong(timeline.date, legDuration: 9) * 36
             let pulse = 1.0 + ArtworkClock.pingPong(timeline.date, legDuration: 7) * 0.18
 

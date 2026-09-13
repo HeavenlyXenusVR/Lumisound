@@ -30,7 +30,7 @@ struct ConfettiBurstLoopArtworkView: View {
     }()
 
     var body: some View {
-        TimelineView(.animation(paused: !isPlaying)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isPlaying)) { timeline in
             let burst = ArtworkClock.loop(timeline.date, cycleDuration: 3.0)
 
             ZStack {

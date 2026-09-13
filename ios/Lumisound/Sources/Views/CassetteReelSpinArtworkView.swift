@@ -15,7 +15,7 @@ struct CassetteReelSpinArtworkView: View {
     private var accent: Color { palette?.primary ?? AppTheme.dynamicAccent }
 
     var body: some View {
-        TimelineView(.animation(paused: !isPlaying)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isPlaying)) { timeline in
             let spin = ArtworkClock.loop(timeline.date, cycleDuration: 1.6) * 360
 
             ZStack {

@@ -20,7 +20,7 @@ struct AuroraVeilArtworkView: View {
     ]
 
     var body: some View {
-        TimelineView(.animation(paused: !isPlaying)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isPlaying)) { timeline in
             let t = timeline.date.timeIntervalSinceReferenceDate
 
             ZStack {

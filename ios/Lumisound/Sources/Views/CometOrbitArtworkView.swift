@@ -21,7 +21,7 @@ struct CometOrbitArtworkView: View {
     private var cometColor: Color { palette?.secondary ?? .cyan }
 
     var body: some View {
-        TimelineView(.animation(paused: !isPlaying)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isPlaying)) { timeline in
             let orbitAngle = ArtworkClock.loop(timeline.date, cycleDuration: 6) * 360
 
             ZStack {

@@ -33,8 +33,15 @@ enum ArtworkPaletteLoader {
 /// `TimelineView`'s `context.date` on every redraw sidesteps the whole
 /// problem: there's no in-flight animation to interrupt, just a value
 /// recomputed from elapsed time. Every artwork style's `body` should be
-/// wrapped in `TimelineView(.animation) { timeline in ... }` and read phases
-/// via these helpers instead of animating `@State` directly.
+/// wrapped in `TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: ...))`
+/// and read phases via these helpers instead of animating `@State` directly.
+/// The `minimumInterval` caps every style at 60fps regardless of the
+/// device's native refresh rate — these are ambient background motion, not
+/// anything that benefits from ProMotion's 120Hz, so the extra redraws were
+/// pure CPU/GPU/battery cost with no visible difference. Same reasoning
+/// `start8DRotation`/`startTremolo`/`startVibrato` already apply to their own
+/// `CADisplayLink`s via `preferredFrameRateRange` — this is the `TimelineView`
+/// equivalent of that same cap.
 enum ArtworkClock {
     /// A smooth 0→1→0 oscillation, matching the shape of the old
     /// `.easeInOut(duration: legDuration).repeatForever(autoreverses: true)`
@@ -62,7 +69,7 @@ struct FloatModifier: ViewModifier {
     let speed: Double
 
     func body(content: Content) -> some View {
-        TimelineView(.animation(paused: !isPlaying)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isPlaying)) { timeline in
             let phase = ArtworkClock.pingPong(timeline.date, legDuration: speed)
             content
                 .offset(y: isPlaying ? -amount * phase : 0)

@@ -28,7 +28,7 @@ struct DiscoMirrorBallArtworkView: View {
     ]
 
     var body: some View {
-        TimelineView(.animation(paused: !isPlaying)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isPlaying)) { timeline in
             let orbitAngle = ArtworkClock.loop(timeline.date, cycleDuration: 9) * 360
             let flicker = 0.35 + 0.6 * ArtworkClock.pingPong(timeline.date, legDuration: 0.9)
 

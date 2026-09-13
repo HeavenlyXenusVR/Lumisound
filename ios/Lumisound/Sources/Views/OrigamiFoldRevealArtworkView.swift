@@ -17,7 +17,7 @@ struct OrigamiFoldRevealArtworkView: View {
     private var stripHeight: CGFloat { size / CGFloat(stripCount) }
 
     var body: some View {
-        TimelineView(.animation(paused: !isPlaying)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isPlaying)) { timeline in
             let fold = -7 + 14 * ArtworkClock.pingPong(timeline.date, legDuration: 2.4)
 
             VStack(spacing: 0) {

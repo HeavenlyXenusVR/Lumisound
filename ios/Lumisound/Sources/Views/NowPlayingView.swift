@@ -413,7 +413,7 @@ struct PulseModifier: ViewModifier {
     let isPlaying: Bool
 
     func body(content: Content) -> some View {
-        TimelineView(.animation(paused: !isPlaying)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isPlaying)) { timeline in
             let phase = ArtworkClock.pingPong(timeline.date, legDuration: 1.8)
             content
                 .scaleEffect(isPlaying ? 1.0 + 0.022 * phase : 1.0)

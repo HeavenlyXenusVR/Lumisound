@@ -401,7 +401,7 @@ struct NowPlayingMeshGradientBackground: View {
     }
 
     var body: some View {
-        TimelineView(.animation(paused: !isVisible)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isVisible)) { timeline in
             let t = Float(ArtworkClock.pingPong(timeline.date, legDuration: 10))
             if #available(iOS 18.0, *) {
                 MeshGradient(

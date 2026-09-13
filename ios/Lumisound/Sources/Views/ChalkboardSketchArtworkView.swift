@@ -13,7 +13,7 @@ struct ChalkboardSketchArtworkView: View {
     private let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
 
     var body: some View {
-        TimelineView(.animation(paused: !isPlaying)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isPlaying)) { timeline in
             let trimEnd = ArtworkClock.pingPong(timeline.date, legDuration: 3.4)
 
             ZStack {

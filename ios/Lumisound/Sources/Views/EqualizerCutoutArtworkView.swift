@@ -27,7 +27,7 @@ struct EqualizerCutoutArtworkView: View {
     private var c2: Color { palette?.secondary ?? AppTheme.accentSoft }
 
     var body: some View {
-        TimelineView(.animation(paused: !isPlaying)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isPlaying)) { timeline in
             let raw = ArtworkClock.pingPong(timeline.date, legDuration: 0.55)
             let pulseScale = isPlaying ? 0.55 + raw * 0.45 : 0.4
 
