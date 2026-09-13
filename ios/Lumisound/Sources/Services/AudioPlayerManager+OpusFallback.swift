@@ -163,14 +163,20 @@ extension AudioPlayerManager {
         // exactly that pairing, several in under 5s each time, which is also
         // why they escalated straight to "Stopping playback after repeated
         // track-load failures" instead of just one skip. Building the asset
-        // with `AVURLAssetHTTPHeaderFieldsKey` (the documented way to attach
-        // headers AVPlayerItem's own initializer can't) fixes it; a no-op
-        // for anything with no headers to send (local files, unauthenticated
-        // streams).
+        // with the "AVURLAssetHTTPHeaderFieldsKey" options key (the
+        // documented way to attach headers AVPlayerItem's own initializer
+        // can't) fixes it; a no-op for anything with no headers to send
+        // (local files, unauthenticated streams). Passed as a raw string
+        // literal rather than the `AVURLAssetHTTPHeaderFieldsKey` global —
+        // that symbol isn't exposed in this SDK's Swift overlay (CI failed
+        // with "cannot find ... in scope" against Xcode 26.6/iOS 26.5), but
+        // the options dictionary is a plain `[String: Any]`, so the
+        // documented key string works regardless of whether the overlay
+        // re-exports a matching constant.
         let isRemote = ["http", "https"].contains(url.scheme?.lowercased() ?? "")
         let asset: AVURLAsset
         if isRemote, let headers = currentSong?.httpHeaders, !headers.isEmpty {
-            asset = AVURLAsset(url: playableSourceURL, options: [AVURLAssetHTTPHeaderFieldsKey: headers])
+            asset = AVURLAsset(url: playableSourceURL, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
         } else {
             asset = AVURLAsset(url: playableSourceURL)
         }
