@@ -34,6 +34,20 @@ extension LibraryManager {
             Task { await performLocalDocumentsScan() }
             return
         }
+        // Throttled the same way `scanWatchedFolders` already is: LibraryView
+        // calls this from `.onAppear`, which SwiftUI fires every time the
+        // view reappears — not just on a real app-foreground event, but on
+        // every NavigationStack pop back to it AND every TabView switch back
+        // to the Library tab (e.g. from Now Playing). None of those actually
+        // mean anything on disk changed, so without this a user bouncing
+        // between Library and Now Playing paid for a full Documents-tree
+        // walk + eviction check on every single return. `scanLocalDocuments
+        // Async` (Download All, TrackedPlaylistStore, pending-download
+        // reconciliation) deliberately does NOT get this throttle — those
+        // callers need an up-to-date result to make correct dedup decisions,
+        // not just an opportunistic background refresh.
+        guard Date().timeIntervalSince(lastLocalDocumentsScanDate) >= 30 else { return }
+        lastLocalDocumentsScanDate = Date()
         beginScan()
         Task {
             defer { endScan() }

@@ -46,6 +46,9 @@ struct LibraryHubView: View {
     @State private var recentlyPlayed: [Song] = []
     @State private var genreGroups: [(genre: String, songs: [Song])] = []
     @State private var hasLoadedOnce = false
+    /// `allSongs.count` as of the last completed `reload()` — see that
+    /// `.task(id:)`'s guard for why this exists.
+    @State private var lastReloadedSongCount: Int? = nil
 
     // 2026-07-20 Home Tab expansion — on-device-only additions, computed by
     // `reload()` alongside everything above. See `LibraryManager+HubContent.swift`.
@@ -125,9 +128,26 @@ struct LibraryHubView: View {
             // around a "2 downloads finished in the background" toast — the
             // pipeline was being cancelled and restarted faster than it
             // could ever finish, keeping the main actor busy the whole time.
+            //
+            // That debounce didn't cover a SEPARATE trigger for this same
+            // task, though: `.task(id:)` restarts whenever this view
+            // disappears and reappears — e.g. switching to the Now Playing/
+            // Queue tab and back, or pushing a folder and popping back —
+            // even when `allSongs.count` (the id) hasn't actually changed.
+            // Every such reappearance re-ran the full ~9-pass reload()
+            // pipeline from scratch for no reason, which is exactly what
+            // produced "return to Library and it pauses for 5+ seconds":
+            // nothing about the library had changed, there was just nothing
+            // here stopping a no-op reappearance from paying the same cost
+            // as a real data change. `lastReloadedSongCount` makes a
+            // reappearance with an unchanged count a same-frame no-op;
+            // an actual count change (download completed, import finished,
+            // song evicted) still reloads exactly like before.
+            guard lastReloadedSongCount != library.allSongs.count else { return }
             try? await Task.sleep(nanoseconds: 500_000_000)
             guard !Task.isCancelled else { return }
             await reload()
+            lastReloadedSongCount = library.allSongs.count
         }
         .task {
             await loadServerExtras()

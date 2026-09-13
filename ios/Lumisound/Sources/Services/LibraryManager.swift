@@ -45,6 +45,8 @@ final class LibraryManager: ObservableObject {
     var activeScanCount: Int = 0
     var watchedFolderScanTask: Task<Void, Never>?
     var lastWatchedFolderScanDate = Date.distantPast
+    /// Throttle for `scanLocalDocuments()` — see that function's doc comment.
+    var lastLocalDocumentsScanDate = Date.distantPast
 
     func beginScan() {
         activeScanCount += 1
