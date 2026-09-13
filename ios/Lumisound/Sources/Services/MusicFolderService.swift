@@ -15,7 +15,15 @@ final class MusicFolderService: ObservableObject {
         var trackCount: Int
     }
 
-    init() { loadBookmarks() }
+    /// Mirrors `AccountService.shared`/`LibraryManager.shared` — gives
+    /// non-view code (e.g. `DiagnosticsSnapshotService`) a way to reach the
+    /// live instance without needing it threaded through as a parameter.
+    static weak var shared: MusicFolderService?
+
+    init() {
+        Self.shared = self
+        loadBookmarks()
+    }
 
     // MARK: - Local "Imported Music" subfolder grouping
     //

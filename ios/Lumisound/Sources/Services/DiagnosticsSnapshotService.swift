@@ -54,9 +54,31 @@ enum DiagnosticsSnapshotService {
             "playback": playbackSnapshot(),
             "profile": profileSnapshot(),
             "social": socialSnapshot(),
+            "notifications": notificationsSnapshot(),
             "settings": settingsSnapshot(),
         ]
         RemoteLogger.log(category: "diagnostics", event: "snapshot", message: reason, detail: detail)
+    }
+
+    // MARK: - Notifications
+    //
+    // Split out from `settingsSnapshot` since it has its own two-layer
+    // "is this actually working" question: `isEnabled` is this app's own
+    // toggle, `isAuthorized` is whether iOS actually granted permission —
+    // a user can have the in-app switch on while `isAuthorized` is false
+    // (denied at the system prompt, or revoked later in iOS Settings),
+    // which silently means zero notifications ever arrive despite every
+    // in-app setting saying they should.
+
+    private static func notificationsSnapshot() -> [String: Any] {
+        let notifications = NotificationService.shared
+        return [
+            "enabledInApp": notifications.isEnabled,
+            "authorizedByOS": notifications.isAuthorized,
+            "actuallyWorking": notifications.isEnabled && notifications.isAuthorized,
+            "topicsEnabledCount": notifications.topicPreferences.values.filter { $0 }.count,
+            "hasAuthorizationError": notifications.lastAuthorizationError != nil,
+        ]
     }
 
     // MARK: - Device (perf correlation)
@@ -73,6 +95,15 @@ enum DiagnosticsSnapshotService {
         var result: [String: Any] = [
             "thermalState": ProcessInfo.processInfo.thermalState.diagnosticsDescription,
             "lowPowerModeEnabled": ProcessInfo.processInfo.isLowPowerModeEnabled,
+            // The system-level gate every background feature in this app
+            // depends on (BackgroundRefreshService's subscription/tracked-
+            // playlist checks, LumisoundTrackVaultService's conversion
+            // sweep, PodcastAutoDownloadService) — if this isn't
+            // `.available`, every one of those is silently inert regardless
+            // of what's toggled on in-app, which is exactly the "setting is
+            // on but doing nothing" shape this whole service exists to
+            // surface. Set by the user in iOS Settings, not by this app.
+            "backgroundRefreshStatus": UIApplication.shared.backgroundRefreshStatus.diagnosticsDescription,
         ]
         // -1 means monitoring isn't enabled yet (it's opt-in, off by
         // default) rather than "no battery" — every real device has one, so
@@ -176,6 +207,7 @@ enum DiagnosticsSnapshotService {
             "hasUnlockedAchievements": (account.achievements?.totalPlays ?? 0) > 0,
             "hasAriaDailyPick": account.ariaDailyPick != nil,
             "similarListenerTrackCount": account.similarListenerTracks.count,
+            "discordVerified": DiscordVerificationService.shared.isVerified,
         ]
     }
 
@@ -252,6 +284,14 @@ enum DiagnosticsSnapshotService {
             ]
         }
 
+        result["smartPlaylistCount"] = SmartPlaylistStore.shared.playlists.count
+        result["watchedFolderCount"] = MusicFolderService.shared?.watchedFolders.count ?? 0
+        result["recentlyDeletedCount"] = RecentlyDeletedService.shared?.entries.count ?? 0
+        // Podcast auto-download has no dedicated service instance (it's a
+        // plain enum with a UserDefaults-backed flag, checked directly by
+        // its own periodic pass) — read the same flag it reads.
+        result["podcastAutoDownloadEnabled"] = UserDefaults.standard.bool(forKey: PodcastAutoDownloadService.enabledKey)
+
         return result
     }
 }
@@ -263,6 +303,17 @@ private extension ProcessInfo.ThermalState {
         case .fair: return "fair"
         case .serious: return "serious"
         case .critical: return "critical"
+        @unknown default: return "unknown"
+        }
+    }
+}
+
+private extension UIBackgroundRefreshStatus {
+    var diagnosticsDescription: String {
+        switch self {
+        case .available: return "available"
+        case .denied: return "denied"
+        case .restricted: return "restricted"
         @unknown default: return "unknown"
         }
     }
