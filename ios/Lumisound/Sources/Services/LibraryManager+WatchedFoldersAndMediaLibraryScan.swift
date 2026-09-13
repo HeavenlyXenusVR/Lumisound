@@ -232,13 +232,24 @@ extension LibraryManager {
             }.value
             appLog("scanMediaLibrary: found \(items.count) item(s), converting", category: "library")
 
-            // Convert in small chunks with a yield in between. `Song.init(mediaItem:)`
-            // is cheap per item (just reads cached MPMediaItem properties), but doing
-            // all 1,000+ at once back-to-back is enough synchronous main-actor work to
-            // visibly stall scrolling/animation — the "freakout" users see on big
-            // libraries. Yielding between chunks lets the UI (and artwork prefetch)
-            // get scheduling slices throughout, and doubles as the source for the
-            // live "Scanning N of M" progress shown on the launch screen.
+            // Convert in small chunks, each one's actual work done OFF the main
+            // actor. This used to run `compactMap(Song.init(mediaItem:))`
+            // directly in this @MainActor Task with just a `Task.yield()`
+            // between chunks — the yield gives the run loop a chance to
+            // interleave a frame between chunks, but each chunk's own 200
+            // synchronous inits still ran back-to-back on the main actor
+            // before that yield point, which was enough to read as a visible
+            // stutter once per chunk throughout a big scan (confirmed: users
+            // reported the UI "lags every single time" a big pass runs, i.e.
+            // repeatedly during the scan, not just once) — the "cheap per
+            // item" reasoning was true in isolation but didn't account for
+            // 200 of them landing in one synchronous stretch. `Song.init
+            // (mediaItem:)` only reads plain MPMediaItem properties (no
+            // artwork decode, no UIKit), same as the `MPMediaQuery.songs()`
+            // fetch just above already relies on being safe to touch off the
+            // main actor — so `Task.detached` per chunk moves the real cost
+            // off-main entirely; only the array append and `scanProgress`
+            // publish (both cheap) stay on the main actor.
             var scanned: [Song] = []
             scanned.reserveCapacity(items.count)
             let chunkSize = 200
@@ -246,7 +257,11 @@ extension LibraryManager {
             while index < items.count {
                 guard !Task.isCancelled else { return }
                 let end = min(index + chunkSize, items.count)
-                scanned.append(contentsOf: items[index..<end].compactMap(Song.init(mediaItem:)))
+                let chunk = Array(items[index..<end])
+                let converted = await Task.detached(priority: .userInitiated) {
+                    chunk.compactMap(Song.init(mediaItem:))
+                }.value
+                scanned.append(contentsOf: converted)
                 index = end
                 scanProgress = LibraryScanProgress(current: index, total: items.count)
                 await Task.yield()
