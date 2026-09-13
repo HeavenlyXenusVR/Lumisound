@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import UIKit
 
@@ -49,12 +50,69 @@ enum DiagnosticsSnapshotService {
         guard UIApplication.shared.applicationState == .active else { return }
 
         let detail: [String: Any] = [
+            "device": deviceSnapshot(),
             "playback": playbackSnapshot(),
             "profile": profileSnapshot(),
             "social": socialSnapshot(),
             "settings": settingsSnapshot(),
         ]
         RemoteLogger.log(category: "diagnostics", event: "snapshot", message: reason, detail: detail)
+    }
+
+    // MARK: - Device (perf correlation)
+    //
+    // `PerformanceMonitorService` already logs system-wide CPU load every
+    // 60s independently of this — this section exists to put THIS app's own
+    // memory footprint and the device's thermal state right next to
+    // playback/settings state in the SAME event, so "device gets hot/laggy
+    // after N minutes"-style reports can be correlated against what was
+    // actually running at the time without manually joining two separate
+    // log streams by timestamp.
+
+    private static func deviceSnapshot() -> [String: Any] {
+        var result: [String: Any] = [
+            "thermalState": ProcessInfo.processInfo.thermalState.diagnosticsDescription,
+            "lowPowerModeEnabled": ProcessInfo.processInfo.isLowPowerModeEnabled,
+        ]
+        // -1 means monitoring isn't enabled yet (it's opt-in, off by
+        // default) rather than "no battery" — every real device has one, so
+        // just turning monitoring on here is simpler than threading a
+        // one-time enable call through app launch for this alone.
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        let batteryLevel = UIDevice.current.batteryLevel
+        if batteryLevel >= 0 {
+            result["batteryLevel"] = batteryLevel
+        }
+        if let mb = residentMemoryMB() {
+            result["residentMemoryMB"] = Int(mb.rounded())
+        }
+        // `NSNull()`, not bare `nil` — RemoteLogger's `detail` payload is
+        // JSON-serialized, where `Optional<Bool>.none` boxed as `Any` is
+        // not a value `JSONSerialization` recognizes, but `NSNull` is the
+        // documented way to represent "checked, still unknown" (as opposed
+        // to omitting the key, which would read as "never checked at all").
+        result["bridge"] = [
+            "reachable": BridgeHealthService.shared?.isHealthy.map { $0 as Any } ?? NSNull(),
+            "apiKeyValid": BridgeHealthService.shared?.isAPIKeyValid.map { $0 as Any } ?? NSNull(),
+        ]
+        return result
+    }
+
+    /// This process's own resident memory footprint via the standard Mach
+    /// `task_info` call — the same technique `PerformanceMonitorService`
+    /// uses for CPU (`host_cpu_load_info`), just the per-process memory
+    /// counterpart. Public API, no entitlement or private-symbol usage;
+    /// widely used by performance-monitoring code for exactly this purpose.
+    private static func residentMemoryMB() -> Double? {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) { ptr -> kern_return_t in
+            ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return nil }
+        return Double(info.resident_size) / 1024.0 / 1024.0
     }
 
     // MARK: - Playback
@@ -99,6 +157,11 @@ enum DiagnosticsSnapshotService {
                 "enabledAndRunning": SleepTimerService.shared?.isActive ?? false,
                 "remainingSeconds": Int(SleepTimerService.shared?.remainingSeconds ?? 0),
             ],
+            "aiDJ": [
+                "enabled": AIDJService.shared?.isEnabled ?? false,
+                "currentlySpeaking": AIDJService.shared?.isSpeaking ?? false,
+            ],
+            "silenceTrimEnabled": SilenceTrimService.shared?.isEnabled ?? false,
         ]
     }
 
@@ -171,6 +234,36 @@ enum DiagnosticsSnapshotService {
             ]
         }
 
+        let trackedPlaylists = TrackedPlaylistStore.shared.playlists
+        result["trackedPlaylists"] = [
+            "count": trackedPlaylists.count,
+            "autoDownloadEnabledCount": trackedPlaylists.filter(\.isAutoDownload).count,
+        ]
+
+        if let mood = MoodPlaylistService.shared {
+            result["moodPlaylists"] = [
+                "isAnalyzing": mood.isAnalyzing,
+                // Non-zero bucket counts is the "is this feature actually
+                // producing anything" signal — a user could have Moods
+                // enabled/visible in the hub with every bucket empty if
+                // classification never ran or never found a confident match.
+                "hasClassifiedSongs": !mood.energeticSongs.isEmpty || !mood.chillSongs.isEmpty
+                    || !mood.focusSongs.isEmpty || !mood.sleepSongs.isEmpty,
+            ]
+        }
+
         return result
+    }
+}
+
+private extension ProcessInfo.ThermalState {
+    var diagnosticsDescription: String {
+        switch self {
+        case .nominal: return "nominal"
+        case .fair: return "fair"
+        case .serious: return "serious"
+        case .critical: return "critical"
+        @unknown default: return "unknown"
+        }
     }
 }

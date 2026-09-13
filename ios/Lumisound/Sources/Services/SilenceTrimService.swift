@@ -22,8 +22,14 @@ final class SilenceTrimService: ObservableObject {
     private var cancellable: AnyCancellable?
     private weak var player: AudioPlayerManager?
 
+    /// Mirrors `AccountService.shared`/`LibraryManager.shared` — gives
+    /// non-view code (e.g. `DiagnosticsSnapshotService`) a way to reach the
+    /// live instance without needing it threaded through as a parameter.
+    static weak var shared: SilenceTrimService?
+
     init() {
         isEnabled = UserDefaults.standard.bool(forKey: Self.enabledKey)
+        Self.shared = self
     }
 
     func attach(player: AudioPlayerManager) {

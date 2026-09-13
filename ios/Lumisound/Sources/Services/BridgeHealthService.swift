@@ -12,6 +12,15 @@ final class BridgeHealthService: ObservableObject {
     @Published var toastMessage = ""
     @Published var toastIsSuccess = false
 
+    /// Mirrors `AccountService.shared`/`LibraryManager.shared` — gives
+    /// non-view code (e.g. `DiagnosticsSnapshotService`) a way to reach the
+    /// live instance without needing it threaded through as a parameter.
+    static weak var shared: BridgeHealthService?
+
+    init() {
+        Self.shared = self
+    }
+
     private var checkTimer: Timer?
 
     /// Timestamp of the last *completed* bridge health check (success or failure).

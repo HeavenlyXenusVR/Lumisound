@@ -27,6 +27,15 @@ final class MoodPlaylistService: ObservableObject {
 
     weak var libraryManager: LibraryManager?
 
+    /// Mirrors `AccountService.shared`/`LibraryManager.shared` — gives
+    /// non-view code (e.g. `DiagnosticsSnapshotService`) a way to reach the
+    /// live instance without needing it threaded through as a parameter.
+    static weak var shared: MoodPlaylistService?
+
+    init() {
+        Self.shared = self
+    }
+
     // MARK: - Public API
 
     /// Re-analyzes using the current set of songs from `libraryManager`.

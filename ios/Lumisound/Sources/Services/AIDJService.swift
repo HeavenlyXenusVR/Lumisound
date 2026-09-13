@@ -53,10 +53,16 @@ final class AIDJService: NSObject, ObservableObject {
     private var lastAnnouncedSongID: Song.ID?
     private var volumeBeforeDuck: Float = 1.0
 
+    /// Mirrors `AccountService.shared`/`LibraryManager.shared` — gives
+    /// non-view code (e.g. `DiagnosticsSnapshotService`) a way to reach the
+    /// live instance without needing it threaded through as a parameter.
+    static weak var shared: AIDJService?
+
     override init() {
         isEnabled = UserDefaults.standard.bool(forKey: Self.enabledKey)
         super.init()
         synthesizer.delegate = self
+        Self.shared = self
     }
 
     /// Starts observing track changes. Call once at launch after `player`
