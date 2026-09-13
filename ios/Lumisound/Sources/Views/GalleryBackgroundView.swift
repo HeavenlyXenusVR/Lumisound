@@ -33,13 +33,45 @@ struct GalleryBackgroundView: View {
             }
             if backgroundSource != GalleryBackgroundSource.sonic.rawValue,
                backgroundSource != GalleryBackgroundSource.reactive.rawValue {
-                Text("GBV: en=\(bg.isEnabled ? "Y" : "N") imgs=\(bg.images.count) idx=\(bg.currentIndex) active=\(bg.isActive ? "Y" : "N")")
-                    .font(.caption2.monospaced())
-                    .padding(4)
-                    .background(Color.black.opacity(0.7))
-                    .foregroundStyle(Color.green)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("GBV: en=\(bg.isEnabled ? "Y" : "N") imgs=\(bg.images.count) idx=\(bg.currentIndex) active=\(bg.isActive ? "Y" : "N")")
+                    // Every code-reading avenue is exhausted for the "icon
+                    // stuck in gallery background" investigation — this taps
+                    // into UIKit's private (App-Store-unsafe, fine for a
+                    // sideloaded build) `recursiveDescription` to dump the
+                    // ACTUAL live view hierarchy to the bridge's event log,
+                    // which is the one piece of ground truth static code
+                    // reading can never produce. Tap this label once when
+                    // the icon is visible; the dump lands in
+                    // ios_app_event_log (category "debug", event
+                    // "view_hierarchy_dump") within seconds.
+                    Text("[tap to dump view hierarchy]")
+                        .underline()
+                }
+                .font(.caption2.monospaced())
+                .padding(4)
+                .background(Color.black.opacity(0.7))
+                .foregroundStyle(Color.green)
+                .onTapGesture { Self.dumpViewHierarchy() }
             }
         }
+    }
+
+    private static func dumpViewHierarchy() {
+        guard let window = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first?.windows.first(where: { $0.isKeyWindow })
+        else { return }
+        let selector = Selector(("recursiveDescription"))
+        guard window.responds(to: selector),
+              let result = window.perform(selector)?.takeUnretainedValue() as? String
+        else { return }
+        RemoteLogger.log(
+            category: "debug",
+            event: "view_hierarchy_dump",
+            message: "manual trigger from GalleryBackgroundView debug label",
+            detail: ["hierarchy": result]
+        )
     }
 
     private var photoBackground: some View {
