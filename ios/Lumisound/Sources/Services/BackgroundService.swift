@@ -214,6 +214,26 @@ final class BackgroundService: ObservableObject {
         ImageDownsampler.downsampled(from: data, maxPixelSize: maxDimension)
     }
 
+    /// Below this on its longer edge, `image` is almost certainly not a real
+    /// photo — a genuine camera/screenshot/library photo is essentially never
+    /// this small even heavily downsampled, but a system-generated fallback
+    /// (e.g. iOS handing back a small placeholder bitmap for a Photos asset
+    /// the app doesn't actually have access to read, rather than failing the
+    /// load outright) typically is. Reported symptom this guards against: the
+    /// gallery background "stuck" showing what looks like a large system
+    /// icon full-screen — `.scaleAspectFill` stretches whatever's at the
+    /// current index to fill the screen, so a single tiny placeholder bitmap
+    /// blown up that way reads exactly like an oversized icon. Checked at
+    /// every point an image enters `images` (a fresh Photos pick, a cloud
+    /// restore, and loading from disk) so an already-corrupted on-disk
+    /// gallery self-heals on next load instead of needing the user to
+    /// manually clear and re-add everything.
+    private static let minPlausiblePhotoDimension: CGFloat = 200
+
+    static func isPlausiblePhoto(_ image: UIImage) -> Bool {
+        max(image.size.width, image.size.height) >= minPlausiblePhotoDimension
+    }
+
     /// Regenerates `thumbnails` from `images` — a cheap in-memory resize
     /// (`ImageDownsampler.downscaled`, no re-decode) of already-loaded
     /// bitmaps, not a file read. Called after every mutation of `images`;
@@ -235,9 +255,28 @@ final class BackgroundService: ObservableObject {
     func addImages(_ newImages: [UIImage], assetIDs: [String?]? = nil, gifDataList: [Data?]? = nil) {
         let ids = (assetIDs ?? Array(repeating: nil, count: newImages.count)).map { $0 ?? UUID().uuidString }
         let gifs = gifDataList ?? Array(repeating: nil, count: newImages.count)
-        images.append(contentsOf: newImages)
-        imageAssetIDs.append(contentsOf: ids)
-        imageGIFData.append(contentsOf: gifs)
+
+        // Filter out anything implausibly small for a real photo HERE — the
+        // one choke point every caller (the Photos picker, a cloud-gallery
+        // restore) funnels through — rather than trusting each call site to
+        // have already checked. See `isPlausiblePhoto`'s doc comment.
+        var filteredImages: [UIImage] = []
+        var filteredIDs: [String] = []
+        var filteredGIFs: [Data?] = []
+        for (index, image) in newImages.enumerated() {
+            guard Self.isPlausiblePhoto(image) else {
+                appWarn("addImages: rejecting image at index \(index) — implausibly small for a real photo (\(image.size))", category: "background")
+                continue
+            }
+            filteredImages.append(image)
+            filteredIDs.append(ids[index])
+            filteredGIFs.append(gifs[index])
+        }
+        guard !filteredImages.isEmpty else { return }
+
+        images.append(contentsOf: filteredImages)
+        imageAssetIDs.append(contentsOf: filteredIDs)
+        imageGIFData.append(contentsOf: filteredGIFs)
         rebuildThumbnails()
         saveImagesToDisk()
         if !isEnabled {
@@ -249,7 +288,7 @@ final class BackgroundService: ObservableObject {
         startShuffling()
         objectWillChange.send()
         appLog("addImages: gallery ready (images=\(images.count), active=\(isActive))", category: "background")
-        scheduleCloudGallerySync(newImages: newImages)
+        scheduleCloudGallerySync(newImages: filteredImages)
     }
 
     /// True if `assetIdentifier` (a `PhotosPickerItem.itemIdentifier`) matches
@@ -421,7 +460,7 @@ final class BackgroundService: ObservableObject {
                 guard !cloud.isEmpty else { return }
                 var restored: [UIImage] = []
                 for entry in cloud.sorted(by: { $0.displayOrder < $1.displayOrder }) {
-                    if let img = await streaming.fetchGalleryImageData(entry, token: token) {
+                    if let img = await streaming.fetchGalleryImageData(entry, token: token), Self.isPlausiblePhoto(img) {
                         restored.append(img)
                     }
                 }
@@ -481,9 +520,17 @@ final class BackgroundService: ObservableObject {
             // those at full size on every launch is what let a large gallery
             // balloon into hundreds of MB of in-memory bitmaps.
             if (name as NSString).pathExtension.lowercased() == "gif", let animated = UIImage.gifImage(data: data, maxDimension: 1280) {
+                guard Self.isPlausiblePhoto(animated) else {
+                    appWarn("loadImagesFromDisk: skipping \(name) — implausibly small for a real photo (\(animated.size))", category: "background")
+                    continue
+                }
                 loaded.append(animated)
                 loadedGIFData.append(data)
             } else if let img = UIImage(data: data) {
+                guard Self.isPlausiblePhoto(img) else {
+                    appWarn("loadImagesFromDisk: skipping \(name) — implausibly small for a real photo (\(img.size))", category: "background")
+                    continue
+                }
                 loaded.append(img)
                 loadedGIFData.append(nil)
             } else {
@@ -526,9 +573,11 @@ final class BackgroundService: ObservableObject {
             let path = imageStorageDir.appendingPathComponent(name)
             guard let data = try? Data(contentsOf: path) else { continue }
             if (name as NSString).pathExtension.lowercased() == "gif", let animated = UIImage.gifImage(data: data, maxDimension: 1280) {
+                guard Self.isPlausiblePhoto(animated) else { continue }
                 loaded.append(animated)
                 loadedGIFData.append(data)
             } else if let img = UIImage(data: data) {
+                guard Self.isPlausiblePhoto(img) else { continue }
                 loaded.append(img)
                 loadedGIFData.append(nil)
             }
