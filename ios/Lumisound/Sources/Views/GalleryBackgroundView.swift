@@ -57,21 +57,50 @@ struct GalleryBackgroundView: View {
         }
     }
 
-    private static func dumpViewHierarchy() {
+    /// Guards the launch-triggered auto-dump (see `LumisoundApp`'s `.task`)
+    /// so it fires once per process, not every time that `.task` re-runs.
+    /// The manual tap-triggered path below always re-runs regardless.
+    private static var hasAutoDumped = false
+
+    static func autoDumpViewHierarchyOnce() {
+        guard !hasAutoDumped else { return }
+        hasAutoDumped = true
+        dumpViewHierarchy(trigger: "auto (post-launch)")
+    }
+
+    static func dumpViewHierarchy(trigger: String = "manual tap") {
         guard let window = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
             .first?.windows.first(where: { $0.isKeyWindow })
-        else { return }
+        else {
+            ToastCenter.shared.show("View hierarchy dump failed: no key window", category: .error)
+            return
+        }
         let selector = Selector(("recursiveDescription"))
         guard window.responds(to: selector),
-              let result = window.perform(selector)?.takeUnretainedValue() as? String
-        else { return }
+              let full = window.perform(selector)?.takeUnretainedValue() as? String
+        else {
+            ToastCenter.shared.show("View hierarchy dump failed: recursiveDescription unavailable", category: .error)
+            return
+        }
+        // A full app hierarchy (SwiftUI wraps every view in nested UIKit
+        // host/wrapper classes) can run to several hundred KB — large enough
+        // that a first attempt with the untruncated string produced no
+        // corresponding row server-side despite the endpoint itself
+        // returning 204, and gave no client-side signal either way that
+        // anything had gone wrong. Truncating to a size well within any
+        // reasonable request-body/column limit, plus this toast, means a
+        // failure is now visible immediately on-device instead of silently
+        // vanishing between here and the DB.
+        let maxLength = 80_000
+        let truncated = full.count > maxLength ? String(full.prefix(maxLength)) : full
         RemoteLogger.log(
             category: "debug",
             event: "view_hierarchy_dump",
-            message: "manual trigger from GalleryBackgroundView debug label",
-            detail: ["hierarchy": result]
+            message: "\(trigger) — \(full.count) char(s) total, \(truncated.count) sent",
+            detail: ["hierarchy": truncated]
         )
+        ToastCenter.shared.show("View hierarchy dump sent (\(truncated.count) chars)", category: .success)
     }
 
     private var photoBackground: some View {
