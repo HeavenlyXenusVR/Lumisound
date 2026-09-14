@@ -24,10 +24,25 @@ extension StreamingService {
         // also extracts lazily (when the app fetches it), so Play is instant and
         // the URL is deterministic/cacheable. Auth/cookie headers travel on the
         // Song (see `toSong`) since the player fetches this URL directly.
+        // `preferredFormat` is the DOWNLOAD preference and must not be used
+        // here. A download can be transcoded and re-tagged server-side; a live
+        // stream hands bytes straight to AVFoundation, which cannot demux
+        // several of the formats that setting offers — Opus resolves to a WebM
+        // container and fails outright (AVErrorFileFormatNotRecognized, -11828).
+        // The bridge already coerces those to m4a, but asking for the right
+        // thing keeps both sides agreeing on what the bytes are: the temp file
+        // this stream is written to takes its extension from the requested
+        // format, so requesting opus and receiving AAC produced a `.opus` file
+        // full of MP4 that AVAudioFile rejected as invalid ('dta?').
+        //
+        // m4a is YouTube's native itag 140 (AAC in MP4) — no transcode, and
+        // natively playable. Non-YouTube sources keep the requested format,
+        // since the bridge only substitutes for YouTube.
+        let streamFormat = track.source == "youtube" ? "m4a" : preferredFormat
         var queryItems: [URLQueryItem] = [
             URLQueryItem(name: "id",     value: track.id),
             URLQueryItem(name: "source", value: track.source),
-            URLQueryItem(name: "format", value: preferredFormat),
+            URLQueryItem(name: "format", value: streamFormat),
         ]
         if track.source == "soundcloud" || track.source == "bandcamp" {
             queryItems.append(URLQueryItem(name: "url", value: track.youtubeURL))
@@ -41,7 +56,7 @@ extension StreamingService {
               let url = request.url else {
             throw StreamingError.invalidURL
         }
-        appLog("streamURL: proxy URL for \"\(track.title)\" [src: \(track.source), fmt: \(preferredFormat)]", category: "network")
+        appLog("streamURL: proxy URL for \"\(track.title)\" [src: \(track.source), fmt: \(streamFormat)]", category: "network")
         return url
     }
 }

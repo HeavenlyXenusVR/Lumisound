@@ -567,15 +567,30 @@ extension AudioPlayerManager {
                     throw StreamingError.httpError(status)
                 }
                 appLog("downloadAndSchedule: stream response \(http.statusCode) for \(playbackURL) in \(String(format: "%.2f", Date().timeIntervalSince(playbackStartedAt)))s", category: "audio")
-                // Detect extension from Content-Type if URL path was inconclusive
-                if ext == "m4a", let ct = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") {
+                // Trust the response's Content-Type over what we ASKED for.
+                //
+                // This used to run only when `ext == "m4a"`, i.e. only when the
+                // request hadn't already committed to a format — which meant the
+                // one case that actually matters was skipped. The bridge
+                // deliberately serves m4a for stream formats AVFoundation can't
+                // demux (opus resolves to WebM), so a request for opus comes back
+                // as AAC-in-MP4. With the old condition the bytes were still
+                // written to a `.opus` file and AVAudioFile rejected them with
+                // `kAudioFileInvalidFileError` ('dta?', 1685348671) — a valid
+                // file, opened as the wrong type. Seen on every streamed track:
+                // "AVAudioFile open failed ... avfaudio error 1685348671".
+                //
+                // Refining whenever the server disagrees is correct regardless
+                // of what was requested: the server knows what it sent.
+                if let ct = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") {
                     let refinedExt: String
                     if ct.contains("webm") { refinedExt = "webm" }
                     else if ct.contains("ogg") || ct.contains("opus") { refinedExt = "opus" }
                     else if ct.contains("mpeg") { refinedExt = "mp3" }
                     else if ct.contains("flac") { refinedExt = "flac" }
                     else if ct.contains("wav") { refinedExt = "wav" }
-                    else { refinedExt = "m4a" }
+                    else if ct.contains("mp4") || ct.contains("m4a") || ct.contains("aac") { refinedExt = "m4a" }
+                    else { refinedExt = ext }   // unrecognised — keep what we assumed
                     let refinedURL = tempURL.deletingPathExtension().appendingPathExtension(refinedExt)
                     try? FileManager.default.removeItem(at: refinedURL)
                     try FileManager.default.moveItem(at: downloaded, to: refinedURL)
