@@ -455,9 +455,13 @@ _YTDLP_NETWORK_ARGS = ["-4", "--socket-timeout", "10"]
 # Base URL of the bgutil-ytdlp-pot-provider POT server
 # (github.com/Brainicism/bgutil-ytdlp-pot-provider), WIRED UP AND ENABLED BY
 # DEFAULT — docker-compose.yml runs the `bgutil-pot-provider` service and
-# sets this env var to its address (`http://127.0.0.1:4416`) unless
-# explicitly overridden, and the Dockerfile installs the matching
-# `bgutil-ytdlp-pot-provider` pip plugin. YouTube's "proof of origin token"
+# sets this env var to its address (`http://127.0.0.1:4417` — its own
+# dedicated port, NOT the upstream default 4416, which the Discord music bots'
+# provider already holds; see docker-compose.yml) unless explicitly
+# overridden, and the Dockerfile installs the matching
+# `bgutil-ytdlp-pot-provider` pip plugin. Keep the plugin's major version and
+# the server's in step — yt-dlp refuses to use a mismatched pair and falls
+# back to token-less extraction. YouTube's "proof of origin token"
 # challenge has made cookie-less extraction progressively slower and more
 # failure-prone over time; a POT provider resolves it without needing real
 # account cookies, and is what actually fixed this deployment's

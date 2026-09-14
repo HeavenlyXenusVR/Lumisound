@@ -5,12 +5,26 @@ services:
   # ios-bridge image already has the matching client-side plugin installed
   # (see its Dockerfile) and points at this service by default below.
   # https://github.com/Brainicism/bgutil-ytdlp-pot-provider
+  #
+  # Published on 4417, NOT the provider's default 4416: the Discord music bots'
+  # own compose project already runs a bgutil provider on 4416 with
+  # network_mode: host, so this service could never start ("failed to bind host
+  # port 0.0.0.0:4416: address already in use") and ios-bridge silently fell
+  # through to *their* instance. That instance is pinned to an older image, and
+  # the version skew was real: it served 1.3.2 while this image's client plugin
+  # is 2.0.0, which yt-dlp rejects outright ("Plugin and HTTP server major
+  # versions are mismatched. Update both ... to proceed"), so every extraction
+  # ran with no token at all — exactly the 70-100s slow path this service
+  # exists to avoid. On a dedicated port the two projects can hold independent,
+  # independently-upgradable providers. 4417 is published on the host but not
+  # exposed externally; the container still listens on its own default 4416
+  # internally, which is why the mapping is asymmetric.
   bgutil-pot-provider:
     image: brainicism/bgutil-ytdlp-pot-provider:latest
     container_name: bgutil_pot_provider
     restart: always
     ports:
-      - "4416:4416"
+      - "${YTDLP_POT_PROVIDER_PORT:-4417}:4416"
 
   ios-bridge:
     build: .
@@ -31,7 +45,9 @@ services:
       # http://127.0.0.1:<port> here, same as if it were running directly on
       # the host. Set to empty to disable (yt-dlp just extracts without a
       # token, as before this was added).
-      - YTDLP_POT_PROVIDER_URL=${YTDLP_POT_PROVIDER_URL:-http://127.0.0.1:4416}
+      # Must match this file's bgutil-pot-provider published port (4417, see the
+      # comment on that service for why it is not the upstream default 4416).
+      - YTDLP_POT_PROVIDER_URL=${YTDLP_POT_PROVIDER_URL:-http://127.0.0.1:${YTDLP_POT_PROVIDER_PORT:-4417}}
       # Optional: YouTube Data API v3 key (console.cloud.google.com, enable
       # "YouTube Data API v3"). When set, /api/resolve enumerates YouTube
       # playlists via playlistItems.list, which paginates with no ~205-entry
