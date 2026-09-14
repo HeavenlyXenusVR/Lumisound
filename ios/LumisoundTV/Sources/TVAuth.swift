@@ -122,11 +122,14 @@ final class TVAccount: ObservableObject {
     /// worse failure than a stale name.
     func validateRestoredSession() async {
         guard let token else { return }
-        guard let url = URL(string: baseURL + "/auth/sessions") else { return }
+        // /auth/me both proves the token is live AND returns the account it
+        // belongs to, so one call covers validation and restoring the display
+        // name that a reinstall wiped.
+        guard let url = URL(string: baseURL + "/auth/me") else { return }
         var request = URLRequest(url: url, timeoutInterval: 15)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
-        guard let (_, response) = try? await URLSession.shared.data(for: request),
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
               let http = response as? HTTPURLResponse
         else {
             tvWarn("Session validation skipped — bridge unreachable", category: "auth")
@@ -145,8 +148,25 @@ final class TVAccount: ObservableObject {
             return
         }
 
+        // Session is good — re-hydrate the account details. The token lives in
+        // the Keychain and survives a reinstall; the user record lives in
+        // UserDefaults and does NOT, so after a fresh install the profile card
+        // showed a generic "Signed in" with no name even though the session
+        // was perfectly valid and belonged to the right account. That reads
+        // exactly like being signed into somebody else's account.
+        let hadStoredUser = user != nil
+        if (200..<300).contains(http.statusCode),
+           let decoded = try? JSONDecoder().decode(TVUser.self, from: data) {
+            user = decoded
+            if let encoded = try? JSONEncoder().encode(decoded) {
+                UserDefaults.standard.set(encoded, forKey: userKey)
+            }
+        }
         TVRemoteLogger.log(category: "auth", event: "restored_session_valid",
-                           detail: ["hadStoredUser": user != nil], authToken: token)
+                           detail: ["hadStoredUser": hadStoredUser,
+                                    "recoveredUser": user != nil && !hadStoredUser,
+                                    "status": http.statusCode],
+                           authToken: token)
     }
 
     func logout() {
