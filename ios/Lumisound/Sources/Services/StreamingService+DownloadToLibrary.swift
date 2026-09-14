@@ -102,8 +102,43 @@ extension StreamingService {
                 CorruptFileFinderService.isValidAudioFile(at: provisionalDestURL)
             }.value
             : false
-        if DownloadLedgerStore.shared.filename(for: sourceTrackID) == provisionalDestURL.lastPathComponent,
-           provisionalIsValid {
+        // Trust WHATEVER filename the ledger recorded for this source id, not
+        // just the provisional one.
+        //
+        // This compared the ledger entry against `provisionalDestURL` — the
+        // plain, pre-lock name ("Song.opus"). But the ledger is written with
+        // the name the file ends up under, and a locked track ends up as
+        // "Song.opus.lms", so for any track that had been locked the two could
+        // never be equal and this check could never fire. Combined with the
+        // source-id check above missing too (`Song.sourceTrackID` comes from
+        // the embedded LUMISOUND_ID tag, read via AVFoundation, which has no
+        // Ogg demuxer at all — so it is always nil for the .opus downloads
+        // this library is full of), NOTHING deduped: measured over 12 hours,
+        // 245 downloads started and not one dedup hit of any kind, which is
+        // why tracked playlists kept re-fetching tracks already owned and
+        // locked.
+        //
+        // Resolving the ledger's own filename fixes both: it is recorded at
+        // download time, so it needs neither a readable tag nor a guess about
+        // what the file is called now.
+        if let ledgerName = DownloadLedgerStore.shared.filename(for: sourceTrackID) {
+            let ledgerURL = importDir.appendingPathComponent(ledgerName)
+            let ledgerIsValid = FileManager.default.fileExists(atPath: ledgerURL.path)
+                ? await Task.detached(priority: .utility) {
+                    CorruptFileFinderService.isValidAudioFile(at: ledgerURL)
+                }.value
+                : false
+            if ledgerIsValid {
+                if let preparedURL = await prepareExistingLocalCopy(ledgerURL, track: track) {
+                    appLog("downloadToLibrary: already have \"\(track.title)\" per ledger (\(preparedURL.lastPathComponent)), skipping", category: "network")
+                    DownloadLedgerStore.shared.record(sourceTrackID: sourceTrackID, filename: preparedURL.lastPathComponent)
+                    if reportExistingAsSkipped { throw StreamingError.alreadyDownloaded }
+                    return preparedURL
+                }
+                appWarn("downloadToLibrary: ledger copy of \"\(track.title)\" could not be locked — continuing with download", category: "network")
+            }
+        }
+        if provisionalIsValid, DownloadLedgerStore.shared.filename(for: sourceTrackID) == provisionalDestURL.lastPathComponent {
             if let preparedURL = await prepareExistingLocalCopy(provisionalDestURL, track: track) {
                 appLog("downloadToLibrary: already exists and is locked, skipping \(preparedURL.lastPathComponent)", category: "network")
                 DownloadLedgerStore.shared.record(sourceTrackID: sourceTrackID, filename: preparedURL.lastPathComponent)
