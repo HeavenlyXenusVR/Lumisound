@@ -140,6 +140,10 @@ struct LumisoundApp: App {
                     // transition.
                     LumisoundTrackVaultService.scheduleNext()
                 } else if phase == .active {
+                    // Take the diagnostics snapshot that came due while the
+                    // app was suspended (its main-run-loop timer doesn't fire
+                    // there). No-op unless a full interval has elapsed.
+                    DiagnosticsSnapshotService.noteDidBecomeActive()
                     // Catch-all safety net for background downloads: covers
                     // both "silent push never arrived" (Apple doesn't
                     // guarantee delivery/timing) and jobs that finished

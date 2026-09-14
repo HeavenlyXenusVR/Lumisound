@@ -9719,9 +9719,23 @@ async def upload_user_music(
     # `_locked_inner_ext`'s doc comment) so Cloud Backup can back up locked
     # tracks exactly as they sit on disk, without the server ever needing to
     # unlock them.
-    safe_name = pathlib.Path(filename).name.replace("..", "").strip()
+    # NOT `.replace("..", "")`, which this used to do as a path-traversal
+    # guard: `pathlib.Path(filename).name` already reduces any path to its
+    # final component ("../../../etc/cron.d/evil.opus" -> "evil.opus"), so
+    # stripping ".." bought no additional safety — and it actively corrupted
+    # legitimate names. A title ending in a period (very common: "Super Smash
+    # Bros.", "Title ver.", "S.O.S.") yields "<title>." + ".opus.lms" =
+    # "...Bros..opus.lms", whose embedded ".." this collapsed into
+    # "...Brosopus.lms" — destroying the extension, so `_locked_inner_ext`
+    # no longer recognized it and the suffix check below rejected it. Every
+    # such track 400'd on every backup attempt, permanently, with nothing the
+    # user could do about it. Confirmed in production logs: one 21-track album
+    # of period-ending titles accounted for hundreds of failed uploads.
+    # Traversal stays impossible via `.name`; `folder` is separately validated
+    # by the resolve()/relative_to() check below.
+    safe_name = pathlib.Path(filename).name.strip()
     is_locked_upload = _locked_inner_ext(safe_name) is not None
-    if not safe_name or (
+    if not safe_name or safe_name in {".", ".."} or (
         not is_locked_upload
         and pathlib.Path(safe_name).suffix.lower().lstrip(".") not in {
             e.lstrip(".") for e in SUPPORTED_AUDIO_EXTS

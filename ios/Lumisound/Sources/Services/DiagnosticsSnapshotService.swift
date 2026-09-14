@@ -30,6 +30,11 @@ enum DiagnosticsSnapshotService {
     private static let interval: TimeInterval = 5 * 60
     private static var timer: Timer?
 
+    /// When `send` last actually delivered a snapshot (not merely been
+    /// called — calls skipped by the `.active` guard don't count). Drives
+    /// `noteDidBecomeActive`'s catch-up below.
+    private static var lastSentAt: Date?
+
     /// Call once from `LumisoundApp`'s `.task` — deliberately NOT `init()`
     /// (unlike `PerformanceMonitorService`, which has nothing to read yet
     /// at that point): every `.shared` singleton this function reads is a
@@ -46,8 +51,38 @@ enum DiagnosticsSnapshotService {
         timer = t
     }
 
+    /// Call from `LumisoundApp`'s `scenePhase == .active` handler.
+    ///
+    /// A repeating `Timer` on the main run loop doesn't fire while the app is
+    /// suspended, and `send`'s `.active` guard drops any tick that lands
+    /// while backgrounded — so with real usage (short foreground bursts, the
+    /// app backgrounded in between) the periodic tick effectively never
+    /// produced a row: across the first three real sessions after this
+    /// service shipped, `ios_app_event_log` held only `app_launch` snapshots
+    /// and not a single `periodic` one, including a session that stayed in
+    /// use for ~6 minutes and so should have logged one. That made the
+    /// standing "what does a live session look like" readout this service
+    /// exists to provide amount to a single launch-time sample, which is
+    /// exactly the gap it was built to close.
+    ///
+    /// Taking the overdue snapshot on foreground return fixes that without
+    /// raising the tick rate: it only fires when a full `interval` has
+    /// actually elapsed since the last delivered snapshot, so a user
+    /// flicking in and out of the app doesn't generate a burst.
+    static func noteDidBecomeActive() {
+        guard timer != nil else { return } // not started yet; `start()` seeds its own
+        // A nil `lastSentAt` means no snapshot has ever actually gone out —
+        // `start()`'s seeding call is made from `.task`, which can run while
+        // the scene is still `.inactive`, in which case `send`'s guard
+        // dropped it. Treat that as overdue rather than as "just sent", or
+        // that launch would produce no snapshot at all, ever.
+        if let last = lastSentAt, Date().timeIntervalSince(last) < interval { return }
+        send(reason: "foreground")
+    }
+
     private static func send(reason: String) {
         guard UIApplication.shared.applicationState == .active else { return }
+        lastSentAt = Date()
 
         let detail: [String: Any] = [
             "device": deviceSnapshot(),
@@ -92,7 +127,19 @@ enum DiagnosticsSnapshotService {
     // log streams by timestamp.
 
     private static func deviceSnapshot() -> [String: Any] {
+        let info = Bundle.main.infoDictionary
         var result: [String: Any] = [
+            // Which build produced this snapshot. `ios_app_logs` records an
+            // app_version per row but these snapshots land in
+            // `ios_app_event_log`, which does not — so there was no way to
+            // tell whether a snapshot (or an error logged beside it) came
+            // from a build that already contains a given fix. That directly
+            // blocked an investigation into repeated backup failures, where
+            // the whole question was "is the device even running the build
+            // with the fix in it".
+            "appVersion": info?["CFBundleShortVersionString"] as? String ?? "unknown",
+            "buildNumber": info?["CFBundleVersion"] as? String ?? "unknown",
+            "osVersion": UIDevice.current.systemVersion,
             "thermalState": ProcessInfo.processInfo.thermalState.diagnosticsDescription,
             "lowPowerModeEnabled": ProcessInfo.processInfo.isLowPowerModeEnabled,
             // The system-level gate every background feature in this app

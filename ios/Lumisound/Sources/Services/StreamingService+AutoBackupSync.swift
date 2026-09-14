@@ -17,7 +17,16 @@ extension StreamingService {
     // "upload failed ... HTTP 400" retries in a week. Keyed by filename+size
     // (not just filename) so replacing the file with different content — the
     // one case where a retry could actually succeed — gets a fresh attempt.
-    private static let permanentUploadFailureKey = "backUpLibraryIfNeeded.permanentFailures.v1"
+    // Bumped v1 -> v2 to discard the memo built up against a server bug that
+    // has since been fixed: `/user/music/upload` mangled any filename whose
+    // base name ended with a period (a title like "Super Smash Bros." backs up
+    // as "...Bros..opus.lms", whose ".." the server collapsed, destroying the
+    // extension) and 400'd it. Those tracks are genuinely uploadable now, but
+    // this guard had already recorded them as permanently failed — so without
+    // resetting the key they'd stay skipped forever and silently never back
+    // up, which is the exact failure this guard exists to bound, not cause.
+    // Any entry still genuinely unbackupable just re-earns its 3 strikes.
+    private static let permanentUploadFailureKey = "backUpLibraryIfNeeded.permanentFailures.v2"
 
     private struct UploadFailureRecord: Codable { let size: Int; let attempts: Int }
 

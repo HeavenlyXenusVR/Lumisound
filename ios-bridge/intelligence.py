@@ -48,7 +48,18 @@ logger = logging.getLogger("ios-bridge.intelligence")
 # so her quota/billing/usage are hers alone and never commingled with an
 # unrelated service's traffic.
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-INTELLIGENCE_MODEL = "gemini-2.5-flash"
+
+# Env-overridable so a model retirement is a compose env change + restart, not
+# a code edit and image rebuild. This was hardcoded to "gemini-2.5-flash",
+# which Google retired for new users: every intelligence call 404'd
+# ("no longer available to new users … use models/gemini-3.6-flash"), silently
+# — call_intelligence returns None on any failure and every caller falls back
+# to its pre-existing heuristic, so nothing user-visible broke loudly and the
+# feature was simply off for weeks. Only ios_app_event_log's
+# intelligence/analysis_failed rows showed it. The same retirement hit the Aria
+# Discord bot, which was fixed at the time via its own ARIA_GEMINI_MODEL
+# override; that fix was never propagated here, hence this.
+INTELLIGENCE_MODEL = os.getenv("LUMISOUND_GEMINI_MODEL", "gemini-3.6-flash")
 
 _client: genai.Client | None = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
