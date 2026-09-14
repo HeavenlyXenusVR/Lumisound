@@ -19,9 +19,8 @@ import SwiftUI
 /// part of `SettingsView` itself, and still need this same helper.
 ///
 /// Liquid Glass: this returns a *view* rather than the flat `Color` it used
-/// to, so every Settings row picks up `adaptiveGlass` — real
-/// `.glassEffect()` on iOS 26, the previous tinted surface as the fallback
-/// below it. Settings was the last major area of the app still painting its
+/// to, so every Settings row picks up `adaptiveGlass` and renders as real
+/// `.glassEffect()`. Settings was the last major area of the app still painting its
 /// rows as opaque fills while the mini-player, toasts, FABs, song cards and
 /// the navbar had all moved to glass, so its rows sat as solid slabs over
 /// the gallery background that every surface around them let through.
@@ -36,7 +35,7 @@ import SwiftUI
 /// this app's iOS 26 deployment target would never render — passing it there
 /// would have quietly flattened every section to identical untinted glass and
 /// thrown away the "each category is its own colour" idea this helper exists
-/// for. `tintOpacity` keeps it at a hint rather than a coloured card, the same
+/// for. `settingsRowTintOpacity` keeps it at a hint rather than a coloured card, the same
 /// restraint the old 6% surface mix was chosen for; it is the one number to
 /// turn if the sections read too strong or too washed out on device.
 private let settingsRowTintOpacity: Double = 0.22
