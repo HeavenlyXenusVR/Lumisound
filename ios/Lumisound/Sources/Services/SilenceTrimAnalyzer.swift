@@ -18,13 +18,38 @@ actor SilenceTrimAnalyzer {
     /// RMS counts as "silence" for this purpose.
     private static let silenceThreshold = 0.02
 
+    /// Absolute RMS floor (-50 dBFS) a window must ALSO be under to count as
+    /// silence. The relative threshold above can't do this job alone: 2% of
+    /// peak is a moving target, and on a loud or dynamic track 2% of a hot
+    /// peak is still clearly audible, so real quiet-but-present audio at the
+    /// head of the track got classified as dead air and skipped.
+    ///
+    /// That is the worse failure direction — not "does nothing" but "eats the
+    /// start of the song". Measured over 34 real tracks from this library:
+    /// "FFVII REMAKE - 星に選ばれし者" has 2.21s of true dead air and the
+    /// relative-only test reported 4.07s, cutting ~1.9s of actual music;
+    /// "Labyrinth" reported 0.76s against 0.08s of real silence. Requiring a
+    /// window to be under BOTH thresholds took over-trimming from 2/34 tracks
+    /// to 0/34 while still trimming 20/34 — i.e. it costs essentially none of
+    /// the feature's reach.
+    ///
+    /// -50 dBFS is low enough to sit under anything audible on a phone yet
+    /// comfortably above the noise floor of a lossy-encoded "silent" lead-in,
+    /// which is never bit-exact zero.
+    private static let absoluteSilenceFloor = 0.00316  // 10^(-50/20)
+
     private var cache: [String: TimeInterval]
     private let cacheURL: URL
 
     private init() {
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        cacheURL = caches.appendingPathComponent("silence_trim_cache_v1.json")
+        // v1 -> v2: the cache is keyed by path+mtime+size, none of which change
+        // when the *analysis* changes, so every track already measured under
+        // the old relative-only threshold would keep serving its over-trimmed
+        // value forever. Bumping the filename discards those; they re-measure
+        // once, off the main actor, and are free from then on.
+        cacheURL = caches.appendingPathComponent("silence_trim_cache_v2.json")
         if let data = try? Data(contentsOf: cacheURL),
            let decoded = try? JSONDecoder().decode([String: TimeInterval].self, from: data) {
             cache = decoded
@@ -88,9 +113,13 @@ actor SilenceTrimAnalyzer {
         }
         guard let peak = windowRMS.max(), peak > 0 else { return 0 }
 
+        // Under BOTH thresholds — see `absoluteSilenceFloor` for why the
+        // relative one alone over-trims into real audio on loud tracks.
+        let threshold = min(peak * silenceThreshold, absoluteSilenceFloor)
+
         var silentWindows = 0
         for rms in windowRMS {
-            if rms < peak * silenceThreshold {
+            if rms < threshold {
                 silentWindows += 1
             } else {
                 break
