@@ -19,6 +19,8 @@ fallback, since none of the existing lyrics paths depend on this.
 import asyncio
 import json
 import logging
+import os
+import time
 
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
@@ -73,7 +75,43 @@ out" over confidently wrong text.
 """
 
 
-def _run_transcription(audio_bytes: bytes, mime_type: str, title: str, artist: str, hint_lyrics: str | None) -> str:
+# Transient, worth-retrying HTTP statuses. 503 is the one that matters in
+# practice: Gemini returns "This model is currently experiencing high demand.
+# Spikes in demand are usually temporary. Please try again later." and this
+# module treated it exactly like a permanent failure — one 503 and the whole
+# job returned None, surfacing to the user as "Lyrics transcription isn't
+# available right now". Measured against real cloud-backed-up tracks, a single
+# retry a few seconds later routinely succeeds on the same model: transcription
+# itself works fine (correct wording, sensible timestamps), it was just being
+# abandoned at the first sign of load. NOT retried: 400 (bad request), 404
+# (dead model) and 429 (quota) — those don't get better by asking again, and
+# 429 in particular is what intelligence.py's own per-task cooldown exists for.
+_RETRYABLE_STATUSES = frozenset({500, 502, 503, 504})
+
+# Tried in order. The primary is whatever the rest of the app is configured to
+# use; the fallback is a different model generation, which matters because the
+# 503s are per-model load — during one overload window the primary failed while
+# this one answered immediately. Mirrors the ARIA_GEMINI_FALLBACK_MODELS
+# pattern the Aria bot already uses for the same class of outage.
+_FALLBACK_MODEL = os.getenv("LUMISOUND_GEMINI_LYRICS_FALLBACK_MODEL", "gemini-3.5-flash")
+
+_MAX_ATTEMPTS_PER_MODEL = 3
+_RETRY_BACKOFF_SECONDS = (3.0, 9.0)
+# Overall ceiling across every attempt and model. The per-call HTTP timeout
+# (240s below) bounds one request, but nothing bounded the sequence — without
+# this, a run of slow failures could keep a job "pending" for many minutes while
+# the client politely polls. Failing at a known point is better than hanging.
+_TOTAL_DEADLINE_SECONDS = 420.0
+
+
+def _run_transcription(
+    audio_bytes: bytes,
+    mime_type: str,
+    title: str,
+    artist: str,
+    hint_lyrics: str | None,
+    model: str,
+) -> str:
     """The actual blocking Gemini call — run via asyncio.to_thread by the
     caller, same pattern intelligence.py's _run_gemini_request uses."""
     user_text = {"title": title, "artist": artist, "candidate_lyrics": hint_lyrics or None}
@@ -96,7 +134,7 @@ def _run_transcription(audio_bytes: bytes, mime_type: str, title: str, artist: s
         http_options=genai_types.HttpOptions(timeout=240_000),
     )
     response = intelligence._client.models.generate_content(
-        model=intelligence.INTELLIGENCE_MODEL,
+        model=model,
         contents=parts,
         config=config,
     )
@@ -114,15 +152,51 @@ async def transcribe_lyrics(
     unparseable response."""
     if intelligence._client is None:
         return None
-    try:
-        text = await asyncio.to_thread(_run_transcription, audio_bytes, mime_type, title, artist, hint_lyrics)
-        parsed = json.loads(text)
-        if not isinstance(parsed.get("lines"), list):
-            return None
-        return parsed
-    except genai_errors.APIError as exc:
-        logger.warning("transcribe_lyrics: Gemini API error: %s", exc)
-        return None
-    except Exception:
-        logger.exception("transcribe_lyrics: unexpected failure")
-        return None
+
+    started = time.monotonic()
+    models = [intelligence.INTELLIGENCE_MODEL]
+    if _FALLBACK_MODEL and _FALLBACK_MODEL != intelligence.INTELLIGENCE_MODEL:
+        models.append(_FALLBACK_MODEL)
+
+    for model in models:
+        for attempt in range(1, _MAX_ATTEMPTS_PER_MODEL + 1):
+            if time.monotonic() - started > _TOTAL_DEADLINE_SECONDS:
+                logger.warning("transcribe_lyrics: giving up after %.0fs", time.monotonic() - started)
+                return None
+            try:
+                text = await asyncio.to_thread(
+                    _run_transcription, audio_bytes, mime_type, title, artist, hint_lyrics, model
+                )
+                parsed = json.loads(text)
+                if not isinstance(parsed.get("lines"), list):
+                    # A structurally wrong response won't become right on a
+                    # retry — the model answered, just not in the shape asked
+                    # for. Bail rather than burning the retry budget.
+                    logger.warning("transcribe_lyrics: %s returned no usable 'lines' array", model)
+                    return None
+                if attempt > 1 or model != intelligence.INTELLIGENCE_MODEL:
+                    logger.info(
+                        "transcribe_lyrics: succeeded on %s attempt %d (%.0fs elapsed)",
+                        model, attempt, time.monotonic() - started,
+                    )
+                return parsed
+            except genai_errors.APIError as exc:
+                code = getattr(exc, "code", None)
+                retryable = code in _RETRYABLE_STATUSES
+                logger.warning(
+                    "transcribe_lyrics: %s attempt %d/%d failed (code=%s, retryable=%s)",
+                    model, attempt, _MAX_ATTEMPTS_PER_MODEL, code, retryable,
+                )
+                if not retryable:
+                    break  # a different model won't fix a 400/404/429 either
+                if attempt < _MAX_ATTEMPTS_PER_MODEL:
+                    await asyncio.sleep(_RETRY_BACKOFF_SECONDS[min(attempt - 1, len(_RETRY_BACKOFF_SECONDS) - 1)])
+            except json.JSONDecodeError:
+                logger.warning("transcribe_lyrics: %s returned unparseable JSON", model)
+                return None
+            except Exception:
+                logger.exception("transcribe_lyrics: unexpected failure on %s", model)
+                return None
+
+    logger.warning("transcribe_lyrics: all models exhausted after %.0fs", time.monotonic() - started)
+    return None
