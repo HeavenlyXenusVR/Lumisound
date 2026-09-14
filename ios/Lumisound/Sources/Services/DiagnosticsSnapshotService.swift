@@ -274,6 +274,73 @@ enum DiagnosticsSnapshotService {
         ]
     }
 
+    // MARK: - Liquid Glass
+    //
+    // Added when Settings was converted to Liquid Glass. Glass is the one part
+    // of the UI whose result genuinely cannot be verified from this dev
+    // environment — there's no Mac, so CI proves it compiles and nothing
+    // proves how it *looks*. These fields exist so a "the glass looks wrong"
+    // report arrives with the configuration that produced it already attached,
+    // rather than starting a round of guessing which knob the user had moved.
+    //
+    // `reduceTransparency` (recorded alongside this, at the top level of
+    // `settingsSnapshot`) is the single most important correlate: iOS renders
+    // Liquid Glass as a flat opaque fill when it's on, so a user with it
+    // enabled sees none of this work and would reasonably report the glass as
+    // "not doing anything". `renderingAsGlass` states that outright rather
+    // than leaving the join to whoever reads the row.
+
+    private static func glassSnapshot() -> [String: Any] {
+        let glass = GlassSettings.shared
+        let reduceTransparency = UIAccessibility.isReduceTransparencyEnabled
+        return [
+            "tintStrength": glass.tintStrength,
+            "useAccentTint": glass.useAccentTint,
+            // Only meaningful when `useAccentTint` is false; recorded either
+            // way so a report can be reproduced exactly.
+            "tintHue": glass.tintHue,
+            "tintIsEffectivelyClear": glass.tintColor == .clear,
+            // Whether the user is actually seeing Liquid Glass at all.
+            "renderingAsGlass": !reduceTransparency,
+            // `translucency` drives ONLY the pre-iOS-26 fallback branch in
+            // GlassEffectCompat. This app's deployment target is iOS 26.0, so
+            // that branch is unreachable and this slider cannot affect the app
+            // — yet it is still live in GlassSettingsView, and its own local
+            // preview swatch *does* respond to it, so dragging it visibly
+            // changes the preview while nothing else moves. That is exactly
+            // the "setting is on but doing nothing" shape this whole service
+            // exists to surface, so it is reported as such rather than as a
+            // plain value: a non-default reading here means a user spent time
+            // on a control that does nothing.
+            "translucency": glass.translucency,
+            "translucencyHasNoEffect": true,
+            "translucencyMovedFromDefault": abs(glass.translucency - 1.0) > 0.001,
+        ]
+    }
+
+    // MARK: - Navbar
+    //
+    // The floating navbar is the glass surface Settings sits directly above,
+    // and the one whose height Settings must reserve clearance for — its mode
+    // decides whether that bar is a tab row or the mini player. Recorded here
+    // so a layout complaint about either screen can be read against the
+    // configuration that produced it.
+
+    private static func navbarSnapshot() -> [String: Any] {
+        let defaults = UserDefaults.standard
+        let hiddenTabs = Set(
+            (defaults.string(forKey: "navbarHiddenTabs") ?? "")
+                .split(separator: ",")
+                .compactMap { Int($0) }
+        ).subtracting([6])  // Settings can never be hidden — see CustomTabBar.hiddenTabs
+        return [
+            "mode": defaults.string(forKey: "navbarDisplayMode") ?? NavbarDisplayMode.tabs.rawValue,
+            "selectionStyle": defaults.string(forKey: "navbarSelectionStyle") ?? NavbarSelectionStyle.glassPill.rawValue,
+            "showTabLabels": defaults.object(forKey: "navbarShowTabLabels") as? Bool ?? true,
+            "hiddenTabCount": hiddenTabs.count,
+        ]
+    }
+
     // MARK: - Settings (and whether each is actually doing something)
 
     private static func settingsSnapshot() -> [String: Any] {
@@ -281,6 +348,8 @@ enum DiagnosticsSnapshotService {
             "reduceMotion": UserDefaults.standard.bool(forKey: "app_reduce_motion"),
             "reduceTransparency": UIAccessibility.isReduceTransparencyEnabled,
         ]
+        result["glass"] = glassSnapshot()
+        result["navbar"] = navbarSnapshot()
 
         if let bg = BackgroundService.shared {
             result["galleryBackground"] = [
