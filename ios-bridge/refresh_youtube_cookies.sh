@@ -50,6 +50,43 @@ fi
 COOKIE_DIR="$(dirname -- "$COOKIE_FILE")"
 mkdir -p -- "$COOKIE_DIR" "$CACHE_DIR"
 
+# Copy a validated jar's bytes INTO an existing destination file rather than
+# renaming over it — see the install site below for why the distinction is
+# load-bearing for bind-mounted consumers.
+install_jar_in_place() {
+    local src="$1" dest="$2"
+    chmod 600 -- "$dest" 2>/dev/null || true
+    : > "$dest"
+    cat -- "$src" > "$dest"
+    chmod 600 -- "$dest"
+}
+
+# Bring every YTDLP_EXTRA_COOKIE_DESTS entry into line with *src*. Called both
+# after adopting a new jar and on the "nothing new to adopt" path: an extra
+# destination can be stale even while the primary is current (it was added to
+# the list later, or a deploy reset it), and without this that jar would stay
+# rotten until the next export happened to arrive.
+sync_extra_cookie_dests() {
+    local src="$1"
+    [[ -n "${YTDLP_EXTRA_COOKIE_DESTS:-}" ]] || return 0
+    local dests=() dest
+    IFS=':' read -r -a dests <<< "$YTDLP_EXTRA_COOKIE_DESTS"
+    for dest in "${dests[@]}"; do
+        [[ -n "$dest" ]] || continue
+        # Skip rather than create: a stale entry here must never be able to
+        # scatter session cookies to unexpected paths on disk.
+        if [[ ! -f "$dest" ]]; then
+            printf '%s\n' "Skipping extra cookie destination (not an existing file): $dest" >&2
+            continue
+        fi
+        if cmp -s -- "$src" "$dest"; then
+            continue  # already identical, nothing to do
+        fi
+        install_jar_in_place "$src" "$dest"
+        printf '%s\n' "Also refreshed: $dest" >&2
+    done
+}
+
 # A lock prevents a timer run and a sentinel-triggered run from reading the
 # browser database concurrently. The lock contains no cookie data.
 exec 9>"$CACHE_DIR/.cookies_refresh.lock"
@@ -142,8 +179,18 @@ else
                 printf '%s\n' "Installed cookies still authenticate; cleared a stale sentinel." >&2
             else
                 printf '%s\n' "Installed cookies no longer authenticate and no newer export is available in $COOKIE_INBOX — export a fresh cookies.txt from a signed-in browser." >&2
+                # Deliberately no extra-dest sync here: propagating a jar that
+                # just failed to authenticate would replace other consumers'
+                # possibly-working jars with a known-dead one.
+                exit 0
             fi
         fi
+        # Reached when there was no sentinel to evaluate, or the jar passed its
+        # check above. Either way the installed jar is the current one, so any
+        # extra destination still lagging behind it gets brought into line — the
+        # timer alone is then enough to heal a stale consumer, with no new export
+        # required.
+        sync_extra_cookie_dests "$COOKIE_FILE"
         exit 0
     fi
 
@@ -211,12 +258,37 @@ if [[ "${YTDLP_COOKIE_SKIP_LIVE_CHECK:-0}" != "1" ]]; then
     fi
 fi
 
-chmod 600 -- "$STAGED_COOKIE_FILE"
-mv -f -- "$STAGED_COOKIE_FILE" "$COOKIE_FILE"
+# Install by writing the bytes INTO the existing file, NOT by renaming over it.
+# docker bind-mounts a single file by inode, so `mv`/rename replaces the host
+# path with a new inode while every running container stays attached to the old
+# one — the refresh would report success and the bridge would keep using the
+# expired jar indefinitely, the exact silent failure this automation exists to
+# end. Verified with a throwaway bind-mounted container: after a rename the
+# container never sees another update, while an in-place write propagates
+# immediately.
+#
+# This trades rename's atomicity for a brief window where a concurrent reader
+# could see a partial file. That is the right trade here: the contents are
+# already fully validated by this point, a reader that loses the race just
+# fails one extraction and retries, and the alternative failure mode is
+# permanent and silent. `chmod` before the write so the bytes are never
+# briefly world-readable; `: >` truncates without replacing the inode.
+install_jar_in_place "$STAGED_COOKIE_FILE" "$COOKIE_FILE"
+
+# Keep every other consumer's jar in step (see sync_extra_cookie_dests). The
+# Discord music bots' stack has its own cookies.txt, bind-mounted into all 13
+# bots plus track-downloader, which rotted exactly the way this one did — its
+# jar was dead while its own comments described it as "already kept fresh".
+# Rather than stand up a second, separately-drifting copy of this automation
+# over there, the same validated jar is written to both: one export, one
+# validation, one liveness probe, every consumer current.
+sync_extra_cookie_dests "$STAGED_COOKIE_FILE"
+
+rm -f -- "$STAGED_COOKIE_FILE"
 # Stamp the install time so INBOX mode's "newer than the installed jar" test
 # above stops matching the export it just adopted.
 touch -- "$COOKIE_FILE"
-# The bridge only needs the sentinel while a refresh is pending. Remove it
-# after the atomic replacement, never before a validated file is installed.
+# The bridge only needs the sentinel while a refresh is pending. Remove it only
+# once a validated jar is actually installed, never before.
 rm -f -- "$CACHE_DIR/.cookies_stale"
 printf '%s\n' "YouTube cookies refreshed successfully."
