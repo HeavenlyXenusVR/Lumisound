@@ -54,10 +54,12 @@ struct TVAuthImage<Placeholder: View>: View {
             return
         }
 
-        var ui = await fetch(url)
-        if ui == nil {
-            ui = await fetch(url, afterDelayNanoseconds: 900_000_000)
+        var result = await fetch(url)
+        if result.image == nil {
+            result = await fetch(url, afterDelayNanoseconds: 900_000_000)
         }
+        let lastStatus = result.status
+        let ui = result.image
         guard let ui else {
             // Both attempts failed — leave whatever was already on screen
             // (e.g. the previous track's art, or the placeholder) rather
@@ -94,13 +96,13 @@ struct TVAuthImage<Placeholder: View>: View {
         showIncoming = false
     }
 
-    /// Status of the most recent `fetch` — surfaced so `load` can report WHY
-    /// artwork is missing rather than just that it is. -1 means the request
-    /// never produced an HTTP response (offline/cancelled); -2 means it
-    /// returned bytes that weren't a decodable image.
-    private var lastStatus: Int = -1
-
-    private func fetch(_ url: URL, afterDelayNanoseconds delay: UInt64? = nil) async -> UIImage? {
+    /// Returns the decoded image and the HTTP status that produced it.
+    /// Status is RETURNED rather than stored: this is a SwiftUI `View` struct,
+    /// so a stored mutable property both breaks the memberwise initialiser
+    /// every call site uses and can't be assigned from a non-mutating context.
+    /// -1 = no HTTP response at all (offline/cancelled); -2 = bytes returned
+    /// that weren't a decodable image.
+    private func fetch(_ url: URL, afterDelayNanoseconds delay: UInt64? = nil) async -> (image: UIImage?, status: Int) {
         if let delay {
             try? await Task.sleep(nanoseconds: delay)
             guard !Task.isCancelled else { return nil }
@@ -108,19 +110,15 @@ struct TVAuthImage<Placeholder: View>: View {
         var req = URLRequest(url: url)
         if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         guard let (data, response) = try? await URLSession.shared.data(for: req) else {
-            lastStatus = -1
-            return nil
+            return (nil, -1)
         }
         let status = (response as? HTTPURLResponse)?.statusCode ?? -1
         guard (200..<300).contains(status) else {
-            lastStatus = status
-            return nil
+            return (nil, status)
         }
         guard let ui = UIImage(data: data) else {
-            lastStatus = -2
-            return nil
+            return (nil, -2)
         }
-        lastStatus = status
-        return ui
+        return (ui, status)
     }
 }
