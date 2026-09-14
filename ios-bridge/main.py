@@ -477,6 +477,37 @@ if YTDLP_POT_PROVIDER_URL:
     ]
 
 
+# Which YouTube player client to extract STREAM URLs with.
+#
+# This is the difference between a stream that plays and one that doesn't.
+# googlevideo throttles a URL that carries no proof-of-origin token to a
+# crawl, and only some player clients actually request one — the default
+# client resolves a URL with no `pot=` parameter at all. Measured on this
+# host, same video, same cookies, same POT provider, back to back:
+#
+#     default client      pot=False      32 KB/s
+#     player_client=web   pot=True     1533 KB/s      (~48x)
+#
+# At 32 KB/s a 4MB track needs over two minutes, which is longer than the
+# client will wait: the iOS app gave up mid-download ("AVAudioFile open
+# failed after 113.69s ... The network connection was lost"), fell back to
+# AVPlayer, and reported a track that simply never played. The POT provider
+# was already running and healthy — nothing was asking it for a token.
+#
+# `web` first, `default` behind it, so that if the POT provider is ever
+# unreachable this degrades to the old slow-but-working path instead of
+# failing outright. NOT `ios`, which resolves no audio formats at all here
+# ("Only images are available for download").
+_YTDLP_STREAM_CLIENT_ARGS = ["--extractor-args", "youtube:player_client=web,default"]
+
+# How much of the CDN file each ranged upstream request asks for. 2MB measured
+# fastest here (5614 KB/s vs 4047 at 1MB) while still being small enough that
+# the first chunk — all the player needs to start — arrives promptly rather
+# than waiting on the whole file. See `_body` in stream_proxy for the
+# measurements and why chunking matters at all.
+_STREAM_CHUNK_BYTES = 2 * 1024 * 1024
+
+
 # googlevideo (and other CDN) stream URLs yt-dlp resolves above are signed
 # with the client IP that requested them (an `ip=` param YouTube checks
 # server-side) — always IPv4, since _YTDLP_NETWORK_ARGS forces `-4` on every
@@ -3177,6 +3208,23 @@ async def stream_proxy(
     source = source.lower()
     format = format.lower()
 
+    # The client sends the user's DOWNLOAD format preference here, but live
+    # playback has a much narrower constraint than a download does: a download
+    # can be transcoded server-side and re-tagged, while this hands bytes
+    # straight to AVFoundation. Opus resolves to a WebM container, which
+    # AVFoundation cannot demux at all — the player reported
+    # AVErrorFileFormatNotRecognized (-11828 "Cannot Open") on every attempt.
+    # This file already encodes that knowledge in _RELAY_INCOMPATIBLE_FORMATS
+    # (which lists opus/mp3/flac/wav/best and notes "on-device, AVFoundation
+    # can't demux webm/opus at all"); it simply was never applied to the
+    # streaming path. m4a is YouTube's native itag 140 — AAC in MP4, no
+    # transcode needed and natively playable.
+    if source == "youtube" and format in _RELAY_INCOMPATIBLE_FORMATS:
+        logger.info(
+            "stream_proxy: coercing unplayable stream format %r to m4a for %s", format, id
+        )
+        format = "m4a"
+
     if source in ("soundcloud", "bandcamp"):
         if not url:
             raise HTTPException(status_code=400, detail=f"url parameter required for {source} source")
@@ -3262,15 +3310,110 @@ async def stream_proxy(
     passthrough.setdefault("Accept-Ranges", "bytes")
     media_type = upstream.headers.get("Content-Type") or "audio/mp4"
 
-    def _body():
+    # How much the CDN actually said it would send, so the generator below can
+    # tell "streamed everything" apart from "stopped early".
+    try:
+        expected_bytes = int(passthrough.get("Content-Length") or 0)
+    except ValueError:
+        expected_bytes = 0
+
+    # Where in the file this response starts, so the chunked fetch below can
+    # continue from the right offset. A ranged upstream reply says
+    # "bytes A-B/total"; an unranged one starts at 0.
+    range_start = 0
+    content_range = passthrough.get("Content-Range", "")
+    if content_range.startswith("bytes "):
         try:
-            while True:
-                chunk = upstream.read(65536)
-                if not chunk:
+            range_start = int(content_range.split(" ", 1)[1].split("-", 1)[0])
+        except (IndexError, ValueError):
+            range_start = 0
+    supports_ranges = "bytes" in (upstream.headers.get("Accept-Ranges") or "").lower()
+
+    def _body():
+        streamed = 0
+        started = time.monotonic()
+        error: Optional[str] = None
+        try:
+            if not supports_ranges:
+                # Upstream can't be chunked — read the connection we already
+                # have, the original behaviour.
+                while True:
+                    chunk = upstream.read(65536)
+                    if not chunk:
+                        break
+                    streamed += len(chunk)
+                    yield chunk
+                return
+
+            # CHUNKED RANGED FETCH. googlevideo throttles a single sustained
+            # connection hard but serves ranged requests at full speed — the
+            # same reason yt-dlp ships --http-chunk-size. Measured on this
+            # host, same 4.3MB track, back to back:
+            #
+            #     one long connection      133.1s     32 KB/s
+            #     1MB ranged chunks          1.0s   4047 KB/s
+            #     2MB ranged chunks          0.7s   5614 KB/s
+            #
+            # At 32 KB/s a 4MB track needs longer than the iOS client is
+            # willing to wait — it gave up mid-download ("AVAudioFile open
+            # failed after 113.69s ... The network connection was lost"), fell
+            # back to AVPlayer, and reported a track that never played. The
+            # throttling is per-connection, not per-IP or per-token, so
+            # re-issuing as ranges is the whole fix.
+            upstream.close()  # don't hold the throttled connection open
+            offset = range_start
+            end = range_start + expected_bytes - 1 if expected_bytes else None
+            while end is None or offset <= end:
+                stop = offset + _STREAM_CHUNK_BYTES - 1
+                if end is not None:
+                    stop = min(stop, end)
+                chunk_headers = dict(req_headers)
+                chunk_headers["Range"] = f"bytes={offset}-{stop}"
+                resp = _ipv4_urlopen(
+                    urllib.request.Request(raw_url, headers=chunk_headers), timeout=30
+                )
+                got = 0
+                try:
+                    while True:
+                        piece = resp.read(65536)
+                        if not piece:
+                            break
+                        got += len(piece)
+                        streamed += len(piece)
+                        yield piece
+                finally:
+                    resp.close()
+                if got == 0:
                     break
-                yield chunk
+                offset += got
+        except Exception as exc:                      # noqa: BLE001 - reported below
+            error = f"{type(exc).__name__}: {exc}"
+            raise
         finally:
             upstream.close()
+            elapsed = time.monotonic() - started
+            # A truncated stream is the failure the client cannot describe: it
+            # sees a media file that won't open and reports "Couldn't play",
+            # while the access log here shows a clean 200/206 because the
+            # headers were fine. Only the BODY was short. Logging the byte
+            # count against what the CDN promised is what distinguishes
+            # "YouTube throttled us to nothing" from a bug on this side.
+            truncated = expected_bytes and streamed < expected_bytes
+            if error or truncated:
+                logger.warning(
+                    "stream_proxy body incomplete for %s: %d/%d bytes in %.1fs%s",
+                    cache_key, streamed, expected_bytes, elapsed,
+                    f" ({error})" if error else "",
+                )
+                # A URL that streams nothing is not worth reusing — without
+                # this it stays cached and every retry fails the same way.
+                if streamed == 0:
+                    _STREAM_URL_CACHE.pop(cache_key, None)
+            else:
+                logger.info(
+                    "stream_proxy streamed %d bytes in %.1fs (%.0f KB/s) for %s",
+                    streamed, elapsed, (streamed / 1024) / max(elapsed, 0.001), cache_key,
+                )
 
     return StreamingResponse(_body(), status_code=status_code, headers=passthrough, media_type=media_type)
 
@@ -3550,6 +3693,7 @@ async def _get_raw_url(
         cmd = [
             "yt-dlp",
             *_YTDLP_NETWORK_ARGS,
+            *_YTDLP_STREAM_CLIENT_ARGS,
             "-f", attempt_flag,
             "--get-url",
             "--no-playlist",
