@@ -361,7 +361,9 @@ struct LibraryView: View {
         case .playlists:
             PlaylistsView()
         case .favorites:
-            FavoritesView()
+            // LibraryView already paints the gallery background behind the
+            // whole screen — see `drawsOwnBackground`.
+            FavoritesView(drawsOwnBackground: false)
         case .moods:
             MoodPlaylistsView()
                 .environmentObject(moodService)

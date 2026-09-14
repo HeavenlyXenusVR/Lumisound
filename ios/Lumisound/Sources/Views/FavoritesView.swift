@@ -13,6 +13,21 @@ private enum FavoritesSortOrder: String, CaseIterable {
 // MARK: - FavoritesView
 
 struct FavoritesView: View {
+    /// Whether this instance paints the gallery background itself.
+    ///
+    /// It has to when PUSHED (LibraryHubView's shortcut destination) — a pushed
+    /// view doesn't inherit the root's background and would otherwise sit on
+    /// system black. It must NOT when EMBEDDED as one of `LibraryView`'s tabs,
+    /// because LibraryView already paints one behind the whole screen: two
+    /// instances then lay out independently, the outer spanning the full screen
+    /// and this one only the tab-content area below the header, so the same
+    /// wallpaper rendered twice at two different crops with a hard seam across
+    /// the middle. Favorites was the only one of LibraryView's seven tabs doing
+    /// this — every sibling (Songs, Albums, Folders, Genres, Playlists, Moods)
+    /// already relies on LibraryView's — which is exactly why the split showed
+    /// up on this tab alone.
+    var drawsOwnBackground: Bool = true
+
     @EnvironmentObject private var library: LibraryManager
     @EnvironmentObject private var player: AudioPlayerManager
 
@@ -150,8 +165,14 @@ struct FavoritesView: View {
             }
         }
         // Own gallery/theme background (pushed detail views don't inherit the
-        // root's), so it matches the rest of the app instead of system black.
-        .background(GalleryBackgroundView().ignoresSafeArea())
+        // root's), so it matches the rest of the app instead of system black —
+        // but only when this instance actually owns the screen. See
+        // `drawsOwnBackground`.
+        .background {
+            if drawsOwnBackground {
+                GalleryBackgroundView().ignoresSafeArea()
+            }
+        }
         .navigationTitle("Favorites")
         // Inline, not `.large` — the new hero header carries its own "Favorites"
         // title treatment, so a large nav-bar title on top of it would just

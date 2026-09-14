@@ -107,10 +107,58 @@ struct Song: Identifiable, Hashable, Codable {
         self.queueSource = queueSource
     }
 
+    /// Key used to spot titles that don't actually identify a track — see
+    /// `LibraryManager.ambiguousTitleKeys` and `displayName`.
+    var ambiguityKey: String {
+        "\(title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())|\(artist.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())"
+    }
+
     var displayName: String {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { return trimmed }
-        return url?.deletingPathExtension().lastPathComponent ?? "Unknown Title"
+        if trimmed.isEmpty {
+            return url?.deletingPathExtension().lastPathComponent ?? "Unknown Title"
+        }
+
+        // A title can be present and still tell you nothing. Downloads carry
+        // whatever the source embedded, and for a lot of game-soundtrack
+        // uploads that's the GAME, not the track: 27 tracks in one real library
+        // all embed title "Super Smash Bros. Brawl" by the same uploader, so a
+        // grid of them reads as the same entry repeated over and over with the
+        // actual track name ("Star Wolf", "Rainbow Road", "Corneria") surviving
+        // only in the filename. 527 of 3472 tracks there share a title+artist
+        // with at least one sibling.
+        //
+        // Only tracks that are genuinely indistinguishable get rewritten, which
+        // is what makes this safe: the naive version of this fix — "the title
+        // is the tail of the filename, so use the head" — is WRONG about half
+        // the time, because the two orderings both occur in the wild
+        // ("Menu - Super Smash Bros." wants the head, but
+        // "Portal Soundtrack - You're Not A Good Person" already has the right
+        // title and wants the tail). Ambiguity is the signal that holds; word
+        // order isn't.
+        guard LibraryManager.ambiguousTitleKeys.contains(ambiguityKey),
+              let stem = url?.deletingPathExtension().lastPathComponent
+                  .replacingOccurrences(of: ".opus", with: "")
+                  .replacingOccurrences(of: ".m4a", with: ""),
+              !stem.isEmpty,
+              stem.caseInsensitiveCompare(trimmed) != .orderedSame
+        else { return trimmed }
+
+        // Drop the part the title already says, so "Star Wolf - Super Smash
+        // Bros. Brawl" shows as "Star Wolf" rather than repeating the series.
+        // If the title isn't in the filename at all, the whole stem is still
+        // more informative than a title shared with 26 other tracks.
+        let suffix = " - \(trimmed)"
+        if stem.hasSuffix(suffix) {
+            let head = String(stem.dropLast(suffix.count)).trimmingCharacters(in: .whitespaces)
+            if !head.isEmpty { return head }
+        }
+        let prefix = "\(trimmed) - "
+        if stem.hasPrefix(prefix) {
+            let tail = String(stem.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+            if !tail.isEmpty { return tail }
+        }
+        return stem
     }
 
     var artistName: String {

@@ -12,7 +12,31 @@ struct LibraryScanProgress: Equatable {
 
 @MainActor
 final class LibraryManager: ObservableObject {
-    @Published var allSongs: [Song] = []
+    @Published var allSongs: [Song] = [] {
+        didSet { Self.recomputeAmbiguousTitles(from: allSongs) }
+    }
+
+    /// `Song.ambiguityKey`s (title+artist) shared by more than one track, i.e.
+    /// titles that don't actually identify anything. `Song.displayName` reads
+    /// this to fall back to the filename for exactly those tracks — see its
+    /// doc comment for why ambiguity, rather than filename word order, is the
+    /// signal worth trusting.
+    ///
+    /// `static` because `displayName` is a plain computed property on a value
+    /// type with no library context, matching how `shared` is already exposed
+    /// for other non-view code. Recomputed on assignment rather than lazily so
+    /// no view ever renders against a stale set mid-scan.
+    private(set) static var ambiguousTitleKeys: Set<String> = []
+
+    private static func recomputeAmbiguousTitles(from songs: [Song]) {
+        var seen = Set<String>(minimumCapacity: songs.count)
+        var duplicated = Set<String>()
+        for song in songs where !song.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let key = song.ambiguityKey
+            if !seen.insert(key).inserted { duplicated.insert(key) }
+        }
+        ambiguousTitleKeys = duplicated
+    }
     @Published var artists: [String] = []
     @Published var albums: [String] = []
     @Published var genres: [String] = []

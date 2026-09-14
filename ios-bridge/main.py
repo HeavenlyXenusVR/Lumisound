@@ -952,6 +952,21 @@ def _cache_set(key: str, data: list[dict]) -> None:
 # ---------------------------------------------------------------------------
 
 
+# Recognised HTTP auth schemes. Anything else in that position is treated as
+# a credential that was sent without its scheme, and is never echoed back.
+_KNOWN_AUTH_SCHEMES = frozenset({"bearer", "basic", "digest", "token", "apikey"})
+
+
+def _describe_auth_scheme(header: str) -> Optional[str]:
+    """The scheme word of an Authorization header, for telemetry — redacted
+    unless it's a known scheme, since an unrecognised value is the credential
+    itself (see the stream_proxy_auth_rejected call site)."""
+    if not header:
+        return None
+    first = header.split(" ", 1)[0]
+    return first if first.lower() in _KNOWN_AUTH_SCHEMES else "malformed"
+
+
 async def check_auth(request: Request) -> None:
     """If IOS_BRIDGE_API_KEY is set, require a matching Bearer token."""
     if not API_KEY:
@@ -3129,7 +3144,36 @@ async def stream_proxy(
     "Play sends no temp file" bug. Re-streaming here keeps the fetch on the
     extracting IP. Range requests are passed through so the player can seek and
     buffer progressively."""
-    await check_auth(request)
+    # Auth rejections here are reported, not just raised. A malformed or
+    # missing Authorization header makes EVERY streamed track fail, and the
+    # client can only surface it as a generic "Couldn't play this track" —
+    # exactly what happened when the app sent a bare API key without the
+    # "Bearer " prefix that check_auth requires: 100% of streams 401'd, and
+    # neither side recorded anything naming the cause. The client log said
+    # "skipping", the access log said 401, and nothing joined them up.
+    try:
+        await check_auth(request)
+    except HTTPException as exc:
+        asyncio.create_task(log_event(
+            "streaming", "stream_proxy_auth_rejected", level="error",
+            message=str(exc.detail),
+            detail={
+                "source": source,
+                "status_code": exc.status_code,
+                # Distinguishes "sent nothing" from "sent the wrong shape" —
+                # the two have completely different fixes.
+                "had_auth_header": bool(request.headers.get("Authorization")),
+                # The scheme word ONLY, and only when it's a recognised one.
+                # The whole point of this field is spotting a client that sent
+                # its credential where the scheme belongs — which means the
+                # unrecognised value here IS the credential, and echoing it
+                # would write a working API key into the event log in plain
+                # text. "malformed" says everything needed to diagnose it
+                # without storing the secret.
+                "auth_scheme": _describe_auth_scheme(request.headers.get("Authorization", "")),
+            },
+        ))
+        raise
     source = source.lower()
     format = format.lower()
 
@@ -3197,6 +3241,16 @@ async def stream_proxy(
         # A cached URL may have expired early — drop it so the next try re-extracts.
         _STREAM_URL_CACHE.pop(cache_key, None)
         logger.warning("stream_proxy upstream open failed for %s: %s", cache_key, exc)
+        # Structured telemetry, not just a local log line. Resolution already
+        # reported success/failure above, which made this stage a blind spot:
+        # a track whose URL resolved fine but whose CDN fetch then failed
+        # (expired URL, 403, upstream timeout) looked like a clean success
+        # server-side while the client showed "Couldn't play — skipping".
+        asyncio.create_task(_log_stream_attempt(
+            user_id=user_id, source=source, source_id=id, title=None,
+            status="failed", error_message=f"upstream fetch: {exc}",
+            duration_ms=int((time.monotonic() - proxy_resolve_start) * 1000),
+        ))
         raise HTTPException(status_code=502, detail="Upstream stream fetch failed")
 
     status_code = upstream.getcode() or 200

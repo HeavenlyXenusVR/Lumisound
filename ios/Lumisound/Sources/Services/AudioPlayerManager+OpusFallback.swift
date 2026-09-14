@@ -238,6 +238,38 @@ extension AudioPlayerManager {
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     let detail = Self.describeLoadError(item.error)
+                    // Telemetry, not just a local log line. A streaming failure
+                    // is invisible from the outside — the user sees a toast
+                    // saying a track was skipped and nothing that says why, and
+                    // `appWarn`/`appLog` only reach ios_app_logs as free text
+                    // that has to be grepped. Structured fields here mean the
+                    // failure is queryable by cause: an auth rejection
+                    // (NSURLErrorUserAuthenticationRequired, -1013) looks
+                    // nothing like an expired CDN URL or a dead video, but all
+                    // three previously surfaced as the same "Couldn't play"
+                    // toast. The bug that prompted this — the stream proxy's
+                    // Authorization header missing its "Bearer " prefix, so
+                    // EVERY streamed track 401'd — would have been obvious
+                    // immediately from an errorCode breakdown.
+                    let nsError = item.error as NSError?
+                    RemoteLogger.logError(
+                        category: "streaming",
+                        event: "stream_load_failed",
+                        message: detail,
+                        detail: [
+                            "errorDomain": nsError?.domain ?? "unknown",
+                            "errorCode": nsError?.code ?? 0,
+                            // Whether the player was pointed at the bridge's
+                            // own proxy or a direct CDN URL — the two fail for
+                            // completely different reasons.
+                            "viaProxy": url.path.contains("/api/stream/proxy"),
+                            "isRemote": !url.isFileURL,
+                            // Was an auth header attached at all? Distinguishes
+                            // "we sent nothing" from "what we sent was rejected".
+                            "hadAuthHeader": self.currentSong?.httpHeaders?["Authorization"] != nil,
+                            "consecutiveFailures": self.recentLoadFailureTimestamps.count + 1,
+                        ]
+                    )
                     self.handleLoadFailure(
                         message: "AVPlayer failed to load track — skipping. \(detail)",
                         userFacingMessage: "Could not play this track.",
