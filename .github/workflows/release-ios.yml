@@ -285,6 +285,18 @@ jobs:
           VERSION_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           DOWNLOAD_URL="https://github.com/HeavenlyXenusVR/Lumisound/releases/download/ios%2Fv${VERSION}/${IPA_NAME}"
           IPA_SIZE=$(stat -f%z "ios/build/$IPA_NAME")
+          # Read from project.yml rather than hardcoding. This was pinned at
+          # "16.0" and kept publishing that long after the deployment target
+          # was raised to iOS 26 (5a11033, 2026-08-27), so AltStore advertised
+          # 38 releases as installable on iOS 16 devices that cannot run them —
+          # the install just fails. Deriving it means the two can never drift
+          # apart again.
+          MIN_OS=$(grep 'IPHONEOS_DEPLOYMENT_TARGET' ios/project.yml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          if [ -z "$MIN_OS" ]; then
+            echo "Could not read IPHONEOS_DEPLOYMENT_TARGET from ios/project.yml" >&2
+            exit 1
+          fi
+          echo "minOSVersion for this release: $MIN_OS"
 
           python3 - <<EOF
           import json, sys
@@ -300,7 +312,7 @@ jobs:
               "downloadURL": "$DOWNLOAD_URL",
               "localizedDescription": "See release notes on GitHub.",
               "size": $IPA_SIZE,
-              "minOSVersion": "16.0"
+              "minOSVersion": "$MIN_OS"
           }
 
           existing = [v for v in app.get("versions", []) if v.get("version") != "$VERSION"]
