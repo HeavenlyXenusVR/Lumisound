@@ -77,6 +77,23 @@ services:
       # when distributing a true App Store build.
       - APNS_USE_SANDBOX=${APNS_USE_SANDBOX:-1}
       - IOS_BRIDGE_API_KEY=${IOS_BRIDGE_API_KEY:-}
+      # Discord OAuth — powers BOTH "Continue with Discord" on the login
+      # screen (/auth/discord/start) and linking Discord to an existing
+      # account (/api/discord/oauth/start). main.py reads all three and
+      # returns 503 "Discord sign-in isn't configured on this server yet"
+      # unless every one is non-empty.
+      #
+      # These were never passed through to the container at all, so the
+      # feature could not be enabled no matter what was put in .env — the
+      # code, the UI button and the error message all existed while the one
+      # thing that would switch it on had no way in.
+      #
+      # The redirect URI must ALSO be registered, byte-identical, under
+      # OAuth2 → Redirects for this application in the Discord Developer
+      # Portal; Discord rejects the authorize request outright otherwise.
+      - DISCORD_OAUTH_CLIENT_ID=${DISCORD_OAUTH_CLIENT_ID:-}
+      - DISCORD_OAUTH_CLIENT_SECRET=${DISCORD_OAUTH_CLIENT_SECRET:-}
+      - DISCORD_OAUTH_REDIRECT_URI=${DISCORD_OAUTH_REDIRECT_URI:-}
       # Optional: Gemini API key (aistudio.google.com). When set, powers
       # the opt-in "AI-assisted suggestions" feature (see intelligence.py) —
       # metadata disambiguation today, EQ/duplicate/mix suggestions planned.
