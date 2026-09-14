@@ -492,10 +492,34 @@ final class TVBridgeClient: ObservableObject {
                 tvWarn("Request failed", category: "network", extra: [
                     "path": request.url?.path ?? "?", "status": "\(http.statusCode)",
                 ])
+                // Also reported remotely, not just to the local console.
+                // `tvWarn` only reaches this box's own log buffer, which is
+                // unreadable without the Apple TV in front of you — which is
+                // exactly the situation every tvOS bug in this project has been
+                // investigated from. Since every GET in this file funnels
+                // through here, one call covers ~15 call sites, and the path +
+                // status together identify almost any tvOS-side API failure
+                // (401 = token never attached, 404 = wrong path, 5xx = bridge).
+                TVRemoteLogger.logError(
+                    category: "network", event: "request_failed",
+                    message: "HTTP \(http.statusCode) \(request.url?.path ?? "?")",
+                    detail: ["path": request.url?.path ?? "?",
+                             "status": http.statusCode,
+                             "method": request.httpMethod ?? "GET",
+                             "hadAuthHeader": request.value(forHTTPHeaderField: "Authorization") != nil]
+                )
             }
             return (data, response)
         } catch {
             if retries > 0 { return try await dataWithRetry(request, retries: retries - 1) }
+            let ns = error as NSError
+            TVRemoteLogger.logError(
+                category: "network", event: "request_failed_after_retries",
+                message: error.localizedDescription,
+                detail: ["path": request.url?.path ?? "?",
+                         "errorDomain": ns.domain, "errorCode": ns.code,
+                         "method": request.httpMethod ?? "GET"]
+            )
             tvError("Request failed after retries: \(error.localizedDescription)", category: "network", extra: [
                 "path": request.url?.path ?? "?",
             ])

@@ -63,6 +63,22 @@ struct TVAuthImage<Placeholder: View>: View {
             // (e.g. the previous track's art, or the placeholder) rather
             // than clearing it; a blank frame is a worse failure mode than a
             // stale-for-a-moment one.
+            //
+            // Reported once per load (not per attempt) with the status code,
+            // because silently keeping the old frame is exactly why "locked
+            // tracks have no artwork" produced no evidence anywhere: the UI
+            // degrades gracefully and the failure left no trace at all. 404
+            // here means the server has no stored thumbnail for a locked
+            // track — it cannot extract one from locked bytes, so a
+            // pre-uploaded thumbnail is its only source.
+            TVRemoteLogger.logError(
+                category: "artwork", event: "artwork_load_failed",
+                message: "HTTP \(lastStatus)",
+                detail: ["status": lastStatus, "url": url.path,
+                         "isUserMusic": url.path.contains("/user/music/artwork"),
+                         "hadToken": token != nil],
+                authToken: token
+            )
             return
         }
 
@@ -78,6 +94,12 @@ struct TVAuthImage<Placeholder: View>: View {
         showIncoming = false
     }
 
+    /// Status of the most recent `fetch` — surfaced so `load` can report WHY
+    /// artwork is missing rather than just that it is. -1 means the request
+    /// never produced an HTTP response (offline/cancelled); -2 means it
+    /// returned bytes that weren't a decodable image.
+    private var lastStatus: Int = -1
+
     private func fetch(_ url: URL, afterDelayNanoseconds delay: UInt64? = nil) async -> UIImage? {
         if let delay {
             try? await Task.sleep(nanoseconds: delay)
@@ -85,10 +107,20 @@ struct TVAuthImage<Placeholder: View>: View {
         }
         var req = URLRequest(url: url)
         if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
-        guard let (data, response) = try? await URLSession.shared.data(for: req),
-              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-              let ui = UIImage(data: data)
-        else { return nil }
+        guard let (data, response) = try? await URLSession.shared.data(for: req) else {
+            lastStatus = -1
+            return nil
+        }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        guard (200..<300).contains(status) else {
+            lastStatus = status
+            return nil
+        }
+        guard let ui = UIImage(data: data) else {
+            lastStatus = -2
+            return nil
+        }
+        lastStatus = status
         return ui
     }
 }

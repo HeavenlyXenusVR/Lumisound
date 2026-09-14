@@ -48,15 +48,27 @@ enum TVRemoteLogger {
         let base = TVBridgeClient.shared.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: base + "/api/log-event") else { return }
 
-        var payload: [String: Any] = [
+        // Stamp EVERY event with platform + build, merged into `detail`.
+        //
+        // The bridge records `/api/log-event` with source="ios_client"
+        // regardless of who sent it, and the event log has no device column,
+        // so tvOS events were previously indistinguishable from iPhone ones —
+        // a query for "what is the Apple TV doing" could not be written at
+        // all. Stamping here rather than at the ~20 call sites means it
+        // cannot be forgotten on a new one.
+        var enriched = detail ?? [:]
+        enriched["platform"] = "tvos"
+        enriched["appVersion"] = TVDeviceInfo.appVersion
+        enriched["tvosVersion"] = TVDeviceInfo.osVersion
+        enriched["deviceModel"] = TVDeviceInfo.modelIdentifier
+
+        let payload: [String: Any] = [
             "category": category,
             "event": event,
             "level": level,
             "message": message,
+            "detail": enriched,
         ]
-        if let detail {
-            payload["detail"] = detail
-        }
         guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return }
 
         var request = URLRequest(url: url, timeoutInterval: 10)

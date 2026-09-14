@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 // MARK: - LumisoundThumbnailBackfillService
@@ -16,7 +17,14 @@ import Foundation
 // ever revisits an already-completed upload.
 @MainActor
 enum LumisoundThumbnailBackfillService {
-    private static let backfilledIDsKey = "thumbnailBackfill.completedSongIDs"
+    /// v2: the previous pass marked a track "done" whenever it had no embedded
+    /// JPEG — which, for an Opus library, was every single track (they carry a
+    /// thumbnail URL instead). That set therefore records thousands of tracks
+    /// as backfilled which never had anything uploaded for them, and without a
+    /// new key the URL fallback above would never get to look at any of them.
+    /// Re-running costs one metadata read plus one image fetch per track,
+    /// spread 20 at a time across foreground passes.
+    private static let backfilledIDsKey = "thumbnailBackfill.completedSongIDs.v2"
     /// Caps real per-pass work (an AVAsset metadata load + a network
     /// upload per track) — this runs on the same 5-minute foreground loop
     /// as the rest of LumisoundTrackVaultService's migrations, so a
@@ -62,8 +70,35 @@ enum LumisoundThumbnailBackfillService {
                 backfilledIDs.insert(song.id)  // genuinely nothing to backfill
                 continue
             }
-            guard let jpeg = await LumisoundExclusiveExtensionService.embeddedThumbnailJPEGData(fileURL: url) else {
-                backfilledIDs.insert(song.id)  // no local thumbnail to extract either
+            // Embedded JPEG bytes first, then the embedded thumbnail URL.
+            //
+            // The URL fallback is what actually carries this library: tracks
+            // downloaded as Opus have NO embedded picture at all — they carry a
+            // `LUMISOUND_THUMBNAIL` tag holding the source thumbnail's URL
+            // (e.g. https://i.ytimg.com/vi/<id>/maxresdefault.jpg) instead.
+            // Verified against the real cloud library: every locked track
+            // sampled had that tag and no picture data.
+            //
+            // With only the JPEG path, `embeddedThumbnailJPEGData` correctly
+            // returned nil for all of them and this loop marked each one
+            // backfilled and moved on — so nothing was ever uploaded. Measured
+            // server-side: 0 stored thumbnails against 3465 locked tracks, and
+            // 0 artwork-upload requests ever received, while the client had
+            // logged "processed 20 track(s)" 347 times. That is why locked
+            // tracks show no artwork on tvOS, which has no other source for it:
+            // the server cannot extract art from locked bytes itself, so a
+            // pre-uploaded thumbnail is the ONLY thing `/user/music/artwork`
+            // can serve for them.
+            //
+            // ArtworkService already resolves this same tag for local display
+            // (its "recovered embedded LUMISOUND_THUMBNAIL" path); this makes
+            // the backfill agree with it rather than giving up one step early.
+            var jpeg = await LumisoundExclusiveExtensionService.embeddedThumbnailJPEGData(fileURL: url)
+            if jpeg == nil {
+                jpeg = await Self.thumbnailDataFromEmbeddedURL(fileURL: url)
+            }
+            guard let jpeg else {
+                backfilledIDs.insert(song.id)  // genuinely no artwork of any kind
                 continue
             }
             do {
@@ -78,5 +113,35 @@ enum LumisoundThumbnailBackfillService {
         if processed > 0 {
             appLog("LumisoundThumbnailBackfillService: processed \(processed) track(s)", category: "network")
         }
+    }
+
+    /// Resolves a track's `LUMISOUND_THUMBNAIL` tag (a URL, not image bytes)
+    /// and downloads it. Mirrors `ArtworkService.fetchEmbeddedThumbnailURL` —
+    /// the tag surfaces under either the identifier or the key depending on
+    /// container, so both are checked.
+    ///
+    /// The file is unlocked first: a `.lms` track's bytes are XOR-masked and
+    /// AVURLAsset can't read metadata off them directly.
+    private static func thumbnailDataFromEmbeddedURL(fileURL: URL) async -> Data? {
+        let readableURL = LumisoundExclusiveExtensionService.playableURL(for: fileURL)
+        let remoteURL: URL? = await Task.detached(priority: .utility) {
+            let asset = AVURLAsset(url: readableURL)
+            guard let allMeta = try? await asset.load(.metadata) else { return nil as URL? }
+            for item in allMeta {
+                let idRaw = item.identifier?.rawValue.lowercased() ?? ""
+                let keyRaw = (item.key as? String)?.lowercased() ?? ""
+                guard idRaw.contains("lumisound_thumbnail") || keyRaw.contains("lumisound_thumbnail") else { continue }
+                if let value = try? await item.load(.stringValue), let url = URL(string: value) {
+                    return url
+                }
+            }
+            return nil as URL?
+        }.value
+        guard let remoteURL else { return nil }
+        guard let (data, response) = try? await URLSession.shared.data(from: remoteURL),
+              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+              !data.isEmpty
+        else { return nil }
+        return data
     }
 }

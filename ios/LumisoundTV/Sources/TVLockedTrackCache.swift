@@ -62,6 +62,9 @@ actor TVLockedTrackCache {
         // Guard against a zero-byte leftover from an interrupted previous
         // write (e.g. the app was killed mid-unlock) being trusted as valid.
         if let size = try? fm.attributesOfItem(atPath: outURL.path)[.size] as? Int, size > 0 {
+            TVRemoteLogger.log(category: "playback", event: "locked_track_cache_hit",
+                               detail: ["title": item.title, "ext": realExt, "bytes": size],
+                               authToken: item.authToken)
             return outURL
         }
 
@@ -74,13 +77,31 @@ actor TVLockedTrackCache {
         let data: Data
         do {
             let (responseData, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-                tvWarn("TVLockedTrackCache: bad response fetching \(item.title)", category: "playback")
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            guard (200..<300).contains(status) else {
+                tvWarn("TVLockedTrackCache: bad response (\(status)) fetching \(item.title)", category: "playback")
+                // The status code is the whole diagnosis here and the old
+                // warning threw it away: 401 means the account token never
+                // reached the request, 404 means the cloud path is wrong, 5xx
+                // means the bridge failed — three different bugs that all
+                // surfaced as a track that simply refused to play.
+                TVRemoteLogger.logError(category: "playback", event: "locked_track_fetch_failed",
+                                        message: "HTTP \(status)",
+                                        detail: ["title": item.title, "status": status,
+                                                 "hadAuthToken": item.authToken != nil,
+                                                 "url": item.streamURL.path],
+                                        authToken: item.authToken)
                 return nil
             }
             data = responseData
         } catch {
             tvWarn("TVLockedTrackCache: download failed for \(item.title): \(error.localizedDescription)", category: "playback")
+            let ns = error as NSError
+            TVRemoteLogger.logError(category: "playback", event: "locked_track_download_failed",
+                                    message: error.localizedDescription,
+                                    detail: ["title": item.title, "errorDomain": ns.domain,
+                                             "errorCode": ns.code, "hadAuthToken": item.authToken != nil],
+                                    authToken: item.authToken)
             return nil
         }
 
@@ -90,12 +111,32 @@ actor TVLockedTrackCache {
             try data.write(to: lockedTempURL, options: .atomic)
         } catch {
             tvWarn("TVLockedTrackCache: write failed for \(item.title): \(error.localizedDescription)", category: "playback")
+            TVRemoteLogger.logError(category: "playback", event: "locked_track_write_failed",
+                                    message: error.localizedDescription,
+                                    detail: ["title": item.title, "bytes": data.count],
+                                    authToken: item.authToken)
             return nil
         }
         guard TVLockFormat.unlock(lockedURL: lockedTempURL, to: outURL) else {
             tvWarn("TVLockedTrackCache: unlock failed for \(item.title)", category: "playback")
+            // Unlock failing on bytes that downloaded fine means the payload
+            // wasn't actually a locked container — e.g. the bridge served an
+            // error page, or the file was stored unlocked. Recording the first
+            // bytes' shape distinguishes those without logging audio content.
+            let head = (try? Data(contentsOf: lockedTempURL, options: .mappedIfSafe).prefix(8)) ?? Data()
+            TVRemoteLogger.logError(category: "playback", event: "locked_track_unlock_failed",
+                                    message: "TVLockFormat.unlock returned false",
+                                    detail: ["title": item.title, "bytes": data.count,
+                                             "looksLocked": head.starts(with: Array("LMSLOCK1".utf8)),
+                                             "ext": realExt],
+                                    authToken: item.authToken)
             return nil
         }
+        let outSize = (try? fm.attributesOfItem(atPath: outURL.path)[.size] as? Int) ?? 0
+        TVRemoteLogger.log(category: "playback", event: "locked_track_ready",
+                           detail: ["title": item.title, "ext": realExt,
+                                    "downloadedBytes": data.count, "unlockedBytes": outSize],
+                           authToken: item.authToken)
         return outURL
     }
 }
