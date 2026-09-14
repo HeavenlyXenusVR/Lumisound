@@ -61,6 +61,26 @@ extension View {
         }
     }
 
+    /// Tinted Liquid Glass that is deliberately NOT `.interactive()` — for
+    /// surfaces that carry a colour identity but aren't themselves a control,
+    /// specifically Settings' per-section row backgrounds.
+    ///
+    /// Needed as its own overload because neither existing pair fits: the
+    /// untinted ones apply only `GlassSettings`' global user tint, so routing a
+    /// per-section colour through their `fallback:` would silently drop it
+    /// (this app's deployment target is iOS 26, so the fallback branch is
+    /// unreachable and a colour passed there renders never) — and the
+    /// `tint:`-labelled ones add `.interactive()`, whose press-response
+    /// behaviour is wrong under a row that is often just a toggle or a slider.
+    @ViewBuilder
+    func adaptiveGlass<S: Shape, F: ShapeStyle>(sectionTint: Color, in shape: S, fallback: F) -> some View {
+        if #available(iOS 26.0, *) {
+            self.background(glassTintLayer(in: shape)).glassEffect(.regular.tint(sectionTint), in: shape)
+        } else {
+            self.background(glassTintLayer(in: shape)).background(fallback.opacity(GlassSettings.shared.translucency), in: shape)
+        }
+    }
+
     /// Applies a tinted, interactive Liquid Glass effect on iOS 26+ (for
     /// tappable floating controls), falling back to the given `Material`.
     @ViewBuilder

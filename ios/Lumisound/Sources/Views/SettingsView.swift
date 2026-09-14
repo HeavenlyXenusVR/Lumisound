@@ -22,6 +22,16 @@ struct SettingsView: View {
     /// and the master toggle inside `NotificationsSettingsView`.
     @ObservedObject var notificationService = NotificationService.shared
 
+    /// Observed purely so this screen re-renders when the user changes tint or
+    /// translucency in Appearance → Liquid Glass. `adaptiveGlass` reads
+    /// `GlassSettings.shared` at render time without subscribing to it (see
+    /// GlassSettings' own "picks up changes on its next redraw" note), which is
+    /// fine for surfaces the user isn't looking at — but Liquid Glass is
+    /// configured *from inside this very screen*, so without this the row and
+    /// picker chrome behind the settings UI would only catch up on a later
+    /// unrelated redraw.
+    @ObservedObject var glassSettings = GlassSettings.shared
+
     @State var showLogin = false
 
     /// Shared with `ContentView`, which hides the floating Car Mode button and
@@ -180,6 +190,21 @@ struct SettingsView: View {
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
             }
+            // Clearance for ContentView's floating CustomTabBar. Every other
+            // screen gets this for free from its own
+            // `.safeAreaInset(edge: .bottom) { MiniPlayerBar() }`, whose body
+            // reserves `CustomTabBar.totalHeight` unconditionally — but
+            // Settings deliberately shows no mini player (see ContentView's
+            // "No MiniPlayerBar here" note), and so ended up with no bottom
+            // clearance at all: its last rows scrolled underneath the bar and
+            // kept going to the physical screen edge. That was survivable
+            // while the bar was opaque; with it now being glass, the text
+            // behind it is half-legible through the blur, which reads as a
+            // rendering fault. A bare spacer reserves exactly the same height
+            // without reinstating the mini player this tab has never shown.
+            .safeAreaInset(edge: .bottom) {
+                Color.clear.frame(height: CustomTabBar.totalHeight)
+            }
             .background(GalleryBackgroundView().ignoresSafeArea())
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.large)
@@ -200,36 +225,85 @@ struct SettingsView: View {
     }
 
     /// Horizontal, scrollable category selector pinned under the title.
-    /// Redesigned: each tab carries its own color (`SettingsTab.tint`) that
-    /// tints its icon even while unselected, and the selected pill's
-    /// background slides between tabs via `matchedGeometryEffect` (one
-    /// shared shape sliding to a new position) instead of each button
-    /// independently swapping its own fill color — a more deliberate,
-    /// "designed" transition than a flat capsule popping in and out.
+    /// Each tab carries its own color (`SettingsTab.tint`) that tints its icon
+    /// even while unselected, and the selected pill is a single Liquid Glass
+    /// shape that morphs between tab positions — see the `glassEffectID` /
+    /// `GlassEffectContainer` pair below, which replaced the original
+    /// `matchedGeometryEffect` for the reasons CustomTabBar documents.
     var tabPicker: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(SettingsTab.allCases) { tab in
-                    Button {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { selectedTab = tab }
-                    } label: {
-                        Label(tab.rawValue, systemImage: tab.icon)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(selectedTab == tab ? .white : tab.tint)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .background {
-                                if selectedTab == tab {
-                                    Capsule()
-                                        .fill(tab.tint.gradient)
-                                        .matchedGeometryEffect(id: "settingsTabIndicator", in: tabIndicatorNamespace)
-                                } else {
-                                    Capsule()
-                                        .fill(tab.tint.opacity(0.14))
+            // Every selected-pill instance shares one `glassEffectID` (above),
+            // which only produces a true morph while those instances render
+            // inside a single shared container — same requirement, and same
+            // 8pt spacing, as CustomTabBar's own `tabListContent`.
+            GlassEffectContainer(spacing: 8) {
+                HStack(spacing: 6) {
+                    ForEach(SettingsTab.allCases) { tab in
+                        Button {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { selectedTab = tab }
+                        } label: {
+                            Label(tab.rawValue, systemImage: tab.icon)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(selectedTab == tab ? .white : tab.tint)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                // Liquid Glass, matching the navbar's own capsule
+                                // (CustomTabBar uses `adaptiveGlass(in: Capsule())`)
+                                // — these two capsule rows are the chrome bracketing
+                                // every Settings screen, so a flat-filled picker
+                                // above a glass navbar was the most visible
+                                // inconsistency left here.
+                                //
+                                // The selected pill keeps its per-tab colour via the
+                                // glass *tint* rather than an opaque fill, and
+                                // carries `glassEffectID` — NOT `matchedGeometryEffect`
+                                // — for exactly the reason CustomTabBar's own
+                                // `selectedTabPill` documents: inside the shared
+                                // `GlassEffectContainer` below, one continuous glass
+                                // shape glides and reshapes between tabs, instead of
+                                // two independently-rendered glass capsules whose
+                                // frames `matchedGeometryEffect` merely resizes
+                                // between. Getting this wrong is the difference
+                                // between real Liquid Glass and a resizing blob.
+                                .background {
+                                    if selectedTab == tab {
+                                        Color.clear
+                                            // .opacity(0.5) on the tint matches
+                                            // CustomTabBar's own selected pill —
+                                            // a full-strength tint on glass reads
+                                            // as an opaque colour chip rather than
+                                            // as tinted glass.
+                                            .adaptiveGlass(
+                                                tint: tab.tint.opacity(0.5),
+                                                in: Capsule(),
+                                                fallback: tab.tint.gradient
+                                            )
+                                            .glassEffectID("settingsTabIndicator", in: tabIndicatorNamespace)
+                                            // Backstop animation tied to the same
+                                            // state the pill's presence depends on —
+                                            // the morph only animates inside an
+                                            // active transaction, same as the navbar's.
+                                            .animation(.spring(response: 0.35, dampingFraction: 0.8), value: selectedTab)
+                                    } else {
+                                        Color.clear
+                                            // `sectionTint:`, not `fallback:` —
+                                            // the fallback branch is unreachable
+                                            // on this deployment target, so a
+                                            // colour passed there would leave
+                                            // every unselected pill identical
+                                            // grey glass and erase the per-tab
+                                            // colour coding this picker is built
+                                            // around.
+                                            .adaptiveGlass(
+                                                sectionTint: tab.tint.opacity(0.22),
+                                                in: Capsule(),
+                                                fallback: tab.tint.opacity(0.14)
+                                            )
+                                    }
                                 }
-                            }
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, 16)

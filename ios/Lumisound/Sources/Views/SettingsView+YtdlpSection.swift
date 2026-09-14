@@ -65,6 +65,14 @@ extension SettingsView {
                     Label("Audio Format", systemImage: "waveform")
                         .foregroundStyle(AppTheme.textPrimary)
                     Spacer()
+                    // `.labelsHidden()` because the row already draws its own
+                    // `Label` above — a `.menu` picker in a List renders its
+                    // title too, so this row read "Audio Format  Audio Format"
+                    // with the real value pushed to the far edge. Every other
+                    // picker row in Settings (Fade Curve, Scan on Launch, …)
+                    // avoids this by passing an empty title; hiding the label
+                    // instead fixes the duplicate the same way while keeping a
+                    // real accessibility label on the control.
                     Picker("Audio Format", selection: Binding(
                         get: { streaming.preferredFormat },
                         set: { streaming.preferredFormat = $0 }
@@ -73,6 +81,7 @@ extension SettingsView {
                             Text(fmt.label).tag(fmt.value)
                         }
                     }
+                    .labelsHidden()
                     .pickerStyle(.menu)
                     .tint(.gray)
                 }
