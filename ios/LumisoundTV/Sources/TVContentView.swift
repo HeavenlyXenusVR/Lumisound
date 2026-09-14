@@ -180,6 +180,17 @@ struct TVAccountView: View {
             HStack(alignment: .top, spacing: 60) {
                 profileCard
                     .frame(width: 420)
+                    // `.focusSection()` makes this column a first-class target
+                    // for directional focus. Sign Out is the ONLY focusable
+                    // control in it, sits below a Spacer, and is much shorter
+                    // than the tall right-hand column — the combination the
+                    // tvOS focus engine is most likely to skip past when
+                    // moving left, which leaves the button visible but
+                    // unreachable. That matters more than usual here because
+                    // Sign Out is the escape hatch from a bad restored
+                    // session, so being unable to reach it means being unable
+                    // to sign into the right account at all.
+                    .focusSection()
 
                 VStack(alignment: .leading, spacing: 30) {
                     TVSectionHeader(title: "Account")

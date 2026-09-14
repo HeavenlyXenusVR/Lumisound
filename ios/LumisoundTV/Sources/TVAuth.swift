@@ -100,6 +100,55 @@ final class TVAccount: ObservableObject {
         }
     }
 
+    /// Checks the restored token against the bridge and signs out if it's no
+    /// longer valid.
+    ///
+    /// On tvOS the Keychain SURVIVES deleting and reinstalling the app (unlike
+    /// UserDefaults and the app container), so a fresh install silently comes
+    /// back signed in with whatever token was last stored — possibly from a
+    /// different account, a revoked session, or a token the server no longer
+    /// honours. Nothing validated it: `init()` restored it and the app went
+    /// straight to the signed-in UI, so a dead token left the app stuck
+    /// "logged in" with every request failing and no obvious way to get to a
+    /// login screen.
+    ///
+    /// It also restores the display name, which a reinstall DOES lose (that
+    /// lives in UserDefaults), so the profile card stops showing a generic
+    /// "Signed in" for an account it can't name.
+    ///
+    /// Only a definitive 401/403 signs out. A network error or a 5xx leaves
+    /// the session alone — being logged out because the TV was offline at
+    /// launch, or because the bridge was briefly restarting, would be a much
+    /// worse failure than a stale name.
+    func validateRestoredSession() async {
+        guard let token else { return }
+        guard let url = URL(string: baseURL + "/auth/sessions") else { return }
+        var request = URLRequest(url: url, timeoutInterval: 15)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        guard let (_, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse
+        else {
+            tvWarn("Session validation skipped — bridge unreachable", category: "auth")
+            return
+        }
+
+        if http.statusCode == 401 || http.statusCode == 403 {
+            tvWarn("Restored session rejected (\(http.statusCode)) — signing out", category: "auth")
+            TVRemoteLogger.logError(
+                category: "auth", event: "restored_session_invalid",
+                message: "HTTP \(http.statusCode)",
+                detail: ["status": http.statusCode, "hadStoredUser": user != nil],
+                authToken: token
+            )
+            logout()
+            return
+        }
+
+        TVRemoteLogger.log(category: "auth", event: "restored_session_valid",
+                           detail: ["hadStoredUser": user != nil], authToken: token)
+    }
+
     func logout() {
         // Snapshot before clearing — the remote event's network call runs on
         // a later run-loop turn, after `token` below is already nil, so

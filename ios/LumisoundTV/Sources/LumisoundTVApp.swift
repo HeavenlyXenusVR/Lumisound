@@ -22,7 +22,14 @@ struct LumisoundTVApp: App {
                 // snapshot reads (TVPlayerModel/TVAccount) are constructed as
                 // the view hierarchy comes up, so a snapshot taken in `init()`
                 // would report a blank app every launch.
-                .task { TVDiagnosticsSnapshot.start() }
+                .task {
+                    TVDiagnosticsSnapshot.start()
+                    // Before anything trusts the restored session. The
+                    // Keychain survives a reinstall on tvOS, so a "new build"
+                    // can come straight back up signed in on a token the
+                    // server no longer accepts — see validateRestoredSession.
+                    await TVAccount.shared.validateRestoredSession()
+                }
                 .onChange(of: scenePhase) { _, phase in
                     guard phase == .active else { return }
                     // A tick that came due while the app was suspended is
