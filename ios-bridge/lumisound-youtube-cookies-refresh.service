@@ -1,9 +1,31 @@
 [Unit]
 Description=Refresh Lumisound's host-side YouTube cookies
+# The .path unit triggers on the `.cookies_stale` sentinel, which the script
+# only removes once it has actually installed a validated jar. When there is
+# nothing to adopt yet (no fresh export in the inbox) the sentinel correctly
+# stays put — but systemd re-activates a PathExists unit as soon as the
+# triggered service finishes while the condition still holds, so without a
+# rate limit that pairing spins. Three starts per 5 minutes is plenty for a
+# refresh whose other trigger is a 6-hourly timer, and a hit limit just pauses
+# the unit rather than losing the sentinel.
+StartLimitIntervalSec=300
+StartLimitBurst=3
 
 [Service]
 Type=oneshot
+# A systemd user service starts with a minimal PATH that does NOT include
+# ~/.local/bin, which is where yt-dlp is installed on this host — so the script
+# exited 2 ("yt-dlp is required on the host") every single run even though
+# yt-dlp works fine in an interactive shell. ffmpeg/ffprobe are resolved off
+# this PATH too. EnvironmentFile is read after this, so YTDLP_BIN set there
+# still wins.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=-%h/.config/lumisound-youtube-cookies.env
-# Copy this repository's refresh_youtube_cookies.sh to the path below, or
-# change ExecStart to the checkout path before enabling the unit.
-ExecStart=%h/.local/bin/lumisound-refresh-youtube-cookies
+# Runs the script straight out of the checkout rather than a copy in
+# ~/.local/bin. The previous ExecStart pointed at
+# %h/.local/bin/lumisound-refresh-youtube-cookies and left copying it there as
+# a manual step, which was never done — so even once these units were
+# installed the service would have failed on a missing executable. Pointing at
+# the checkout also means a `git pull` updates the refresh logic, with no
+# second copy to drift out of sync.
+ExecStart=%h/Documents/Projects/Lumisound/ios-bridge/refresh_youtube_cookies.sh

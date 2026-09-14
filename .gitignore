@@ -30,6 +30,13 @@ secrets.txt
 local.properties
 cookies.txt
 ios-bridge/cookies.txt
+# Any sibling of a cookie jar — dated backups (cookies.txt.bak-20260913),
+# staged candidates, half-written exports. These carry live Google/YouTube
+# session cookies exactly like cookies.txt does, but only the two exact
+# filenames above were ignored, so a backup taken while swapping jars showed
+# up as an untracked file ready to be committed by a `git add -A`.
+cookies.txt.*
+ios-bridge/cookies.txt.*
 # Host-side browser-cookie refresh staging files
 .cookies-refresh.*
 .env
