@@ -105,7 +105,8 @@ struct TVAuthImage<Placeholder: View>: View {
     private func fetch(_ url: URL, afterDelayNanoseconds delay: UInt64? = nil) async -> (image: UIImage?, status: Int) {
         if let delay {
             try? await Task.sleep(nanoseconds: delay)
-            guard !Task.isCancelled else { return nil }
+            // -1: cancelled before any request was made, same as "no HTTP response".
+            guard !Task.isCancelled else { return (nil, -1) }
         }
         var req = URLRequest(url: url)
         if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
