@@ -86,7 +86,7 @@ struct DuplicateFilesView: View {
                     .font(AppTheme.bodyFont(size: 12))
                     .foregroundStyle(AppTheme.textSecondary)
             }
-            .listRowBackground(AppTheme.surface)
+            .listRowBackground(tintedRowBackground(.pink))
 
             // Delete all duplicates
             if !service.allDuplicatesToRemove.isEmpty {
@@ -107,7 +107,7 @@ struct DuplicateFilesView: View {
                         .font(AppTheme.bodyFont(size: 12))
                         .foregroundStyle(AppTheme.textSecondary)
                 }
-                .listRowBackground(AppTheme.surface)
+                .listRowBackground(tintedRowBackground(.pink))
             }
 
             // Cloud library check — separate from the on-device scan above,
@@ -159,7 +159,7 @@ struct DuplicateFilesView: View {
                     .font(AppTheme.bodyFont(size: 12))
                     .foregroundStyle(AppTheme.textSecondary)
             }
-            .listRowBackground(AppTheme.surface)
+            .listRowBackground(tintedRowBackground(.pink))
 
             // Duplicate groups
             if !service.duplicateGroups.isEmpty {
@@ -175,7 +175,7 @@ struct DuplicateFilesView: View {
                             .font(AppTheme.bodyFont(size: 12))
                             .foregroundStyle(AppTheme.textSecondary)
                     }
-                    .listRowBackground(AppTheme.surface)
+                    .listRowBackground(tintedRowBackground(.pink))
                 }
             } else if !service.isScanning && service.lastScanDate != nil {
                 Section {

@@ -232,7 +232,7 @@ struct AccountView: View {
                             .foregroundStyle(AppTheme.dynamicAccent)
                     }
                 }
-                .listRowBackground(AppTheme.surface)
+                .listRowBackground(tintedRowBackground(.blue))
 
                 // MARK: Sync Section
                 Section {
@@ -308,7 +308,7 @@ struct AccountView: View {
                 } header: {
                     sectionHeader("Sync")
                 }
-                .listRowBackground(AppTheme.surface)
+                .listRowBackground(tintedRowBackground(.blue))
 
                 // MARK: Stats Section
                 //
@@ -358,7 +358,7 @@ struct AccountView: View {
                 } header: {
                     sectionHeader("Library")
                 }
-                .listRowBackground(AppTheme.surface)
+                .listRowBackground(tintedRowBackground(.blue))
                 .task {
                     await account.fetchStats()
                     await account.refreshUnreadNotificationCount()
@@ -570,7 +570,7 @@ struct AccountView: View {
                 } header: {
                     sectionHeader("Account")
                 }
-                .listRowBackground(AppTheme.surface)
+                .listRowBackground(tintedRowBackground(.blue))
                 .task { bio = await account.fetchBio() }
 
                 // MARK: Social / Discovery Section
@@ -595,7 +595,7 @@ struct AccountView: View {
                         .font(AppTheme.bodyFont(size: 12))
                         .foregroundStyle(AppTheme.textSecondary)
                 }
-                .listRowBackground(AppTheme.surface)
+                .listRowBackground(tintedRowBackground(.blue))
 
                 // MARK: Aria Lumi Section
                 //
@@ -624,7 +624,7 @@ struct AccountView: View {
                         .font(AppTheme.bodyFont(size: 12))
                         .foregroundStyle(AppTheme.textSecondary)
                 }
-                .listRowBackground(AppTheme.surface)
+                .listRowBackground(tintedRowBackground(.blue))
 
                 // MARK: Security Section
                 Section {
@@ -651,7 +651,7 @@ struct AccountView: View {
                 } header: {
                     sectionHeader("Security")
                 }
-                .listRowBackground(AppTheme.surface)
+                .listRowBackground(tintedRowBackground(.blue))
                 .task { await account.refreshTOTPStatus() }
 
                 // MARK: Operator Section
@@ -668,7 +668,7 @@ struct AccountView: View {
                     } header: {
                         sectionHeader("Operator")
                     }
-                    .listRowBackground(AppTheme.surface)
+                    .listRowBackground(tintedRowBackground(.blue))
                 }
 
                 // MARK: Integrations Section
@@ -694,7 +694,7 @@ struct AccountView: View {
                         .font(AppTheme.bodyFont(size: 12))
                         .foregroundStyle(AppTheme.textSecondary)
                 }
-                .listRowBackground(AppTheme.surface)
+                .listRowBackground(tintedRowBackground(.blue))
 
                 // MARK: Danger Section
                 Section {
@@ -719,7 +719,7 @@ struct AccountView: View {
                 } header: {
                     sectionHeader("Session")
                 }
-                .listRowBackground(AppTheme.surface)
+                .listRowBackground(tintedRowBackground(.blue))
             }
             .scrollContentBackground(.hidden)
         }

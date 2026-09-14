@@ -175,7 +175,7 @@ struct CacheManagerView: View {
                 .font(.caption)
                 .foregroundStyle(AppTheme.textSecondary)
         }
-        .listRowBackground(AppTheme.surface)
+        .listRowBackground(tintedRowBackground(.pink))
     }
 
     @ViewBuilder
@@ -204,7 +204,7 @@ struct CacheManagerView: View {
                 .font(.caption)
                 .foregroundStyle(AppTheme.textSecondary)
         }
-        .listRowBackground(AppTheme.surface)
+        .listRowBackground(tintedRowBackground(.pink))
     }
 
     @ViewBuilder
@@ -238,7 +238,7 @@ struct CacheManagerView: View {
                 .font(.caption)
                 .foregroundStyle(AppTheme.textSecondary)
         }
-        .listRowBackground(AppTheme.surface)
+        .listRowBackground(tintedRowBackground(.pink))
     }
 
     @ViewBuilder
@@ -267,7 +267,7 @@ struct CacheManagerView: View {
                 .font(.caption)
                 .foregroundStyle(AppTheme.textSecondary)
         }
-        .listRowBackground(AppTheme.surface)
+        .listRowBackground(tintedRowBackground(.pink))
     }
 
     @ViewBuilder
@@ -306,7 +306,7 @@ struct CacheManagerView: View {
                 .font(.caption)
                 .foregroundStyle(AppTheme.textSecondary)
         }
-        .listRowBackground(AppTheme.surface)
+        .listRowBackground(tintedRowBackground(.pink))
     }
 
     @ViewBuilder
@@ -331,7 +331,7 @@ struct CacheManagerView: View {
                 .font(.caption)
                 .foregroundStyle(AppTheme.textSecondary)
         }
-        .listRowBackground(AppTheme.surface)
+        .listRowBackground(tintedRowBackground(.pink))
     }
 
     @ViewBuilder
@@ -352,7 +352,7 @@ struct CacheManagerView: View {
                 .font(.caption)
                 .foregroundStyle(AppTheme.textSecondary)
         }
-        .listRowBackground(AppTheme.surface)
+        .listRowBackground(tintedRowBackground(.pink))
     }
 
     private var totalClearableSize: Int64 {
@@ -377,7 +377,7 @@ struct CacheManagerView: View {
                     .font(.caption)
                     .foregroundStyle(AppTheme.textSecondary)
             }
-            .listRowBackground(AppTheme.surface)
+            .listRowBackground(tintedRowBackground(.pink))
         }
     }
 

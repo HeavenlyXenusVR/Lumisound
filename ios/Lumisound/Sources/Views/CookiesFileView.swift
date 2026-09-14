@@ -53,7 +53,7 @@ struct CookiesFileView: View {
             } footer: {
                 Text("Export cookies.txt from a browser you're logged into YouTube with (e.g. the \"Get cookies.txt LOCALLY\" extension), while signed in normally — not a guest/incognito session. This unlocks age-restricted videos and avoids YouTube blocking anonymous downloads. The file is stored on the server for your account only and is never shown back to you or any other user.")
             }
-            .listRowBackground(AppTheme.surface)
+            .listRowBackground(tintedRowBackground(.yellow))
 
             if let errorText {
                 Section {
@@ -86,7 +86,7 @@ struct CookiesFileView: View {
                         Text("Remove Cookies")
                     }
                 }
-                .listRowBackground(AppTheme.surface)
+                .listRowBackground(tintedRowBackground(.yellow))
 
                 if let validation {
                     Section {
@@ -111,7 +111,7 @@ struct CookiesFileView: View {
                     } header: {
                         sectionHeader("Last Validation")
                     }
-                    .listRowBackground(AppTheme.surface)
+                    .listRowBackground(tintedRowBackground(.yellow))
                 }
             }
         }

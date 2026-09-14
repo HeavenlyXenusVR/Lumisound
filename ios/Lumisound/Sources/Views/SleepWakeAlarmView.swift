@@ -37,7 +37,7 @@ struct SleepWakeAlarmView: View {
                     .foregroundStyle(AppTheme.dynamicAccent)
                     .font(.headline)
             }
-            .listRowBackground(AppTheme.surface)
+            .listRowBackground(tintedRowBackground(.pink))
         }
     }
 
@@ -66,7 +66,7 @@ struct SleepWakeAlarmView: View {
                     .foregroundStyle(AppTheme.error)
             }
         }
-        .listRowBackground(AppTheme.surface)
+        .listRowBackground(tintedRowBackground(.pink))
     }
 
     @ViewBuilder
@@ -78,7 +78,7 @@ struct SleepWakeAlarmView: View {
                 Label("Cancel Alarm", systemImage: "alarm.slash")
             }
         }
-        .listRowBackground(AppTheme.surface)
+        .listRowBackground(tintedRowBackground(.pink))
     }
 
     @ViewBuilder

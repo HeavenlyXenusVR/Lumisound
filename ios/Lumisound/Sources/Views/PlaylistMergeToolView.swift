@@ -53,7 +53,7 @@ struct PlaylistMergeToolView: View {
                     }
                 }
             }
-            .listRowBackground(AppTheme.surface)
+            .listRowBackground(tintedRowBackground(.pink))
 
             if let playlistA, let playlistB, playlistA.id == playlistB.id {
                 Section {
@@ -117,7 +117,7 @@ struct PlaylistMergeToolView: View {
             }
             .textCase(nil)
         }
-        .listRowBackground(AppTheme.surface)
+        .listRowBackground(tintedRowBackground(.pink))
     }
 }
 

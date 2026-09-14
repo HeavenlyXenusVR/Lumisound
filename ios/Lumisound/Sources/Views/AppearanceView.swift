@@ -92,7 +92,7 @@ struct AppearanceView: View {
                         refreshToken = UUID()
                         account.schedulePush(library: library)
                     }
-                    .listRowBackground(AppTheme.surface)
+                    .listRowBackground(tintedRowBackground(.purple))
 
                 ColorPicker("Gradient Secondary Color", selection: $customSecondaryColor, supportsOpacity: false)
                     .foregroundStyle(AppTheme.textPrimary)
@@ -100,7 +100,7 @@ struct AppearanceView: View {
                         AppTheme.saveAccentSecondaryColor(newColor)
                         refreshToken = UUID()
                     }
-                    .listRowBackground(AppTheme.surface)
+                    .listRowBackground(tintedRowBackground(.purple))
             } header: {
                 sectionHeader("Custom")
             } footer: {
@@ -232,7 +232,7 @@ struct AppearanceView: View {
                     }
                 }
                 .foregroundStyle(AppTheme.dynamicAccent)
-                .listRowBackground(AppTheme.surface)
+                .listRowBackground(tintedRowBackground(.purple))
             }
         }
         .id(refreshToken)
@@ -295,7 +295,7 @@ struct AppearanceView: View {
             }
         }
         .padding(.vertical, 6)
-        .listRowBackground(AppTheme.surface)
+        .listRowBackground(tintedRowBackground(.purple))
     }
 
     private var presetSwatchGrid: some View {
@@ -336,7 +336,7 @@ struct AppearanceView: View {
             }
         }
         .padding(.vertical, 8)
-        .listRowBackground(AppTheme.surface)
+        .listRowBackground(tintedRowBackground(.purple))
     }
 
     private var backgroundThemePicker: some View {
@@ -378,7 +378,7 @@ struct AppearanceView: View {
             }
             .padding(.vertical, 4)
         }
-        .listRowBackground(AppTheme.surface)
+        .listRowBackground(tintedRowBackground(.purple))
     }
 
     private var fontStylePicker: some View {
@@ -402,7 +402,7 @@ struct AppearanceView: View {
                 .buttonStyle(.plain)
             }
         }
-        .listRowBackground(AppTheme.surface)
+        .listRowBackground(tintedRowBackground(.purple))
     }
 
     private var artworkStylePicker: some View {
@@ -439,7 +439,7 @@ struct AppearanceView: View {
             }
         }
         .padding(.vertical, 6)
-        .listRowBackground(AppTheme.surface)
+        .listRowBackground(tintedRowBackground(.purple))
     }
 
     private var cardStylePicker: some View {
@@ -516,7 +516,7 @@ struct AppearanceView: View {
             .padding(.top, 4)
         }
         .padding(.vertical, 6)
-        .listRowBackground(AppTheme.surface)
+        .listRowBackground(tintedRowBackground(.purple))
         .sheet(item: $editingCustomLibraryStyle) { style in
             LibraryStyleEditorView(style: style, previewSong: library.allSongs.first) { saved in
                 customLibraryStyleStore.update(saved)
@@ -584,7 +584,7 @@ struct AppearanceView: View {
             }
         }
         .padding(.vertical, 6)
-        .listRowBackground(AppTheme.surface)
+        .listRowBackground(tintedRowBackground(.purple))
     }
 
     private var panelOpacityRow: some View {
@@ -618,7 +618,7 @@ struct AppearanceView: View {
             )
         }
         .padding(.vertical, 6)
-        .listRowBackground(AppTheme.surface)
+        .listRowBackground(tintedRowBackground(.purple))
     }
 
     // MARK: Helpers

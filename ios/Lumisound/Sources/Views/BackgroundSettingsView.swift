@@ -413,6 +413,15 @@ struct BackgroundSettingsView: View {
                 }
             }
         }
+        // Applied to the List so every row inherits it — unlike the other
+        // Settings screens this one never set a row background at all, so its
+        // rows rendered fully transparent straight onto the gallery image
+        // behind them. That was survivable while it was the odd one out; now
+        // that every screen around it is glass it just reads as a screen that
+        // failed to draw. Rows that deliberately opt out (the full-bleed photo
+        // strip below) still override this with their own `Color.clear`.
+        // `.purple` matches the Appearance section that pushes this screen.
+        .listRowBackground(tintedRowBackground(.purple))
         .scrollContentBackground(.hidden)
         .background(Color.clear.ignoresSafeArea())
         .safeAreaInset(edge: .bottom) {

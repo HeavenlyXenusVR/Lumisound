@@ -56,7 +56,7 @@ struct BugReportView: View {
             } header: {
                 sectionHeader("What's this about?")
             }
-            .listRowBackground(AppTheme.surface)
+            .listRowBackground(tintedRowBackground(.blue))
 
             Section {
                 TextEditor(text: $description)
@@ -76,7 +76,7 @@ struct BugReportView: View {
             } header: {
                 sectionHeader("Description")
             }
-            .listRowBackground(AppTheme.surface)
+            .listRowBackground(tintedRowBackground(.blue))
 
             Section {
                 TextField("Email (optional)", text: $contactEmail)
@@ -91,7 +91,7 @@ struct BugReportView: View {
                     .font(AppTheme.bodyFont(size: 12))
                     .foregroundStyle(AppTheme.textSecondary)
             }
-            .listRowBackground(AppTheme.surface)
+            .listRowBackground(tintedRowBackground(.blue))
 
             Section {
                 Toggle(isOn: $includeLogs) {
@@ -104,7 +104,7 @@ struct BugReportView: View {
                     .font(AppTheme.bodyFont(size: 12))
                     .foregroundStyle(AppTheme.textSecondary)
             }
-            .listRowBackground(AppTheme.surface)
+            .listRowBackground(tintedRowBackground(.blue))
 
             Section {
                 Button {
@@ -133,7 +133,7 @@ struct BugReportView: View {
                     Text(submitError)
                         .font(.caption)
                         .foregroundStyle(AppTheme.error)
-                        .listRowBackground(AppTheme.surface)
+                        .listRowBackground(tintedRowBackground(.blue))
                 }
             }
         }

@@ -42,7 +42,7 @@ struct SettingsHelpView: View {
                     .font(AppTheme.bodyFont(size: 12))
                     .foregroundStyle(AppTheme.textSecondary)
             }
-            .listRowBackground(AppTheme.surface)
+            .listRowBackground(tintedRowBackground(.blue))
         }
         // Without an explicit style this defaults to a grouped-card look —
         // see FavoritesView's identical fix.
@@ -641,7 +641,7 @@ private struct SettingsHelpDetailView: View {
                     helpRow(icon: topic.icon, title: topic.title, body: topic.body)
                 }
             }
-            .listRowBackground(AppTheme.surface)
+            .listRowBackground(tintedRowBackground(.blue))
         }
         // Without an explicit style this defaults to a grouped-card look —
         // see FavoritesView's identical fix.

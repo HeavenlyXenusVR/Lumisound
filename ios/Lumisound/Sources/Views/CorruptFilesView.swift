@@ -91,7 +91,7 @@ struct CorruptFilesView: View {
                     .font(AppTheme.bodyFont(size: 12))
                     .foregroundStyle(AppTheme.textSecondary)
             }
-            .listRowBackground(AppTheme.surface)
+            .listRowBackground(tintedRowBackground(.pink))
 
             // Corrupt files list
             if !service.corruptFiles.isEmpty {
@@ -102,7 +102,7 @@ struct CorruptFilesView: View {
                 } header: {
                     sectionHeader("Corrupt Files")
                 }
-                .listRowBackground(AppTheme.surface)
+                .listRowBackground(tintedRowBackground(.pink))
 
                 // Delete all section
                 Section {
@@ -120,7 +120,7 @@ struct CorruptFilesView: View {
                 } header: {
                     sectionHeader("Actions")
                 }
-                .listRowBackground(AppTheme.surface)
+                .listRowBackground(tintedRowBackground(.pink))
 
             } else if !service.isScanning && service.lastScanDate != nil {
                 Section {

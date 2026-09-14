@@ -42,7 +42,7 @@ struct ListeningStatsView: View {
                 .font(.caption)
                 .foregroundStyle(AppTheme.textSecondary)
         }
-        .listRowBackground(AppTheme.surface)
+        .listRowBackground(tintedRowBackground(.pink))
     }
 
     private var estimatedTimeText: String {
@@ -83,7 +83,7 @@ struct ListeningStatsView: View {
             } header: {
                 sectionHeader("Top Songs")
             }
-            .listRowBackground(AppTheme.surface)
+            .listRowBackground(tintedRowBackground(.pink))
         }
     }
 
@@ -108,7 +108,7 @@ struct ListeningStatsView: View {
             } header: {
                 sectionHeader("Top Artists")
             }
-            .listRowBackground(AppTheme.surface)
+            .listRowBackground(tintedRowBackground(.pink))
         } else if topSongs.isEmpty {
             Section {
                 EmptyStateView(

@@ -24,7 +24,7 @@ struct DeletedPlaylistsView: View {
                 } footer: {
                     Text("Deleted playlists are kept for 30 days, then purged automatically.")
                 }
-                .listRowBackground(AppTheme.surface)
+                .listRowBackground(tintedRowBackground(.pink))
             }
         }
         .listStyle(.plain)

@@ -67,7 +67,7 @@ struct LibraryBackupView: View {
                 .font(.caption)
                 .foregroundStyle(AppTheme.textSecondary)
         }
-        .listRowBackground(AppTheme.surface)
+        .listRowBackground(tintedRowBackground(.pink))
     }
 
     @ViewBuilder
@@ -86,7 +86,7 @@ struct LibraryBackupView: View {
                 .font(.caption)
                 .foregroundStyle(AppTheme.textSecondary)
         }
-        .listRowBackground(AppTheme.surface)
+        .listRowBackground(tintedRowBackground(.pink))
     }
 
     @ViewBuilder

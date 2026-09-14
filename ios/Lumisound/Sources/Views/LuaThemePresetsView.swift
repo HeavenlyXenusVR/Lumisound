@@ -32,7 +32,7 @@ struct LuaThemePresetsView: View {
                         .font(AppTheme.bodyFont(size: 13))
                         .foregroundStyle(AppTheme.error)
                 }
-                .listRowBackground(AppTheme.surface)
+                .listRowBackground(tintedRowBackground(.purple))
             }
 
             Section {
@@ -42,7 +42,7 @@ struct LuaThemePresetsView: View {
             } header: {
                 sectionHeader("Presets")
             }
-            .listRowBackground(AppTheme.surface)
+            .listRowBackground(tintedRowBackground(.purple))
 
             Section {
                 if userPresets.isEmpty {
@@ -57,7 +57,7 @@ struct LuaThemePresetsView: View {
             } header: {
                 sectionHeader("Imported (Community)")
             }
-            .listRowBackground(AppTheme.surface)
+            .listRowBackground(tintedRowBackground(.purple))
 
             if engine.activePresetID != nil {
                 Section {
@@ -73,7 +73,7 @@ struct LuaThemePresetsView: View {
                     }
                     .foregroundStyle(AppTheme.dynamicAccent)
                 }
-                .listRowBackground(AppTheme.surface)
+                .listRowBackground(tintedRowBackground(.purple))
                 .listRowSeparator(.hidden)
                 Section {
                     Text("Clearing only removes the preset marker and the custom background/layout scale it set — individual colors, fonts, and styles stay as the preset left them. Use Appearance → Reset to Default to restore everything.")

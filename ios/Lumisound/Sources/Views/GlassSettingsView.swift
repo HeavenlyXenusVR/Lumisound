@@ -75,7 +75,7 @@ struct GlassSettingsView: View {
                     .font(AppTheme.bodyFont(size: 12))
                     .foregroundStyle(AppTheme.textSecondary)
             }
-            .listRowBackground(AppTheme.surface)
+            .listRowBackground(tintedRowBackground(.purple))
 
             Section {
                 Button(role: .destructive) {
@@ -84,7 +84,7 @@ struct GlassSettingsView: View {
                     Label("Reset to Defaults", systemImage: "arrow.counterclockwise")
                 }
             }
-            .listRowBackground(AppTheme.surface)
+            .listRowBackground(tintedRowBackground(.purple))
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)

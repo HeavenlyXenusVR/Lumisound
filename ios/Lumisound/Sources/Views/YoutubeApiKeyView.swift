@@ -48,7 +48,7 @@ struct YoutubeApiKeyView: View {
             } footer: {
                 Text("Lets full YouTube playlists (beyond ~205 tracks) resolve completely when you import or play them. Create a free key in the Google Cloud Console by enabling \"YouTube Data API v3\" and generating an API key under Credentials.")
             }
-            .listRowBackground(AppTheme.surface)
+            .listRowBackground(tintedRowBackground(.yellow))
 
             if status?.configured != true || quotaExceeded {
                 Section {
@@ -64,7 +64,7 @@ struct YoutubeApiKeyView: View {
                     .disabled(isSaving || apiKey.trimmingCharacters(in: .whitespaces).isEmpty)
                     .foregroundStyle(AppTheme.dynamicAccent)
                 }
-                .listRowBackground(AppTheme.surface)
+                .listRowBackground(tintedRowBackground(.yellow))
             }
 
             if let errorText {
@@ -99,7 +99,7 @@ struct YoutubeApiKeyView: View {
                         Text("Remove API Key")
                     }
                 }
-                .listRowBackground(AppTheme.surface)
+                .listRowBackground(tintedRowBackground(.yellow))
             }
         }
         .listStyle(.insetGrouped)

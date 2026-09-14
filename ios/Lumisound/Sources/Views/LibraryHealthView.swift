@@ -85,7 +85,7 @@ struct LibraryHealthView: View {
                         )
                     }
                 }
-                .listRowBackground(AppTheme.surface)
+                .listRowBackground(tintedRowBackground(.pink))
 
                 Section {
                     NavigationLink(destination: DuplicateFilesView()) {
@@ -109,7 +109,7 @@ struct LibraryHealthView: View {
                 } footer: {
                     Text("These two run on demand — open either one and tap Scan Now for an up-to-date count.")
                 }
-                .listRowBackground(AppTheme.surface)
+                .listRowBackground(tintedRowBackground(.pink))
             }
         }
         .listStyle(.plain)
