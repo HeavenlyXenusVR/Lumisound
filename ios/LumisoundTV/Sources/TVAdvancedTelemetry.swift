@@ -41,6 +41,7 @@ enum TVAdvancedTelemetry {
     /// produces a continuous stream of these, and uploading all of them would
     /// both flood the log and add main-thread work to an already-blocked main
     /// thread — the monitor would become a cause of the thing it measures.
+    @MainActor
     final class HitchMonitor {
         static let shared = HitchMonitor()
 
@@ -172,6 +173,7 @@ enum TVAdvancedTelemetry {
     /// many times it stopped again afterwards, and whether the track was
     /// finished or abandoned. A stall count is the difference between "streaming
     /// works" and "streaming works if you wait".
+    @MainActor
     final class PlaybackSession {
         private let trackID: String
         private let title: String
