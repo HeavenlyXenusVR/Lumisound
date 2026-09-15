@@ -10741,6 +10741,65 @@ async def music_recommendations(
     return {"seed_bpm": seed_bpm, "seed_key": seed_key, "tracks": candidates[:limit]}
 
 
+# Mood classification for smart playlists.
+#
+# BPM alone made these lists permanently empty. The query required `bpm > 0` and
+# BPM is only ever computed on-device by the iPhone app, so for a library filled
+# mainly from tvOS or from cloud backup it is null nearly everywhere — 1 track in
+# 519 on a real account. All four playlists were therefore empty and "never
+# updated", which was not staleness at all: they had nothing to be built from.
+#
+# BPM still wins when it exists, since it measures the track rather than
+# describing it. Genre is the fallback, and it covers most of a real library
+# because the downloader writes it.
+_MOOD_GENRE_HINTS = {
+    "energetic": ("rock", "metal", "dance", "electronic", "edm", "house", "techno",
+                  "punk", "rap", "hip hop", "hip-hop", "drum", "bass", "trance",
+                  "workout", "hardstyle", "remix", "pop"),
+    "focus": ("soundtrack", "score", "instrumental", "game", "video game", "orchestral",
+              "epic", "cinematic", "study", "chiptune", "synthwave"),
+    "chill": ("chill", "lo-fi", "lofi", "jazz", "acoustic", "indie", "folk", "r&b",
+              "soul", "reggae", "bossa"),
+    "sleep": ("ambient", "sleep", "calm", "meditation", "piano", "classical", "rain"),
+}
+
+# Checked against the TITLE when the genre says nothing — these words are strong
+# enough signals on their own, and a lot of this library is titled rather than
+# tagged ("... (slowed + reverb)", "8-bit", "lullaby").
+_MOOD_TITLE_HINTS = {
+    "chill": ("slowed", "reverb", "chill", "lofi", "lo-fi", "acoustic"),
+    "sleep": ("sleep", "lullaby", "rain", "ambient", "calm"),
+    "energetic": ("remix", "8 bit", "8-bit", "hardstyle", "nightcore", "epic remix"),
+    "focus": ("ost", "theme", "soundtrack", "instrumental", "orchestral"),
+}
+
+
+def _mood_bucket(bpm, genre: str | None, title: str | None) -> str | None:
+    """Which smart playlist a track belongs in, or None to leave it out."""
+    if bpm:
+        if bpm >= 120:
+            return "energetic"
+        if bpm >= 90:
+            return "focus"
+        if bpm >= 60:
+            return "chill"
+        return "sleep"
+
+    text = (genre or "").lower()
+    if text:
+        for bucket, hints in _MOOD_GENRE_HINTS.items():
+            if any(h in text for h in hints):
+                return bucket
+
+    name = (title or "").lower()
+    if name:
+        for bucket, hints in _MOOD_TITLE_HINTS.items():
+            if any(h in name for h in hints):
+                return bucket
+    # Genuinely no signal — better absent than dumped into an arbitrary list.
+    return None
+
+
 @app.get("/user/music/smart-playlists")
 async def smart_playlists(user: dict = Depends(get_current_user)):
     """Auto-generated tempo-based playlists (Energetic/Focus/Chill/Sleep),
@@ -10753,28 +10812,39 @@ async def smart_playlists(user: dict = Depends(get_current_user)):
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT id, filename, title, artist, album, bpm
-                FROM ios_user_music_metadata
-                WHERE user_id = %s AND bpm IS NOT NULL AND bpm > 0
+                SELECT m.id, m.filename, m.title, m.artist, m.album, m.bpm, m.genre,
+                       COALESCE(p.plays, 0) AS plays
+                FROM ios_user_music_metadata m
+                LEFT JOIN (
+                    SELECT title, artist, COUNT(*) AS plays
+                    FROM ios_play_history
+                    WHERE user_id = %s
+                    GROUP BY title, artist
+                ) p ON p.title = m.title AND p.artist = m.artist
+                WHERE m.user_id = %s
                 """,
-                (user_id,),
+                (user_id, user_id),
             )
             rows = await cur.fetchall()
 
     buckets: dict[str, list[dict]] = {"energetic": [], "focus": [], "chill": [], "sleep": []}
-    for mid, filename, title, artist, album, bpm in rows:
-        track = {"id": mid, "filename": filename, "title": title, "artist": artist, "album": album, "bpm": bpm}
-        if bpm >= 120:
-            buckets["energetic"].append(track)
-        elif bpm >= 90:
-            buckets["focus"].append(track)
-        elif bpm >= 60:
-            buckets["chill"].append(track)
-        else:
-            buckets["sleep"].append(track)
+    for mid, filename, title, artist, album, bpm, genre, plays in rows:
+        track = {"id": mid, "filename": filename, "title": title, "artist": artist,
+                 "album": album, "bpm": bpm, "plays": plays}
+        bucket = _mood_bucket(bpm, genre, title)
+        if bucket:
+            buckets[bucket].append(track)
 
+    # Most-played first, then alphabetical.
+    #
+    # This used to sort on BPM, which was fine when BPM was the only thing that
+    # could put a track in a bucket. Now that almost none of them have one, BPM
+    # is a useless sort key — and ordering by plays is also what makes these
+    # lists MOVE: they re-order as listening changes instead of being a fixed
+    # arrangement of the same library.
     for tracks in buckets.values():
-        tracks.sort(key=lambda t: t["bpm"], reverse=True)
+        tracks.sort(key=lambda t: (-(t.get("plays") or 0), (t.get("title") or "").lower()))
+        del tracks[200:]
 
     return {
         "playlists": [
@@ -13576,11 +13646,27 @@ async def get_discover_mix(
                 WHERE user_id = %s AND artist IS NOT NULL AND artist != ''
                 GROUP BY artist
                 ORDER BY plays DESC
-                LIMIT 3
+                LIMIT 20
                 """,
                 (user_id,),
             )
-            top_artists = [r[0] for r in await cur.fetchall()]
+            artist_pool = [r[0] for r in await cur.fetchall()]
+
+            # Rotate through the pool instead of always seeding from the same
+            # three names.
+            #
+            # This used to take the top 3 outright and hand each to yt-dlp, which
+            # is deterministic end to end: the same three artists produce the same
+            # searches, the same searches return the same videos in the same
+            # order, and the mix is byte-identical every time you open it. That is
+            # why "Discover Mix never changes" — nothing in the pipeline had any
+            # variation in it at all.
+            #
+            # The window advances daily and is seeded per user, so the mix is
+            # stable within a day (refreshing does not reshuffle under you) and
+            # different the next — and over a few days it reaches twenty artists
+            # deep rather than three.
+            top_artists = _rotating_seed(artist_pool, user_id, count=3)
 
             await cur.execute(
                 "SELECT song_id FROM ios_user_favorites WHERE user_id = %s "
@@ -13849,6 +13935,24 @@ async def create_automatic_station(
 
 
 # ---------------------------------------------------------------------------
+def _rotating_seed(pool: list[str], user_id: str, count: int = 3) -> list[str]:
+    """Picks `count` entries from `pool`, advancing once per day.
+
+    Deterministic within a day (so a refresh does not reshuffle the screen under
+    the user) and different between days. Offset by a hash of the user id so two
+    accounts with similar listening do not get identical mixes on the same date.
+    """
+    if not pool:
+        return []
+    import datetime
+    import zlib
+
+    day = datetime.date.today().toordinal()
+    offset = (day + zlib.crc32(user_id.encode())) % len(pool)
+    # Wrap around so a pool smaller than `count` still fills.
+    return [pool[(offset + i) % len(pool)] for i in range(min(count, len(pool)))]
+
+
 # Aria's Daily Pick (Feature: aria-daily-pick)
 # ---------------------------------------------------------------------------
 #

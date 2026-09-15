@@ -111,6 +111,15 @@ final class AccountService: ObservableObject {
 
     func startAutoPushTimer(library: LibraryManager) {
         stopAutoPushTimer()
+
+        // Pull the account's favorites once at start-up. This is the half that
+        // actually restores them after a reinstall or on a new device — writes
+        // have been mirrored up since `toggleFavorite`, but nothing ever read
+        // them back, so the server's copy was write-only.
+        Task { @MainActor [weak self, weak library] in
+            guard let self, let library, self.isLoggedIn else { return }
+            await self.mergeFavoritesFromServer(into: library)
+        }
         // Widened from 8 to 20 min now that it's a safety net rather than
         // the primary mechanism — LiveUpdateService's "sync_changed" push
         // (see below) tells this device the moment there's actually

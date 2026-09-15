@@ -28,14 +28,24 @@ extension LibraryManager {
     }
 
     func toggleFavorite(songID: String) {
+        let nowFavorite: Bool
         if favoriteSongIDs.contains(songID) {
             favoriteSongIDs.remove(songID)
+            nowFavorite = false
             ToastCenter.shared.show("Removed from Favorites", category: .info, icon: "heart")
         } else {
             favoriteSongIDs.insert(songID)
+            nowFavorite = true
             ToastCenter.shared.show("Added to Favorites", category: .success, icon: "heart.fill")
         }
         persistence.saveFavorites(favoriteSongIDs)
+        // Mirrored to the account so it survives a reinstall and reaches other
+        // devices — see AccountService+Favorites. Local storage stays the
+        // synchronous source of truth for rendering; this is the durable copy.
+        let song = songsByID[songID]
+        AccountService.shared.pushFavorite(songID: songID, isFavorite: nowFavorite,
+                                           title: song?.title, artist: song?.artist,
+                                           album: song?.album)
     }
 
     /// Adds multiple songs to Favorites in a single persistence write/toast —
@@ -52,6 +62,12 @@ extension LibraryManager {
         }
         favoriteSongIDs.formUnion(toAdd)
         persistence.saveFavorites(favoriteSongIDs)
+        for songID in toAdd {
+            let song = songsByID[songID]
+            AccountService.shared.pushFavorite(songID: songID, isFavorite: true,
+                                               title: song?.title, artist: song?.artist,
+                                               album: song?.album)
+        }
         appLog("addFavorites: \(toAdd.count) song(s) added", category: "library")
         ToastCenter.shared.show(
             "Added \(toAdd.count) song\(toAdd.count == 1 ? "" : "s") to Favorites",
