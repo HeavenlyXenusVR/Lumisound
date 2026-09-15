@@ -915,6 +915,7 @@ async def lifespan(app: FastAPI):
     subscription_poller = asyncio.create_task(_subscription_polling_loop())
     duplicate_scanner = asyncio.create_task(_duplicate_scan_loop())
     weekly_mix_generator = asyncio.create_task(_weekly_mix_loop())
+    media_backfiller = asyncio.create_task(_media_backfill_loop())
     yield
     janitor.cancel()
     app_logs_janitor.cancel()
@@ -922,6 +923,7 @@ async def lifespan(app: FastAPI):
     subscription_poller.cancel()
     duplicate_scanner.cancel()
     weekly_mix_generator.cancel()
+    media_backfiller.cancel()
     # Shutdown: close the DB connection pool (Fix 8)
     import db as _db_module
     pool = _db_module._pool
@@ -7398,6 +7400,137 @@ async def acoustic_duplicates(
 
 _DUPLICATE_SCAN_INTERVAL_SECONDS = 3600  # check hourly which user (if any) is due
 _DUPLICATE_SCAN_STALE_HOURS = 24
+
+
+# ---------------------------------------------------------------------------
+# Media backfill: artwork + tempo for tracks that are missing either.
+#
+# This replaces a one-off script. A script only ever fixes the library as it was
+# the day it ran — every track uploaded afterwards arrives with no artwork the
+# server can serve and no tempo, and the gap silently reopens. Anything derived
+# from those columns (Smart Playlists, beat-snapped crossfades, grid artwork)
+# then quietly degrades again with no signal that it has.
+#
+# Deliberately small per tick. `locked_media.estimate_bpm` decodes two minutes of
+# audio per track, and this host also runs the Discord music bots — the same
+# reason `_duplicate_scan_loop` above handles one user at a time. A bounded batch
+# every five minutes clears a cold library of a few hundred tracks within a few
+# hours and keeps up with new uploads within one tick, without ever being the
+# reason something else on the box stutters.
+# ---------------------------------------------------------------------------
+
+_MEDIA_BACKFILL_INTERVAL_SECONDS = 300
+_MEDIA_BACKFILL_BATCH = 12
+# Re-examining a track that genuinely has neither is wasted decode work, so a
+# failed attempt is not retried until the file itself changes. Tracked in memory
+# rather than a column: it is a cache, losing it on restart only costs one extra
+# pass, and it needs no migration.
+_media_backfill_failed: set[str] = set()
+
+
+async def _media_backfill_loop() -> None:
+    """Fills in artwork and tempo for cloud tracks, including locked ones."""
+    while True:
+        await asyncio.sleep(_MEDIA_BACKFILL_INTERVAL_SECONDS)
+        try:
+            await _media_backfill_tick()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("media backfill tick failed: %s", exc)
+
+
+async def _media_backfill_tick() -> None:
+    import locked_media
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            # Newest first: a track just uploaded is the one someone is most
+            # likely to be looking at, and the one whose missing artwork is most
+            # visible.
+            await cur.execute(
+                """
+                SELECT id, user_id, COALESCE(relative_path, filename), has_artwork, bpm
+                FROM ios_user_music_metadata
+                WHERE bpm IS NULL OR bpm <= 0 OR has_artwork IS NOT TRUE
+                ORDER BY uploaded_at DESC NULLS LAST
+                LIMIT %s
+                """,
+                (_MEDIA_BACKFILL_BATCH * 4,),
+            )
+            rows = await cur.fetchall()
+
+    candidates = [r for r in rows if r[0] not in _media_backfill_failed][:_MEDIA_BACKFILL_BATCH]
+    if not candidates:
+        return
+
+    art_done = bpm_done = 0
+    for metadata_id, user_id, rel_path, has_artwork, bpm in candidates:
+        music_dir = _user_music_dir(user_id)
+        if music_dir is None:
+            continue
+        path = (music_dir / rel_path).resolve()
+        # Same containment check every other path-taking endpoint makes — a
+        # relative_path is user-supplied data.
+        if not path.is_relative_to(music_dir) or not path.is_file():
+            _media_backfill_failed.add(metadata_id)
+            continue
+
+        progressed = False
+
+        cache_path = _locked_artwork_path(music_dir, metadata_id)
+        if not cache_path.exists():
+            data, source = await locked_media.extract_artwork_async(path)
+            if data:
+                try:
+                    cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    cache_path.write_bytes(data)
+                    await _set_media_field(metadata_id, user_id, "has_artwork", True)
+                    art_done += 1
+                    progressed = True
+                    logger.info("media backfill: %s artwork for %s", source, rel_path)
+                except OSError as exc:
+                    logger.warning("media backfill: could not write artwork for %s: %s", rel_path, exc)
+            elif has_artwork:
+                # Claiming artwork the server cannot produce means a 404 on
+                # every view; clearing it turns a repeating error into a clean
+                # placeholder.
+                await _set_media_field(metadata_id, user_id, "has_artwork", False)
+                progressed = True
+
+        if bpm is None or bpm <= 0:
+            value = await locked_media.estimate_bpm_async(path)
+            if value:
+                await _set_media_field(metadata_id, user_id, "bpm", value)
+                bpm_done += 1
+                progressed = True
+
+        if not progressed:
+            _media_backfill_failed.add(metadata_id)
+
+    if art_done or bpm_done:
+        logger.info("media backfill: %d artwork, %d bpm (batch of %d)",
+                    art_done, bpm_done, len(candidates))
+
+
+async def _set_media_field(metadata_id: str, user_id: str, column: str, value) -> None:
+    """Writes one backfilled column.
+
+    `column` is never user-supplied — it is one of three literals from the code
+    above — but it is still whitelisted rather than interpolated freely, so this
+    cannot become an injection point if it is ever called from somewhere else.
+    """
+    if column not in {"has_artwork", "bpm"}:
+        raise ValueError(f"refusing to update column {column!r}")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"UPDATE ios_user_music_metadata SET {column} = %s "
+                "WHERE user_id = %s AND id = %s",
+                (value, user_id, metadata_id),
+            )
 
 
 async def _duplicate_scan_loop() -> None:
