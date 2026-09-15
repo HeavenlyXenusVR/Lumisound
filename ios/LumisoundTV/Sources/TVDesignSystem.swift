@@ -233,6 +233,7 @@ extension View {
 /// had no say in it and the answer was always the same. Fixing the count and
 /// letting the cards take whatever space is left is what makes "show me two
 /// bigger covers" or "show me four smaller ones" possible at all.
+@MainActor
 enum TVGridLayout {
     static func columns(spacing: CGFloat = 44) -> [GridItem] {
         let count = max(2, min(4, TVAudioSettings.shared.gridColumns))

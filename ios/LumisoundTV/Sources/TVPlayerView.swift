@@ -297,7 +297,10 @@ final class TVPlayerModel: ObservableObject {
                   let assetURL = (resolved as? AVURLAsset)?.url else { return }
             let trim = await TVSilenceTrim.analyze(url: assetURL, trackID: item.id)
             guard trim > 0, self.current?.id == item.id else { return }
-            self.player.seek(to: CMTime(seconds: trim, preferredTimescale: 600))
+            // `await`: inside an async context Swift resolves seek(to:) to the
+            // async overload, which must be awaited rather than fired and
+            // forgotten.
+            await self.player.seek(to: CMTime(seconds: trim, preferredTimescale: 600))
             TVRemoteLogger.log(category: "audio", event: "silent_intro_skipped",
                                detail: ["title": item.title, "seconds": round(trim * 100) / 100])
         }
