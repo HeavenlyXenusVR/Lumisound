@@ -7420,7 +7420,25 @@ _DUPLICATE_SCAN_STALE_HOURS = 24
 # ---------------------------------------------------------------------------
 
 _MEDIA_BACKFILL_INTERVAL_SECONDS = 300
-_MEDIA_BACKFILL_BATCH = 12
+# A TIME budget, not a track count.
+#
+# A fixed batch of 12 was measurably losing the race: during an active backup the
+# library grew by ~37 tracks in the same five minutes the loop spent clearing 12,
+# so the backlog grew instead of shrinking and would never have caught up while
+# uploads continued. A count is the wrong unit anyway — an artwork-only track
+# costs a fraction of a second while a tempo estimate decodes two minutes of
+# audio, so the same number means wildly different amounts of work.
+#
+# 60 seconds of every 300 is a 20% duty cycle on one core, which stays within the
+# same courtesy `_duplicate_scan_loop` observes for the Discord music bots
+# sharing this host, while clearing roughly 60 tracks per tick — comfortably
+# ahead of what a backup can upload in the same window.
+_MEDIA_BACKFILL_SECONDS_PER_TICK = 60.0
+# Hard ceiling so one tick cannot run away on a library of very short tracks.
+_MEDIA_BACKFILL_MAX_BATCH = 200
+# Artwork recovery waits on the network, so several at once costs no extra
+# CPU. Kept modest so a backfill cannot look like a scraper to YouTube.
+_MEDIA_BACKFILL_ARTWORK_CONCURRENCY = 6
 # Re-examining a track that genuinely has neither is wasted decode work, so a
 # failed attempt is not retried until the file itself changes. Tracked in memory
 # rather than a column: it is a cache, losing it on restart only costs one extra
@@ -7457,15 +7475,32 @@ async def _media_backfill_tick() -> None:
                 ORDER BY uploaded_at DESC NULLS LAST
                 LIMIT %s
                 """,
-                (_MEDIA_BACKFILL_BATCH * 4,),
+                (_MEDIA_BACKFILL_MAX_BATCH * 3,),
             )
             rows = await cur.fetchall()
 
-    candidates = [r for r in rows if r[0] not in _media_backfill_failed][:_MEDIA_BACKFILL_BATCH]
+    candidates = [r for r in rows if r[0] not in _media_backfill_failed][:_MEDIA_BACKFILL_MAX_BATCH]
     if not candidates:
         return
 
     art_done = bpm_done = 0
+    deadline = time.monotonic() + _MEDIA_BACKFILL_SECONDS_PER_TICK
+
+    # Artwork and tempo are bottlenecked on completely different things, so they
+    # are done in different ways.
+    #
+    # Artwork recovery usually ends in an HTTP fetch for the thumbnail the iOS
+    # app recorded, so it spends most of its time waiting on the network, not on
+    # a core. Run serially it set the pace for the whole tick — measured at 20
+    # tracks per 60s, barely ahead of what a backup uploads in the same window.
+    # Several at once costs no extra CPU and removes that ceiling.
+    #
+    # Tempo really is CPU-bound (two minutes of audio decoded and analysed per
+    # track), so it stays strictly serial. Parallelising it would be the thing
+    # that makes the Discord music bots on this host stutter, which is the whole
+    # reason the tick is budgeted in the first place.
+    art_targets = []
+    bpm_targets = []
     for metadata_id, user_id, rel_path, has_artwork, bpm in candidates:
         music_dir = _user_music_dir(user_id)
         if music_dir is None:
@@ -7476,42 +7511,82 @@ async def _media_backfill_tick() -> None:
         if not path.is_relative_to(music_dir) or not path.is_file():
             _media_backfill_failed.add(metadata_id)
             continue
-
-        progressed = False
-
-        cache_path = _locked_artwork_path(music_dir, metadata_id)
-        if not cache_path.exists():
-            data, source = await locked_media.extract_artwork_async(path)
-            if data:
-                try:
-                    cache_path.parent.mkdir(parents=True, exist_ok=True)
-                    cache_path.write_bytes(data)
-                    await _set_media_field(metadata_id, user_id, "has_artwork", True)
-                    art_done += 1
-                    progressed = True
-                    logger.info("media backfill: %s artwork for %s", source, rel_path)
-                except OSError as exc:
-                    logger.warning("media backfill: could not write artwork for %s: %s", rel_path, exc)
-            elif has_artwork:
-                # Claiming artwork the server cannot produce means a 404 on
-                # every view; clearing it turns a repeating error into a clean
-                # placeholder.
-                await _set_media_field(metadata_id, user_id, "has_artwork", False)
-                progressed = True
-
+        if not _locked_artwork_path(music_dir, metadata_id).exists():
+            art_targets.append((metadata_id, user_id, rel_path, path, music_dir, has_artwork))
         if bpm is None or bpm <= 0:
-            value = await locked_media.estimate_bpm_async(path)
-            if value:
-                await _set_media_field(metadata_id, user_id, "bpm", value)
-                bpm_done += 1
-                progressed = True
+            bpm_targets.append((metadata_id, user_id, rel_path, path))
 
-        if not progressed:
+    semaphore = asyncio.Semaphore(_MEDIA_BACKFILL_ARTWORK_CONCURRENCY)
+
+    async def _recover_artwork(entry):
+        metadata_id, user_id, rel_path, path, music_dir, has_artwork = entry
+        async with semaphore:
+            if time.monotonic() >= deadline:
+                return None
+            data, source = await locked_media.extract_artwork_async(path)
+        if data:
+            try:
+                cache_path = _locked_artwork_path(music_dir, metadata_id)
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_bytes(data)
+                await _set_media_field(metadata_id, user_id, "has_artwork", True)
+                logger.info("media backfill: %s artwork for %s", source, rel_path)
+                return True
+            except OSError as exc:
+                logger.warning("media backfill: could not write artwork for %s: %s", rel_path, exc)
+                return None
+        if has_artwork:
+            # Claiming artwork the server cannot produce means a 404 on every
+            # view; clearing it turns a repeating error into a clean placeholder.
+            await _set_media_field(metadata_id, user_id, "has_artwork", False)
+        return False
+
+    results = await asyncio.gather(*(_recover_artwork(e) for e in art_targets),
+                                   return_exceptions=True)
+    # True = recovered, False = tried and there is none, None = skipped (out of
+    # budget), Exception = failed. Only True counts as a win, and only True or
+    # False count as having been tried.
+    art_outcome = {
+        entry[0]: (result if isinstance(result, bool) else None)
+        for entry, result in zip(art_targets, results)
+    }
+    art_done = sum(1 for v in art_outcome.values() if v is True)
+
+    bpm_outcome: dict[str, bool] = {}
+    for metadata_id, user_id, rel_path, path in bpm_targets:
+        # Checked between tracks, never mid-track: abandoning a decode halfway
+        # wastes the work already done and leaves the row exactly as it was.
+        if time.monotonic() >= deadline:
+            break
+        value = await locked_media.estimate_bpm_async(path)
+        bpm_outcome[metadata_id] = value is not None
+        if value:
+            await _set_media_field(metadata_id, user_id, "bpm", value)
+            bpm_done += 1
+
+    # Blacklist only tracks that were actually TRIED for everything they needed
+    # and gained nothing. A track skipped because the tick ran out of budget must
+    # stay eligible — otherwise a long backlog would permanently exclude whatever
+    # happened to sit at its tail.
+    for metadata_id, *_ in candidates:
+        needed_art = metadata_id in art_outcome
+        needed_bpm = metadata_id in {t[0] for t in bpm_targets}
+        art_result = art_outcome.get(metadata_id)
+        bpm_result = bpm_outcome.get(metadata_id)
+
+        art_settled = (not needed_art) or (art_result is not None)
+        bpm_settled = (not needed_bpm) or (bpm_result is not None)
+        gained = (art_result is True) or (bpm_result is True)
+
+        if art_settled and bpm_settled and not gained:
             _media_backfill_failed.add(metadata_id)
 
+    processed = len([k for k, v in art_outcome.items() if v is not None]) + len(bpm_outcome)
+
     if art_done or bpm_done:
-        logger.info("media backfill: %d artwork, %d bpm (batch of %d)",
-                    art_done, bpm_done, len(candidates))
+        logger.info("media backfill: %d artwork, %d bpm (%d of %d candidates in %.0fs)",
+                    art_done, bpm_done, processed, len(candidates),
+                    _MEDIA_BACKFILL_SECONDS_PER_TICK - max(0.0, deadline - time.monotonic()))
 
 
 async def _set_media_field(metadata_id: str, user_id: str, column: str, value) -> None:
