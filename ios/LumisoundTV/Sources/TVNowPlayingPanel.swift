@@ -161,7 +161,8 @@ struct TVNowPlayingPanel: View {
         // Without this the VStack sized to its content, so the gradient below
         // covered only the middle band of the column — the floating rectangle
         // with hard top and bottom edges the column showed on a real display.
-        .frame(width: Self.width, maxHeight: .infinity, alignment: .top)
+        .frame(width: Self.width)
+        .frame(maxHeight: .infinity, alignment: .top)
         .background {
             LinearGradient(
                 colors: [TVPalette.ground.opacity(0.35), TVPalette.surface.opacity(0.9)],

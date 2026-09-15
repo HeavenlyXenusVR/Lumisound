@@ -58,8 +58,16 @@ struct TVSideRail: View {
         // painted a hard-edged block partway down the screen instead of a full
         // column. `ignoresSafeArea` extends a view past the safe area; it does
         // not make one fill its parent.
-        .frame(width: Self.width, maxHeight: .infinity)
         .padding(.vertical, 44)
+        .frame(width: Self.width)
+        // Fill the window's height so the background below covers a full
+        // column. The VStack otherwise sizes to its content, so the gradient
+        // stopped where the last icon did and painted a hard-edged block partway
+        // down the screen. `ignoresSafeArea` extends a view past the safe area;
+        // it does not make one fill its parent, which is what was needed.
+        // Applied AFTER the padding — padding an already-infinite frame grows it
+        // past the window rather than insetting the content within it.
+        .frame(maxHeight: .infinity)
         .background {
             // Reads as a lit edge rather than a panel with a border on it.
             LinearGradient(

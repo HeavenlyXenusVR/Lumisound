@@ -620,40 +620,19 @@ struct TVPlayerView: View {
     var body: some View {
         ZStack {
             backdrop
-            HStack(spacing: 70) {
-                artwork
-                VStack(alignment: .leading, spacing: 22) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(alignment: .firstTextBaseline, spacing: 16) {
-                            Text(displayed?.title ?? "")
-                                .font(.system(size: 46, weight: .bold))
-                                .lineLimit(2)
-                                .id(displayed?.id)
-                                .transition(.opacity.combined(with: .move(edge: .leading)))
-                            if let songID = displayed?.favoriteSongID {
-                                favoriteButton(songID: songID)
-                            }
-                        }
-                        Text((displayed?.artist.isEmpty ?? true) ? "Unknown Artist" : (displayed?.artist ?? ""))
-                            .font(.system(size: 30))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .id(displayed?.id)
-                            .transition(.opacity)
-                    }
-                    .animation(.easeOut(duration: 0.4), value: displayed?.id)
-                    progressBar
-                    HStack(spacing: 44) {
-                        controlButton("backward.fill") { model.previous() }
-                        controlButton(model.isPlaying ? "pause.fill" : "play.fill", big: true) { model.togglePlayPause() }
-                            .focused($playPauseFocused)
-                        controlButton("forward.fill") { model.next() }
-                    }
-                    utilityRow
-                }
-                .frame(maxWidth: 760, alignment: .leading)
+
+            // One glass slab holding the track, with the transport floating
+            // beneath it. The previous layout put artwork and a text column
+            // side by side directly on the backdrop, so the screen had no
+            // figure — just elements scattered over a blurred photo, and the
+            // transport was buried in the middle of the text column where it
+            // competed with the title for the same vertical space.
+            VStack(spacing: 30) {
+                mainSlab
+                transportBar
             }
             .padding(.horizontal, TVMetrics.margin)
+            .padding(.vertical, 54)
             .focusSection()
 
             if sidePanel == .upNext {
@@ -672,8 +651,8 @@ struct TVPlayerView: View {
         }
         .onDisappear { model.isShowingFullPlayer = false }
         .onAppear {
-            // No context = opened from the mini-player; whatever is already
-            // playing stays playing.
+            // No context = opened from the now-playing column; whatever is
+            // already playing stays playing.
             if let context { model.start(context: context) }
             model.isShowingFullPlayer = true
             breathe = true
@@ -692,15 +671,159 @@ struct TVPlayerView: View {
             guard newValue == .upNext else { return }
             upNextCloseFocused = true
         }
-        // No `.onDisappear { model.stop() }` anymore — `model` is the app-
-        // wide `TVPlayerModel.shared` now, not a fresh instance scoped to
-        // this screen, so navigating away from Now Playing should leave
-        // playback running (matches the iOS app's `AudioPlayerManager`)
-        // rather than killing it. `stop()` is still exactly what a real
-        // user-initiated "stop" action should call — there just isn't one
-        // wired up in this UI today (browsing away only pauses/keeps
-        // playing, never force-stops), same as before this change for
-        // every OTHER way of leaving Now Playing that already existed.
+        // No `.onDisappear { model.stop() }` — `model` is the app-wide
+        // `TVPlayerModel.shared`, not an instance scoped to this screen, so
+        // navigating away from Now Playing leaves playback running (matching
+        // the iOS app's `AudioPlayerManager`) rather than killing it.
+    }
+
+    // MARK: Slab
+
+    /// Artwork, track, and lyrics in a single translucent panel.
+    private var mainSlab: some View {
+        HStack(alignment: .top, spacing: 52) {
+            VStack(spacing: 26) {
+                artwork
+                artworkStyleMenu
+            }
+
+            VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .firstTextBaseline, spacing: 16) {
+                        Text(displayed?.title ?? "")
+                            .font(TVType.display)
+                            .lineLimit(3)
+                            .minimumScaleFactor(0.55)
+                            .id(displayed?.id)
+                            .transition(.opacity.combined(with: .move(edge: .leading)))
+                        if let songID = displayed?.favoriteSongID {
+                            favoriteButton(songID: songID)
+                        }
+                    }
+                    Text((displayed?.artist.isEmpty ?? true) ? "Unknown Artist" : (displayed?.artist ?? ""))
+                        .font(TVType.hero)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                        .id(displayed?.id)
+                        .transition(.opacity)
+                }
+                .animation(.easeOut(duration: 0.4), value: displayed?.id)
+
+                progressBar
+
+                Spacer(minLength: 0)
+
+                utilityRow
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Lyrics are shown here rather than only behind a toggle. They are
+            // the one thing on this screen that changes second to second, and a
+            // full-screen player that cannot show them without covering itself
+            // is the reason the overlay panel existed at all. The overlay stays
+            // for reading a whole song; this is for following one.
+            if !model.lyrics.isEmpty {
+                inlineLyrics
+                    .frame(width: 400)
+            }
+        }
+        .padding(46)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background {
+            RoundedRectangle(cornerRadius: 42, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 42, style: .continuous)
+                        .fill(TVPalette.ground.opacity(0.32))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 42, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [.white.opacity(0.32), TVPalette.neon.opacity(0.22), .white.opacity(0.06)],
+                                startPoint: .topLeading, endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1.5
+                        )
+                }
+                .shadow(color: .black.opacity(0.55), radius: 44, y: 22)
+        }
+    }
+
+    /// Five lines centred on the current one, the active line lit. Non-focusable
+    /// on purpose: it is a readout, and making it focusable would put a stop on
+    /// the path between the artwork and the utility row for no action gained.
+    private var inlineLyrics: some View {
+        let idx = currentLyricIndex
+        return VStack(alignment: .leading, spacing: 14) {
+            Text("LYRICS")
+                .font(TVType.eyebrow)
+                .tracking(2.2)
+                .foregroundStyle(.secondary)
+            ForEach(visibleLyricRange(around: idx), id: \.self) { i in
+                Text(model.lyrics[i].text)
+                    .font(.system(size: i == idx ? 27 : 22,
+                                  weight: i == idx ? .semibold : .regular))
+                    .foregroundStyle(i == idx ? Color.white : Color.white.opacity(0.34))
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Spacer(minLength: 0)
+        }
+        .animation(.easeOut(duration: 0.28), value: idx)
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    /// Index of the last lyric line whose timestamp has passed, or -1 before the
+    /// first. Linear scan: a few hundred lines at most, once per render.
+    private var currentLyricIndex: Int {
+        var result = -1
+        for (i, line) in model.lyrics.enumerated() {
+            if line.time <= model.position { result = i } else { break }
+        }
+        return result
+    }
+
+    private func visibleLyricRange(around index: Int) -> [Int] {
+        let count = model.lyrics.count
+        guard count > 0 else { return [] }
+        let window = min(5, count)
+        let centre = max(0, index)
+        let start = max(0, min(centre - 2, count - window))
+        return Array(start..<(start + window))
+    }
+
+    // MARK: Transport
+
+    /// The transport as a floating capsule under the slab, rather than a row
+    /// inside the text column. It is the screen's primary control, so it gets
+    /// its own surface and the full width to centre in, and moving it out of the
+    /// column stops it fighting the title for vertical space.
+    private var transportBar: some View {
+        HStack(spacing: 40) {
+            controlButton("backward.fill") { model.previous() }
+            controlButton(model.isPlaying ? "pause.fill" : "play.fill", big: true) {
+                model.togglePlayPause()
+            }
+            .focused($playPauseFocused)
+            controlButton("forward.fill") { model.next() }
+        }
+        .padding(.horizontal, 60)
+        .padding(.vertical, 18)
+        .background {
+            Capsule()
+                .fill(.ultraThinMaterial)
+                .overlay { Capsule().fill(TVPalette.ground.opacity(0.35)) }
+                .overlay {
+                    Capsule().strokeBorder(
+                        LinearGradient(colors: [.white.opacity(0.30), TVPalette.neon.opacity(0.25)],
+                                       startPoint: .topLeading, endPoint: .bottomTrailing),
+                        lineWidth: 1.5
+                    )
+                }
+                .shadow(color: .black.opacity(0.5), radius: 30, y: 14)
+        }
     }
 
     private func togglePanel(_ panel: TVSidePanel) {
@@ -712,7 +835,7 @@ struct TVPlayerView: View {
     // MARK: Utility row (shuffle / repeat / sleep timer / lyrics / artwork style / up next)
 
     private var utilityRow: some View {
-        HStack(spacing: 30) {
+        HStack(spacing: 26) {
             toggleIconButton("shuffle", isOn: model.isShuffled) { model.toggleShuffle() }
             toggleIconButton(model.repeatMode.symbol, isOn: model.repeatMode != .off) { model.cycleRepeatMode() }
             toggleIconButton("arrow.triangle.merge", isOn: model.crossfadeEnabled) {
@@ -722,7 +845,9 @@ struct TVPlayerView: View {
             }
             sleepTimerMenu
             toggleIconButton("quote.bubble", isOn: sidePanel == .lyrics) { togglePanel(.lyrics) }
-            artworkStyleMenu
+            // artworkStyleMenu is NOT here any more: it moved under the artwork,
+            // beside the thing it actually changes. Leaving it in both places put
+            // the same control on screen twice.
             if model.queue.count > 1 {
                 Text("\(model.currentIndex + 1) of \(model.queue.count)")
                     .font(.system(size: 20, weight: .medium))
@@ -866,14 +991,21 @@ struct TVPlayerView: View {
         .focusSection()
     }
 
+    /// Matches `TVAmbientBackground`'s treatment so pushing into the player is a
+    /// continuation of the shell rather than a jump to a differently-coloured
+    /// screen: the same artwork, the same indigo wash, just less dimmed, since
+    /// here the artwork IS the subject rather than a backdrop behind a list.
     @ViewBuilder private var backdrop: some View {
         ZStack {
-            Color.black
-            TVAuthImage(url: displayed?.artworkURL, token: displayed?.authToken) { Color.black }
-                .blur(radius: 90)
-                .opacity(0.55)
-            LinearGradient(colors: [.black.opacity(0.35), .black.opacity(0.8)],
-                           startPoint: .top, endPoint: .bottom)
+            LinearGradient(colors: [TVPalette.surface, TVPalette.ground],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+            TVAuthImage(url: displayed?.artworkURL, token: displayed?.authToken) { Color.clear }
+                .scaleEffect(1.4)
+                .blur(radius: 100)
+                .saturation(1.3)
+                .overlay(TVPalette.ground.opacity(0.55))
+            LinearGradient(colors: [.clear, TVPalette.ground.opacity(0.7)],
+                           startPoint: .center, endPoint: .bottom)
         }
         .ignoresSafeArea()
     }
@@ -970,7 +1102,7 @@ struct TVPlayerView: View {
             .font(.system(size: 22, weight: .medium).monospacedDigit())
             .foregroundStyle(.secondary)
         }
-        .frame(width: 720)
+        .frame(maxWidth: .infinity)
     }
 
     private var fraction: Double {
