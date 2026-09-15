@@ -52,6 +52,26 @@ struct UserMusicTrack: Identifiable, Codable, Hashable {
     /// for locked files, which no client can analyse itself. Nil when the track
     /// has no steady beat the estimator would commit to.
     let bpm: Double?
+    /// How the track ends and begins — measured server-side so both apps decide
+    /// crossfades from identical data. See TVTransitionProfile.
+    let trailingSilenceS: Double?
+    let outroSlopeDB: Double?
+    let outroColdStop: Bool?
+    let introLeadInS: Double?
+    let introOnsetHardness: Double?
+
+    /// Nil until the server has profiled this track, in which case the player
+    /// falls back to measuring the tail itself.
+    var transitionProfile: TVTransitionProfile? {
+        guard trailingSilenceS != nil || outroSlopeDB != nil || introLeadInS != nil else { return nil }
+        return TVTransitionProfile(
+            trailingSilence: trailingSilenceS ?? 0,
+            outroSlopeDB: outroSlopeDB ?? 0,
+            outroColdStop: outroColdStop ?? false,
+            introLeadIn: introLeadInS ?? 0,
+            introOnsetHardness: introOnsetHardness ?? 0
+        )
+    }
 
     /// What to actually show for this track, never a raw filename.
     ///
@@ -92,6 +112,11 @@ struct UserMusicTrack: Identifiable, Codable, Hashable {
         case isLocked    = "is_locked"
         case uploadedAt  = "uploaded_at"
         case bpm
+        case trailingSilenceS   = "trailing_silence_s"
+        case outroSlopeDB       = "outro_slope_db"
+        case outroColdStop      = "outro_cold_stop"
+        case introLeadInS       = "intro_lead_in_s"
+        case introOnsetHardness = "intro_onset_hardness"
     }
 }
 
@@ -455,6 +480,10 @@ struct TVPlayable: Identifiable, Hashable {
     /// Server-measured tempo, used to beat-snap Auto Crossfade. Nil when
     /// unknown, in which case the fade simply is not snapped.
     var bpm: Double? = nil
+    /// How this track ends and begins — see TVAutoCrossfade.
+    var transitionProfile: TVTransitionProfile? = nil
+    /// Real duration, so a fade can be capped against the track's own length.
+    var durationSeconds: Double = 0
 }
 
 // MARK: - TVSyncTrackBody (POST /user/playlists/{id}/tracks request body —
@@ -1220,7 +1249,9 @@ final class TVBridgeClient: ObservableObject {
             favoriteSongID: track.id,
             isLocked: track.isLocked,
             ext: track.ext,
-            bpm: track.bpm
+            bpm: track.bpm,
+            transitionProfile: track.transitionProfile,
+            durationSeconds: track.duration
         )
     }
 

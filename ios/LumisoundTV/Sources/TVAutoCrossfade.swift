@@ -1,108 +1,177 @@
+import AVFoundation
 import Foundation
+
+// MARK: - TVTransitionProfile
+//
+// How a track ends and how one begins, measured server-side by
+// `locked_media.transition_profile` and delivered with the track. Measured there
+// rather than here because the server can read inside a locked (`.lms`) file and
+// a client cannot analyse a track it has not downloaded yet — and because one
+// implementation feeding both apps is the only way iOS and tvOS make the same
+// decision about the same pair of tracks.
+struct TVTransitionProfile: Equatable {
+    /// Dead air on the end of the file, in seconds.
+    var trailingSilence: Double = 0
+    /// dB change per second across the last of the real music. Negative is
+    /// fading away.
+    var outroSlopeDB: Double = 0
+    /// The music stops abruptly rather than tapering.
+    var outroColdStop: Bool = false
+    /// How far in the incoming track actually starts.
+    var introLeadIn: Double = 0
+    /// 0...1. How much of the opening rise happens at once — a downbeat jumps,
+    /// a fade-in climbs.
+    var introOnsetHardness: Double = 0
+}
 
 // MARK: - TVAutoCrossfade
 //
-// Chooses a crossfade length per transition instead of using one fixed number,
-// ported from the iPhone app's `smartFadeDuration`.
+// Chooses when a crossfade starts and how long it runs.
 //
-// The tvOS player already crossfades, but always for exactly six seconds — the
-// same overlap between two quiet ambient pieces and between two loud remixes,
-// and the same whether the outgoing track ends on a long tail or stops dead.
-// A fixed overlap is wrong in both directions: too long and two busy passages
-// smear together, too short and a natural fade is cut off.
+// The first version used a fixed six seconds, then a tail-energy nudge and a
+// beat-snap. This version adds the thing that turned out to matter most, which
+// none of that could see:
 //
-// What it decides from, in order of how much each is trusted:
+// **Crossfades were routinely overlapping silence.** A fade triggered at
+// `duration - 6s` assumes the track is still playing six seconds from the end.
+// Measured across a real cloud library, 8 tracks in 25 have more than 1.5s of
+// trailing dead air and one had thirty-eight seconds. Those transitions were not
+// blending two tracks at all — the outgoing track had already finished and the
+// incoming one was simply fading up over nothing, which is exactly why a
+// crossfade can feel like an awkward gap instead of a join. Starting the fade
+// before the dead air is the single biggest improvement here, and it is
+// invisible to anything that only looks at levels, because silence and a quiet
+// fade-out measure the same at the end.
 //
-//   1. **Tempo**, when known — the fade is snapped to a whole number of beats so
-//      it begins and ends on a downbeat rather than part-way through a bar. This
-//      is the piece that makes a transition sound deliberate rather than merely
-//      gradual.
-//   2. **How the outgoing track is actually ending** — measured from its own
-//      audio rather than assumed. A track still at full energy near its end
-//      reads as an abrupt cut, so the overlap tightens; one already fading out
-//      has room for a longer blend.
-//   3. **Track length** — a ninety-second track cannot give up six seconds to a
-//      fade without losing a meaningful part of itself.
+// On top of that, four judgements the old version could not make:
 //
-// The energy nudge is deliberately one-directional on iOS (never longer than the
-// base) because its level reading cannot distinguish real silence from "the
-// analyser has not settled yet". tvOS has no live analyser at all, so the same
-// question is answered a different way here: the outgoing track's tail is
-// measured directly, which is unambiguous, and can therefore lengthen as well as
-// shorten.
+//   1. **A cold stop is left alone.** A track that stops dead does so on
+//      purpose; overlapping it smothers the ending. Level alone cannot tell a
+//      hard stop from a sustained final chord — both are loud right up to the
+//      end — so this needs the outro's SLOPE, not its volume.
+//   2. **A fading outro is blended generously**, because there is already a
+//      taper to blend into.
+//   3. **A hard opening downbeat gets a shorter overlap** so the hit lands
+//      clean; a track that fades in gets a longer one, since there is nothing
+//      there to smear.
+//   4. **Clashing tempos shorten the fade.** Two tracks at 80 and 140 overlapped
+//      for six seconds are two conflicting pulses. Near-equal or double-time
+//      tempos beat-match, so they keep the longer fade and get snapped to the
+//      beat.
 enum TVAutoCrossfade {
-    /// What the setting means when Auto is off.
     static let baseDuration: TimeInterval = 6
 
-    /// Never overlap more than this share of the shorter track.
     private static let maxTrackFraction: Double = 0.12
     private static let minDuration: TimeInterval = 1.5
     private static let maxDuration: TimeInterval = 12
 
-    /// Picks the overlap for a transition.
-    ///
-    /// - Parameters:
-    ///   - outgoingDuration: length of the track ending, 0 if unknown.
-    ///   - incomingDuration: length of the track starting, 0 if unknown.
-    ///   - bpm: tempo of the incoming track, nil if unknown.
-    ///   - tailLevel: RMS of the outgoing track's final seconds, 0...1, nil if
-    ///     it could not be measured.
-    static func duration(outgoingDuration: TimeInterval,
-                         incomingDuration: TimeInterval,
-                         bpm: Double?,
-                         tailLevel: Double?) -> TimeInterval {
-        var fade = baseDuration
+    /// What a transition should do.
+    struct Plan: Equatable {
+        /// How long the overlap runs.
+        var duration: TimeInterval
+        /// How far before the END OF THE FILE the fade should begin. Larger than
+        /// `duration` whenever the outgoing track has dead air on the end.
+        var startBefore: TimeInterval
+        /// Why, for telemetry — a transition that sounds wrong is otherwise very
+        /// hard to reason about after the fact.
+        var reason: String
+    }
 
-        // 1. Energy. A loud ending wants a tight overlap; a track already
-        //    trailing off can afford a longer one.
-        if let tailLevel {
+    static func plan(outgoingDuration: TimeInterval,
+                     incomingDuration: TimeInterval,
+                     outgoing: TVTransitionProfile?,
+                     incoming: TVTransitionProfile?,
+                     outgoingBPM: Double?,
+                     incomingBPM: Double?,
+                     tailLevel: Double?) -> Plan {
+        var fade = baseDuration
+        var reasons: [String] = []
+
+        // 1. Outro shape. Preferred over the measured tail level when available:
+        //    the profile distinguishes a stop from a sustain, which a level
+        //    cannot.
+        if let outgoing {
+            if outgoing.outroColdStop {
+                fade *= 0.35
+                reasons.append("cold-stop")
+            } else if outgoing.outroSlopeDB < -3 {
+                fade *= 1.3
+                reasons.append("fading-outro")
+            } else if outgoing.outroSlopeDB < -1 {
+                fade *= 1.1
+                reasons.append("soft-outro")
+            }
+        } else if let tailLevel {
+            // Fallback for a track with no profile yet.
             let level = min(1, max(0, tailLevel))
-            // 1.35x when the track has essentially faded out, 0.7x at full tilt.
             fade *= 1.35 - level * 0.65
+            reasons.append("tail-level")
         }
 
-        // 2. Beat-snap, so the fade starts and ends on a downbeat. Clamped to
-        //    ±50% of where we started, so an unusually slow or fast track cannot
-        //    turn a short crossfade into a long one on tempo alone.
-        if let bpm, bpm > 0 {
+        // 2. Incoming shape.
+        if let incoming {
+            if incoming.introLeadIn > 1.0 {
+                fade *= 1.25
+                reasons.append("soft-intro")
+            }
+            if incoming.introOnsetHardness > 0.8 {
+                fade *= 0.8
+                reasons.append("hard-onset")
+            }
+        }
+
+        // 3. Tempo compatibility, before the beat-snap — snapping to a beat the
+        //    other track is fighting does not help.
+        var beatSnap = true
+        if let a = outgoingBPM, let b = incomingBPM, a > 0, b > 0 {
+            let ratio = max(a, b) / min(a, b)
+            let nearUnison = abs(ratio - 1) < 0.08
+            let nearDouble = abs(ratio - 2) < 0.12
+            if !(nearUnison || nearDouble) {
+                fade *= 0.7
+                beatSnap = false
+                reasons.append("tempo-clash")
+            }
+        }
+
+        if beatSnap, let bpm = incomingBPM, bpm > 0 {
             let beat = 60.0 / bpm
             let beats = max(1, (fade / beat).rounded())
             fade = min(max(beats * beat, baseDuration * 0.5), baseDuration * 1.5)
+            reasons.append("beat-snapped")
         }
 
-        // 3. Never eat a meaningful share of a short track. Checked against BOTH
-        //    sides: a six-second fade out of a ninety-second track is as wrong as
-        //    a six-second fade into one.
+        // 4. Never eat a meaningful share of a short track, on either side.
         for length in [outgoingDuration, incomingDuration] where length > 0 {
             fade = min(fade, length * maxTrackFraction)
         }
+        fade = min(max(fade, minDuration), maxDuration)
 
-        return min(max(fade, minDuration), maxDuration)
+        // 5. Start before the dead air so the overlap lands on music.
+        let silence = max(0, outgoing?.trailingSilence ?? 0)
+        if silence > 0.3 { reasons.append(String(format: "skip-%.1fs-silence", silence)) }
+
+        return Plan(duration: fade,
+                    startBefore: fade + silence,
+                    reason: reasons.isEmpty ? "default" : reasons.joined(separator: ","))
     }
 }
 
 // MARK: - TVTailLevel
 
-import AVFoundation
-
 /// Measures how loud a track's final seconds actually are.
 ///
-/// This is the signal iOS cannot get cleanly: its live analyser reports `0` both
-/// for genuine silence and for "not settled yet", so the nudge there has to be
-/// one-directional to stay safe. Reading the file's tail directly has no such
-/// ambiguity — a quiet answer means the track really is quiet there — so the
-/// result can lengthen a fade as well as shorten it.
+/// Only used for tracks with no server profile yet — the profile supersedes it,
+/// since a level cannot separate a cold stop from a sustained ending. Kept as a
+/// fallback so a freshly-uploaded track still gets something better than a flat
+/// six seconds while it waits to be analysed.
 ///
 /// Cached per URL: a crossfade happens at the end of every track, and decoding
 /// the same tail twice for a repeat play is wasted work.
 enum TVTailLevel {
     private static var cache: [String: Double] = [:]
-    /// How much of the ending to look at.
     private static let windowSeconds: Double = 8
 
-    /// Returns 0...1, or nil when the file cannot be decoded (Opus via
-    /// AVAssetReader, most often) — in which case the caller simply skips the
-    /// energy term rather than guessing a value.
     static func measure(url: URL, duration: TimeInterval) -> Double? {
         let key = url.absoluteString
         if let hit = cache[key] { return hit }

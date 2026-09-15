@@ -326,6 +326,42 @@ final class TVPlayerModel: ObservableObject {
         advanceOnEnd()
     }
 
+    /// The plan for the transition out of the current track.
+    ///
+    /// Computed from the same inputs in both places it is needed — the trigger
+    /// and the fade itself — so the moment the fade starts and how long it runs
+    /// can never disagree.
+    private func currentTransitionPlan(into nextItem: TVPlayable) -> TVAutoCrossfade.Plan {
+        guard TVAudioSettings.shared.autoCrossfade else {
+            return TVAutoCrossfade.Plan(duration: crossfadeDuration,
+                                        startBefore: crossfadeDuration,
+                                        reason: "auto-off")
+        }
+        // Only measured locally when the server has not profiled this track yet.
+        let tail: Double? = current?.transitionProfile == nil
+            ? (player.currentItem?.asset as? AVURLAsset).flatMap {
+                TVTailLevel.measure(url: $0.url, duration: duration)
+              }
+            : nil
+        return TVAutoCrossfade.plan(
+            outgoingDuration: duration,
+            incomingDuration: nextItem.durationSeconds,
+            outgoing: current?.transitionProfile,
+            incoming: nextItem.transitionProfile,
+            outgoingBPM: current?.bpm,
+            incomingBPM: nextItem.bpm,
+            tailLevel: tail
+        )
+    }
+
+    /// How far before the end of the file the fade should begin.
+    private func pendingTransitionLead() -> TimeInterval {
+        guard let nextIndex = nextIndexForCrossfade(), queue.indices.contains(nextIndex) else {
+            return crossfadeDuration
+        }
+        return currentTransitionPlan(into: queue[nextIndex]).startBefore
+    }
+
     private func nextIndexForCrossfade() -> Int? {
         guard crossfadeEnabled, queue.count > 1, repeatMode != .one else { return nil }
         if currentIndex + 1 < queue.count { return currentIndex + 1 }
@@ -334,11 +370,17 @@ final class TVPlayerModel: ObservableObject {
     }
 
     private func checkCrossfadeTrigger() {
-        // The trigger window uses the BASE duration deliberately: the chosen
-        // length depends on measurements taken at the moment the fade starts,
-        // and a window that moved with it would be chasing its own decision.
-        guard !hasCrossfadedForCurrentTrack, duration > crossfadeDuration,
-              duration - position <= crossfadeDuration,
+        // The window now includes the outgoing track's TRAILING SILENCE.
+        //
+        // Triggering at `duration - fade` assumes the track is still playing
+        // that close to the end. Measured across a real library it often is not:
+        // a third of tracks carry more than 1.5s of dead air and one had
+        // thirty-eight seconds, so the "crossfade" was partly or entirely the
+        // next track fading up over nothing. Starting earlier by exactly the
+        // amount of silence puts the overlap back on music.
+        let lead = pendingTransitionLead()
+        guard !hasCrossfadedForCurrentTrack, duration > lead,
+              duration - position <= lead,
               nextIndexForCrossfade() != nil
         else { return }
         hasCrossfadedForCurrentTrack = true
@@ -354,31 +396,18 @@ final class TVPlayerModel: ObservableObject {
         incoming.pause()
         incoming.volume = 0
 
-        // Choose the overlap for THIS transition. Measuring the outgoing track's
-        // tail is what lets the fade tighten on an abrupt ending and stretch on
-        // one already trailing off, rather than applying the same six seconds to
-        // both. Measured, not assumed — see TVAutoCrossfade.
-        if TVAudioSettings.shared.autoCrossfade {
-            let tail = (player.currentItem?.asset as? AVURLAsset).flatMap {
-                TVTailLevel.measure(url: $0.url, duration: duration)
-            }
-            activeCrossfadeDuration = TVAutoCrossfade.duration(
-                outgoingDuration: duration,
-                incomingDuration: 0,
-                // The INCOMING track's tempo: the fade lands on its downbeat,
-                // which is the one the listener is about to be following.
-                bpm: nextItem.bpm,
-                tailLevel: tail
-            )
-        } else {
-            activeCrossfadeDuration = crossfadeDuration
-        }
+        activeCrossfadeDuration = currentTransitionPlan(into: nextItem).duration
 
         tvLog("Crossfade started into: \(nextItem.title)", category: "playback")
+        let plan = currentTransitionPlan(into: nextItem)
         TVRemoteLogger.log(
             category: "playback", event: "crossfade_started",
             detail: ["into": nextItem.title,
-                     "seconds": round(activeCrossfadeDuration * 10) / 10,
+                     "seconds": round(plan.duration * 10) / 10,
+                     "startBefore": round(plan.startBefore * 10) / 10,
+                     // Why this length — a transition that sounds wrong is very
+                     // hard to reason about after the fact without it.
+                     "reason": plan.reason,
                      "auto": TVAudioSettings.shared.autoCrossfade]
         )
 

@@ -7505,9 +7505,11 @@ async def _media_backfill_tick() -> None:
             # visible.
             await cur.execute(
                 """
-                SELECT id, user_id, COALESCE(relative_path, filename), has_artwork, bpm
+                SELECT id, user_id, COALESCE(relative_path, filename), has_artwork, bpm,
+                       transition_profiled_at
                 FROM ios_user_music_metadata
                 WHERE bpm IS NULL OR bpm <= 0 OR has_artwork IS NOT TRUE
+                   OR transition_profiled_at IS NULL
                 ORDER BY uploaded_at DESC NULLS LAST
                 LIMIT %s
                 """,
@@ -7519,7 +7521,7 @@ async def _media_backfill_tick() -> None:
     if not candidates:
         return
 
-    art_done = bpm_done = 0
+    art_done = bpm_done = profile_done = 0
     deadline = time.monotonic() + _MEDIA_BACKFILL_SECONDS_PER_TICK
 
     # Artwork and tempo are bottlenecked on completely different things, so they
@@ -7537,7 +7539,8 @@ async def _media_backfill_tick() -> None:
     # reason the tick is budgeted in the first place.
     art_targets = []
     bpm_targets = []
-    for metadata_id, user_id, rel_path, has_artwork, bpm in candidates:
+    profile_targets = []
+    for metadata_id, user_id, rel_path, has_artwork, bpm, profiled_at in candidates:
         music_dir = _user_music_dir(user_id)
         if music_dir is None:
             continue
@@ -7551,6 +7554,8 @@ async def _media_backfill_tick() -> None:
             art_targets.append((metadata_id, user_id, rel_path, path, music_dir, has_artwork))
         if bpm is None or bpm <= 0:
             bpm_targets.append((metadata_id, user_id, rel_path, path))
+        if profiled_at is None:
+            profile_targets.append((metadata_id, user_id, rel_path, path))
 
     semaphore = asyncio.Semaphore(_MEDIA_BACKFILL_ARTWORK_CONCURRENCY)
 
@@ -7600,6 +7605,19 @@ async def _media_backfill_tick() -> None:
             await _set_media_field(metadata_id, user_id, "bpm", value)
             bpm_done += 1
 
+    profile_outcome: dict[str, bool] = {}
+    for metadata_id, user_id, rel_path, path in profile_targets:
+        if time.monotonic() >= deadline:
+            break
+        profile = await locked_media.transition_profile_async(path)
+        profile_outcome[metadata_id] = profile is not None
+        # Stamped even when analysis declined, so a track that cannot be
+        # profiled is not re-decoded on every pass forever. A short or
+        # undecodable track is a permanent answer, not a transient failure.
+        await _store_transition_profile(metadata_id, user_id, profile)
+        if profile:
+            profile_done += 1
+
     # Blacklist only tracks that were actually TRIED for everything they needed
     # and gained nothing. A track skipped because the tick ran out of budget must
     # stay eligible — otherwise a long backlog would permanently exclude whatever
@@ -7607,22 +7625,59 @@ async def _media_backfill_tick() -> None:
     for metadata_id, *_ in candidates:
         needed_art = metadata_id in art_outcome
         needed_bpm = metadata_id in {t[0] for t in bpm_targets}
+        needed_profile = metadata_id in {t[0] for t in profile_targets}
         art_result = art_outcome.get(metadata_id)
         bpm_result = bpm_outcome.get(metadata_id)
+        profile_result = profile_outcome.get(metadata_id)
 
         art_settled = (not needed_art) or (art_result is not None)
         bpm_settled = (not needed_bpm) or (bpm_result is not None)
-        gained = (art_result is True) or (bpm_result is True)
+        # Profiling stamps the row either way, so once attempted it never needs
+        # revisiting and cannot hold a track in the candidate set.
+        profile_settled = (not needed_profile) or (profile_result is not None)
+        gained = (art_result is True) or (bpm_result is True) or (profile_result is True)
 
-        if art_settled and bpm_settled and not gained:
+        if art_settled and bpm_settled and profile_settled and not gained:
             _media_backfill_failed.add(metadata_id)
 
-    processed = len([k for k, v in art_outcome.items() if v is not None]) + len(bpm_outcome)
+    processed = len([k for k, v in art_outcome.items() if v is not None]) + len(bpm_outcome) + len(profile_outcome)
 
-    if art_done or bpm_done:
-        logger.info("media backfill: %d artwork, %d bpm (%d of %d candidates in %.0fs)",
-                    art_done, bpm_done, processed, len(candidates),
+    if art_done or bpm_done or profile_done:
+        logger.info("media backfill: %d artwork, %d bpm, %d profiles (%d of %d candidates in %.0fs)",
+                    art_done, bpm_done, profile_done, processed, len(candidates),
                     _MEDIA_BACKFILL_SECONDS_PER_TICK - max(0.0, deadline - time.monotonic()))
+
+
+async def _store_transition_profile(metadata_id: str, user_id: str, profile: dict | None) -> None:
+    """Writes a transition profile, stamping the row even when there was none.
+
+    The stamp is the point: without it a track that legitimately cannot be
+    profiled (too short, undecodable) would come back as a candidate on every
+    single pass and be re-decoded forever.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE ios_user_music_metadata SET
+                    trailing_silence_s = %s,
+                    outro_slope_db = %s,
+                    outro_cold_stop = %s,
+                    intro_lead_in_s = %s,
+                    intro_onset_hardness = %s,
+                    transition_profiled_at = NOW()
+                WHERE user_id = %s AND id = %s
+                """,
+                (
+                    (profile or {}).get("trailing_silence_s"),
+                    (profile or {}).get("outro_slope_db_per_s"),
+                    (profile or {}).get("outro_cold_stop"),
+                    (profile or {}).get("intro_lead_in_s"),
+                    (profile or {}).get("intro_onset_hardness"),
+                    user_id, metadata_id,
+                ),
+            )
 
 
 async def _set_media_field(metadata_id: str, user_id: str, column: str, value) -> None:
@@ -10039,15 +10094,20 @@ async def get_user_music(
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "SELECT relative_path, title, artist, album, genre, duration_seconds, has_artwork, uploaded_at, bpm "
+                    "SELECT relative_path, title, artist, album, genre, duration_seconds, has_artwork, uploaded_at, bpm, "
+                    "trailing_silence_s, outro_slope_db, outro_cold_stop, intro_lead_in_s, intro_onset_hardness "
                     "FROM ios_user_music_metadata WHERE user_id = %s AND relative_path IS NOT NULL",
                     (user_id,),
                 )
                 rows = await cur.fetchall()
-        for rp, m_title, m_artist, m_album, m_genre, m_duration, m_has_artwork, m_uploaded_at, m_bpm in rows:
+        for (rp, m_title, m_artist, m_album, m_genre, m_duration, m_has_artwork, m_uploaded_at, m_bpm,
+             m_trailing, m_slope, m_cold, m_lead, m_hardness) in rows:
             stored_meta[rp] = {
                 "title": m_title, "artist": m_artist, "album": m_album,
                 "genre": m_genre, "duration": m_duration, "has_artwork": m_has_artwork, "bpm": m_bpm,
+                "trailing_silence_s": m_trailing, "outro_slope_db": m_slope,
+                "outro_cold_stop": m_cold, "intro_lead_in_s": m_lead,
+                "intro_onset_hardness": m_hardness,
             }
             if m_uploaded_at is not None:
                 uploaded_at_by_path[rp] = m_uploaded_at.isoformat()
@@ -10118,6 +10178,15 @@ async def get_user_music(
             # Measured server-side by locked_media's onset-autocorrelation pass,
             # including for locked files the clients cannot analyse themselves.
             "bpm": meta.get("bpm"),
+            # How the track ends and begins — see locked_media.transition_profile.
+            # Served to BOTH clients so iOS and tvOS choose crossfades from the
+            # same measurements rather than each guessing from what it can hear
+            # locally.
+            "trailing_silence_s": meta.get("trailing_silence_s"),
+            "outro_slope_db": meta.get("outro_slope_db"),
+            "outro_cold_stop": meta.get("outro_cold_stop"),
+            "intro_lead_in_s": meta.get("intro_lead_in_s"),
+            "intro_onset_hardness": meta.get("intro_onset_hardness"),
             "server_path": rel_path,
             "filename": fpath.name,
             "ext": ext,

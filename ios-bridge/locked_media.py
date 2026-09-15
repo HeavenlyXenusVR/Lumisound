@@ -398,3 +398,191 @@ async def extract_artwork_async(path: pathlib.Path) -> tuple[bytes | None, str]:
 
 async def estimate_bpm_async(path: pathlib.Path) -> float | None:
     return await asyncio.to_thread(estimate_bpm, path)
+
+
+# ---------------------------------------------------------------------------
+# Transition profile — how a track ENDS and how the next one BEGINS.
+# ---------------------------------------------------------------------------
+#
+# The crossfade length was being chosen from the outgoing track's tail LEVEL. A
+# level alone cannot answer the question that actually matters, because the two
+# endings that most need different treatment look identical by it:
+#
+#   * a track that stops dead at full volume, and
+#   * a track holding a sustained final chord at full volume.
+#
+# Overlapping the first destroys a deliberate ending; overlapping the second is
+# exactly right. What separates them is the SLOPE of the tail — whether the
+# energy is falling away or holding — and whether there is an abrupt cut at the
+# very end. Same on the other side: a track that fades in can be overlapped
+# generously because there is nothing there to smear, while one that opens on a
+# hard downbeat wants a short overlap so the hit lands clean.
+#
+# All of this is measured server-side, inside the lock, so iOS and tvOS share one
+# implementation of the judgement rather than each carrying their own heuristic
+# that drifts from the other.
+
+_PROFILE_SR = 8000
+_PROFILE_WINDOW = 0.05          # 50ms envelope frames
+_OUTRO_SECONDS = 10.0
+_INTRO_SECONDS = 6.0
+
+
+def _envelope(pcm: bytes, window_s: float = _PROFILE_WINDOW):
+    import numpy as np
+    samples = np.frombuffer(pcm[: len(pcm) // 2 * 2], dtype="<i2").astype(np.float32) / 32768.0
+    if samples.size == 0:
+        return None
+    w = max(1, int(_PROFILE_SR * window_s))
+    frames = samples.size // w
+    if frames < 3:
+        return None
+    return np.sqrt((samples[: frames * w].reshape(frames, w) ** 2).mean(axis=1))
+
+
+def _decode_range(audio: pathlib.Path, start: float, length: float) -> bytes | None:
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-v", "quiet", "-ss", str(max(0.0, start)), "-i", str(audio),
+             "-t", str(length), "-ac", "1", "-ar", str(_PROFILE_SR), "-f", "s16le", "-"],
+            capture_output=True, timeout=120,
+        )
+    except subprocess.SubprocessError:
+        return None
+    return proc.stdout if proc.returncode == 0 and proc.stdout else None
+
+
+def _duration_of(audio: pathlib.Path) -> float:
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", str(audio)],
+            capture_output=True, text=True, timeout=30,
+        )
+        return float((probe.stdout or "0").strip() or 0)
+    except Exception:
+        return 0.0
+
+
+def transition_profile(path: pathlib.Path) -> dict | None:
+    """How this track ends and begins, for choosing a crossfade.
+
+    The first thing it establishes is how much DEAD AIR is on the end, because
+    that turned out to be the thing most wrong with the existing crossfade.
+
+    A fade triggered at `duration - 6s` assumes the track is still playing music
+    six seconds from the end. Measured across a real library, 8 tracks in 25 have
+    more than 1.5s of trailing silence and one had fifteen. Those transitions
+    were not blending two tracks at all — they were fading the next one up over a
+    tail that had already finished, which is both the wrong sound and the reason
+    a crossfade can feel like an awkward gap rather than a join.
+
+    Everything else here is therefore measured against the last of the real
+    music, not the last of the file.
+
+    Figures are in dB because that is the domain these decisions are made in — a
+    linear RMS ratio compresses exactly the quiet end of the range where the
+    difference between "fading out" and "stopped dead" lives.
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+
+    suffix = inner_suffix(path)
+    try:
+        with readable_copy(path, suffix=suffix) as readable:
+            duration = _duration_of(readable)
+            if duration < 8:
+                return None
+            # Look back far enough to find the end of the music even when the
+            # dead air is long.
+            look = min(45.0, duration)
+            tail_pcm = _decode_range(readable, duration - look, look)
+            head_pcm = _decode_range(readable, 0.0, _INTRO_SECONDS)
+    except Exception as exc:
+        logger.warning("transition_profile failed for %s: %s", path.name, exc)
+        return None
+
+    tail = _envelope(tail_pcm) if tail_pcm else None
+    head = _envelope(head_pcm) if head_pcm else None
+    if tail is None or head is None:
+        return None
+
+    floor = 1e-5
+
+    def db(x):
+        return float(20.0 * math.log10(max(float(x), floor)))
+
+    # --- Trailing silence --------------------------------------------------
+    # Same threshold rule as the leading-silence trimmer: relative to the
+    # track's own peak, with an absolute floor so a quiet outro is not mistaken
+    # for silence.
+    tail_peak = float(tail.max())
+    if tail_peak <= 0:
+        return None
+    threshold = max(tail_peak * 0.01, 0.0015)
+    above = np.nonzero(tail > threshold)[0]
+    if above.size == 0:
+        return None
+    last_music = int(above[-1])
+    trailing_silence = float((tail.size - 1 - last_music) * _PROFILE_WINDOW)
+
+    # --- Outro, measured on the MUSIC -------------------------------------
+    music = tail[: last_music + 1]
+    window_frames = int(_OUTRO_SECONDS / _PROFILE_WINDOW)
+    outro = music[-window_frames:] if music.size > window_frames else music
+    frames = outro.size
+    if frames < 4:
+        return None
+
+    t = (np.arange(frames) * _PROFILE_WINDOW).astype(np.float64)
+    outro_db = np.array([db(v) for v in outro])
+    slope_db_per_s = float(np.polyfit(t, outro_db, 1)[0])
+
+    # A cold stop is the music's final moment collapsing relative to the body of
+    # the outro WITHOUT having been fading toward it. Judged against the median
+    # rather than the peak, so one loud hit near the end does not make an
+    # ordinary ending look like a cliff.
+    last = float(np.median(outro[-3:]))
+    body = float(np.median(outro[: max(1, frames - 3)]))
+    drop_db = db(body) - db(last)
+    cold_stop = bool(drop_db > 12.0 and slope_db_per_s > -2.0)
+
+    # --- Intro -------------------------------------------------------------
+    head_peak = float(head.max())
+    head_db = np.array([db(v) for v in head])
+    lead_threshold = db(head_peak) - 12.0
+    head_above = np.nonzero(head_db >= lead_threshold)[0]
+    lead_in = float(head_above[0] * _PROFILE_WINDOW) if head_above.size else 0.0
+    # Hardness = how fast it reaches full level ONCE IT HAS STARTED.
+    #
+    # The first attempt used the largest single-frame rise anywhere in the
+    # opening, which measured almost exactly 1.0 for every track: the
+    # silence-to-signal step at the very beginning is a huge jump in dB for a
+    # fade-in and a downbeat alike, so it separated nothing. It was also
+    # redundant, since `lead_in` already says whether a track starts from
+    # silence. Time-to-full-level is the thing that actually differs — a
+    # downbeat is there immediately, a fade-in climbs for seconds.
+    onset_frame = int(head_above[0]) if head_above.size else 0
+    target = db(head_peak) - 3.0
+    reached = np.nonzero(head_db[onset_frame:] >= target)[0]
+    if reached.size:
+        rise_seconds = float(reached[0] * _PROFILE_WINDOW)
+        # 0s -> 1.0 (instant), 2s or more -> 0.0 (gradual).
+        onset_hardness = float(np.clip(1.0 - rise_seconds / 2.0, 0.0, 1.0))
+    else:
+        onset_hardness = 0.0
+
+    return {
+        "trailing_silence_s": round(trailing_silence, 2),
+        "outro_slope_db_per_s": round(slope_db_per_s, 2),
+        "outro_cold_stop": cold_stop,
+        "outro_tail_db": round(db(last), 1),
+        "intro_lead_in_s": round(lead_in, 2),
+        "intro_onset_hardness": round(onset_hardness, 3),
+    }
+
+
+async def transition_profile_async(path: pathlib.Path) -> dict | None:
+    return await asyncio.to_thread(transition_profile, path)
