@@ -25,12 +25,28 @@ enum LumisoundThumbnailBackfillService {
     /// Re-running costs one metadata read plus one image fetch per track,
     /// spread 20 at a time across foreground passes.
     private static let backfilledIDsKey = "thumbnailBackfill.completedSongIDs.v2"
-    /// Caps real per-pass work (an AVAsset metadata load + a network
-    /// upload per track) — this runs on the same 5-minute foreground loop
-    /// as the rest of LumisoundTrackVaultService's migrations, so a
-    /// several-hundred-track backlog converges over a handful of app
-    /// sessions rather than trying to push it all through in one burst.
-    private static let maxPerPass = 20
+    /// Caps real per-pass work (an AVAsset metadata load, an image fetch and
+    /// an upload per track) — this runs on the same 5-minute foreground loop
+    /// as the rest of LumisoundTrackVaultService's migrations.
+    ///
+    /// Raised 20 -> 100. The original figure assumed "a several-hundred-track
+    /// backlog", which is what this was written for; the real backlog is 3,465
+    /// locked tracks. At 20 per 5-minute pass — and only while the app is
+    /// FOREGROUND — that is ~14 hours of active phone use, measured at 4
+    /// passes over one afternoon before the app was backgrounded and progress
+    /// stopped. Tracks with no server-side thumbnail show no artwork at all on
+    /// tvOS (the server cannot extract art from locked bytes, so this upload is
+    /// its only source), so "converges eventually" meant "most of the library
+    /// has no Apple TV artwork for weeks".
+    ///
+    /// 100 brings the same backlog to roughly 3 hours of foreground time. It is
+    /// still a cap rather than "drain it all": each track costs a metadata read
+    /// plus a round trip, this shares the foreground with playback and UI, and
+    /// an unbounded burst on a 3,000-track library is exactly the "tight loop
+    /// over a big collection" shape that has caused main-thread stalls in this
+    /// codebase before. The work itself is already off the main actor; this
+    /// bounds the network burst.
+    private static let maxPerPass = 100
 
     private static var backfilledIDs: Set<String> {
         get { Set(UserDefaults.standard.stringArray(forKey: backfilledIDsKey) ?? []) }
