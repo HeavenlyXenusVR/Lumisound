@@ -239,7 +239,7 @@ struct TVAccountView: View {
 
                 VStack(alignment: .leading, spacing: 30) {
                     TVSectionHeader(title: "Account")
-                    VStack(spacing: 16) {
+                    VStack(spacing: TVMetrics.row) {
                         accountLink("Listening Stats", systemImage: "chart.bar.fill") {
                             TVStatsView(client: client, token: token)
                         }
@@ -264,7 +264,27 @@ struct TVAccountView: View {
                         .padding(.top, 10)
                     TVSocialActivityFeed(activity: client.socialActivity)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                // A BOUNDED width, not `maxWidth: .infinity`.
+                //
+                // Each row's label is an HStack containing a bare `Spacer()`,
+                // which grows to whatever width it is offered. Offered infinity
+                // by the column above it, inside a vertical ScrollView that does
+                // not pin its content's width, the rows grew far past the screen
+                // — visibly running off the right edge with no end to them.
+                //
+                // That is also why none of them could be reached: the tvOS focus
+                // engine does not move focus onto a view lying outside the
+                // visible bounds, and `.buttonStyle(.card)` scaled the focused
+                // row up, pushing it further out still. The rows were rendered,
+                // off-screen, and unfocusable.
+                .frame(maxWidth: 760, alignment: .leading)
+                // Makes the column a focus region in its own right, so moving
+                // right out of the profile card has somewhere defined to land.
+                // The profile column has had this since Sign Out became
+                // unreachable for the same class of reason.
+                .focusSection()
+
+                Spacer(minLength: 0)
             }
             .padding(TVMetrics.margin)
         }
@@ -298,17 +318,55 @@ struct TVAccountView: View {
         NavigationLink {
             destination()
         } label: {
-            HStack {
-                Label(title, systemImage: systemImage)
-                Spacer()
-                if badge > 0 {
-                    Text("\(badge)")
-                        .font(.caption.weight(.bold))
-                        .padding(.horizontal, 8).padding(.vertical, 3)
-                        .background(Color.accentColor, in: Capsule())
-                }
-            }
+            TVAccountRowLabel(title: title, systemImage: systemImage, badge: badge)
         }
-        .buttonStyle(.card)
+        // `.plain` + the port's own focus treatment, matching every other row in
+        // the app. `.card` applies the system lift sized for square artwork,
+        // which on a full-width row reads as the screen jumping — and brought
+        // the system focus halo with it, the white slab removed elsewhere.
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+    }
+}
+
+/// One row in the Account list. Bounded by its column rather than greedy: the
+/// trailing spacer pushes the badge to the row's own right edge, and the row is
+/// only ever as wide as the column allows.
+private struct TVAccountRowLabel: View {
+    let title: String
+    let systemImage: String
+    var badge: Int = 0
+
+    @Environment(\.isFocused) private var isFocused
+
+    var body: some View {
+        HStack(spacing: 18) {
+            Image(systemName: systemImage)
+                .font(.system(size: 24, weight: .medium))
+                .foregroundStyle(isFocused ? TVPalette.neon : .white.opacity(0.55))
+                .frame(width: 38)
+
+            Text(title)
+                .font(.system(size: 25, weight: .semibold))
+                .lineLimit(1)
+
+            Spacer(minLength: 12)
+
+            if badge > 0 {
+                Text("\(badge)")
+                    .font(.system(size: 17, weight: .bold))
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 4)
+                    .background(TVPalette.neonAlt, in: Capsule())
+            }
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.white.opacity(isFocused ? 0.8 : 0.3))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 16)
+        .tvNeonCard(isFocused: isFocused)
     }
 }
