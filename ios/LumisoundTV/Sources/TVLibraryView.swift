@@ -150,6 +150,7 @@ struct TVLibraryView: View {
                     )
                 }
                 .buttonStyle(.plain)
+                .focusEffectDisabled()
 
                 ForEach(Mode.allCases) { m in
                     Button {
@@ -158,6 +159,7 @@ struct TVLibraryView: View {
                         TVChip(title: m.rawValue, isSelected: mode == m, systemImage: m.systemImage)
                     }
                     .buttonStyle(.plain)
+                    .focusEffectDisabled()
                 }
             }
             .padding(.horizontal, TVMetrics.margin)
@@ -201,6 +203,7 @@ struct TVLibraryView: View {
             )
         }
         .buttonStyle(.plain)
+        .focusEffectDisabled()
         .tvTrackActions(client: client, token: token, track: track)
     }
 

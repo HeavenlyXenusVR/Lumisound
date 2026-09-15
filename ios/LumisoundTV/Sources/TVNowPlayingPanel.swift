@@ -138,6 +138,7 @@ struct TVNowPlayingPanel: View {
                     )
                 }
                 .buttonStyle(.plain)
+                .focusEffectDisabled()
                 .frame(maxWidth: .infinity)
 
                 VStack(alignment: .leading, spacing: 6) {
@@ -311,6 +312,7 @@ struct TVNowPlayingPanel: View {
             TVTransportButtonLabel(symbol: symbol, primary: primary)
         }
         .buttonStyle(.plain)
+        .focusEffectDisabled()
     }
 }
 

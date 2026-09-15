@@ -722,17 +722,19 @@ struct TVPlayerView: View {
 
             VStack(alignment: .leading, spacing: 22) {
                 VStack(alignment: .leading, spacing: 10) {
-                    HStack(alignment: .firstTextBaseline, spacing: 16) {
-                        Text(displayed?.title ?? "")
-                            .font(TVType.display)
-                            .lineLimit(3)
-                            .minimumScaleFactor(0.55)
-                            .id(displayed?.id)
-                            .transition(.opacity.combined(with: .move(edge: .leading)))
-                        if let songID = displayed?.favoriteSongID {
-                            favoriteButton(songID: songID)
-                        }
-                    }
+                    // The favourite control is NOT here any more. Sitting on
+                    // the title's baseline it was the only focusable thing in
+                    // the upper half of the panel, separated from every other
+                    // control by an unfocusable progress bar — so reaching it
+                    // meant guessing that "up" from the utility row led
+                    // somewhere. It lives in the utility row now, with the rest
+                    // of the controls, which is where someone looks for it.
+                    Text(displayed?.title ?? "")
+                        .font(TVType.display)
+                        .lineLimit(3)
+                        .minimumScaleFactor(0.55)
+                        .id(displayed?.id)
+                        .transition(.opacity.combined(with: .move(edge: .leading)))
                     Text((displayed?.artist.isEmpty ?? true) ? "Unknown Artist" : (displayed?.artist ?? ""))
                         .font(TVType.hero)
                         .foregroundStyle(.secondary)
@@ -823,10 +825,13 @@ struct TVPlayerView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            Spacer(minLength: 0)
         }
         .animation(.easeOut(duration: 0.28), value: idx)
-        .frame(maxHeight: .infinity, alignment: .top)
+        // Deliberately NOT `maxHeight: .infinity`. That is what kept the panel
+        // stretched after it was supposedly fixed to hug its content: this
+        // column claimed all available height from inside the row, the row grew
+        // to match, and the panel grew with it. A child asking for infinity
+        // overrides a parent that wanted to be small.
     }
 
     /// Index of the last lyric line whose timestamp has passed, or -1 before the
@@ -855,13 +860,24 @@ struct TVPlayerView: View {
     /// its own surface and the full width to centre in, and moving it out of the
     /// column stops it fighting the title for vertical space.
     private var transportBar: some View {
-        HStack(spacing: 40) {
+        HStack(spacing: 34) {
+            // Seeking, as explicit jump buttons rather than a scrubbable bar.
+            //
+            // A scrub bar on tvOS has to claim left/right while focused, and a
+            // view that consumes directional input is a view focus can get
+            // stuck inside — the failure mode that made an earlier build
+            // unusable. Jump buttons need no focus interception at all, are
+            // unambiguous from a sofa, and are what the platform's own music
+            // playback UI offers. A press-to-scrub bar can follow once it can be
+            // tested on a real device.
+            controlButton("gobackward.15") { model.seek(to: model.position - 15) }
             controlButton("backward.fill") { model.previous() }
             controlButton(model.isPlaying ? "pause.fill" : "play.fill", big: true) {
                 model.togglePlayPause()
             }
             .focused($playPauseFocused)
             controlButton("forward.fill") { model.next() }
+            controlButton("goforward.15") { model.seek(to: model.position + 15) }
         }
         .padding(.horizontal, 60)
         .padding(.vertical, 18)
@@ -890,6 +906,9 @@ struct TVPlayerView: View {
 
     private var utilityRow: some View {
         HStack(spacing: 26) {
+            if let songID = displayed?.favoriteSongID {
+                favoriteButton(songID: songID)
+            }
             toggleIconButton("shuffle", isOn: model.isShuffled) { model.toggleShuffle() }
             toggleIconButton(model.repeatMode.symbol, isOn: model.repeatMode != .off) { model.cycleRepeatMode() }
             toggleIconButton("arrow.triangle.merge", isOn: model.crossfadeEnabled) {
@@ -920,6 +939,7 @@ struct TVPlayerView: View {
             TVUtilityButtonLabel(symbol: symbol, isOn: isOn)
         }
         .buttonStyle(.plain)
+        .focusEffectDisabled()
     }
 
     private func favoriteButton(songID: String) -> some View {
@@ -933,6 +953,7 @@ struct TVPlayerView: View {
                                   isOn: client.isFavorite(songID), tint: .yellow)
         }
         .buttonStyle(.plain)
+        .focusEffectDisabled()
     }
 
     private var sleepTimerMenu: some View {
@@ -943,6 +964,7 @@ struct TVPlayerView: View {
                                   isOn: model.sleepTimerEndDate != nil)
         }
         .buttonStyle(.plain)
+        .focusEffectDisabled()
         .sheet(isPresented: $showSleepTimerSheet) {
             TVSleepTimerSheet(hasActiveTimer: model.sleepTimerEndDate != nil) { minutes in
                 if let minutes {
@@ -961,6 +983,7 @@ struct TVPlayerView: View {
             TVUtilityButtonLabel(symbol: "paintpalette", isOn: artworkStyle != .classic)
         }
         .buttonStyle(.plain)
+        .focusEffectDisabled()
         .sheet(isPresented: $showArtworkStyleSheet) {
             TVArtworkStyleSheet(current: artworkStyle) { style in
                 artworkStyleRaw = style.rawValue
@@ -976,70 +999,93 @@ struct TVPlayerView: View {
     // focus engine handles an in-place overlay more predictably than a modal
     // here, and it keeps the now-playing transport reachable underneath.
 
+    /// Up Next, rebuilt to match the rest of the port.
+    ///
+    /// What it was: a flat black 85%-opaque slab, plain-system rows of a generic
+    /// music-note glyph and two lines of text, and a SECOND focusable remove
+    /// button on every row — so getting from the top of the queue to the bottom
+    /// took two presses per track, and every row used `.buttonStyle(.card)`, the
+    /// system lift sized for square artwork, which on a full-width row makes the
+    /// whole panel appear to jump.
+    ///
+    /// What it is now: artwork per row so the queue is scannable by cover rather
+    /// than by reading every title, the playing row called out with the app's own
+    /// accent instead of a grey glyph, one focusable element per row, and the
+    /// panel itself on the same glass-over-indigo as everything else.
+    ///
+    /// Removing a track moved into the row's long-press context menu. A queue is
+    /// something you move THROUGH far more often than you edit, so the common
+    /// action gets the press and the rare one gets the menu — the same tradeoff
+    /// the library rows already make for favouriting.
     private var upNextPanel: some View {
         HStack(spacing: 0) {
-            Spacer()
+            Spacer(minLength: 0)
             VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    Text("Up Next")
-                        .font(.system(size: 30, weight: .bold))
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Up Next").font(TVType.section)
+                        Text("\(model.queue.count - model.currentIndex - 1) after this")
+                            .font(TVType.rowDetail)
+                            .foregroundStyle(.white.opacity(0.45))
+                    }
                     Spacer()
                     Button {
                         withAnimation(.easeInOut(duration: 0.25)) { sidePanel = .none }
                     } label: {
-                        Image(systemName: "xmark")
+                        TVUtilityButtonLabel(symbol: "xmark", isOn: false)
                     }
+                    .buttonStyle(.plain)
+                    .focusEffectDisabled()
                     .focused($upNextCloseFocused)
                 }
-                .padding(.horizontal, 40)
-                .padding(.top, 50)
-                .padding(.bottom, 20)
+                .padding(.horizontal, 36)
+                .padding(.top, 46)
+                .padding(.bottom, 26)
 
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
+                    LazyVStack(alignment: .leading, spacing: TVMetrics.row) {
                         ForEach(Array(model.queue.enumerated()), id: \.element.id) { index, item in
-                            HStack(spacing: 20) {
-                                Button {
-                                    model.jump(to: index)
-                                } label: {
-                                    HStack(spacing: 20) {
-                                        Image(systemName: index == model.currentIndex ? "speaker.wave.2.fill" : "music.note")
-                                            .foregroundStyle(index == model.currentIndex ? Color.accentColor : Color.secondary)
-                                            .frame(width: 30)
-                                        VStack(alignment: .leading, spacing: 4) {
-                                            Text(item.title).font(.title3).lineLimit(1)
-                                            Text(item.artist.isEmpty ? "Unknown Artist" : item.artist)
-                                                .font(.callout)
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(1)
-                                        }
-                                        Spacer()
-                                    }
-                                    .padding(.vertical, 12)
-                                    .padding(.leading, 40)
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.card)
-
+                            Button {
+                                model.jump(to: index)
+                            } label: {
+                                TVUpNextRow(
+                                    item: item,
+                                    position: index + 1,
+                                    isCurrent: index == model.currentIndex,
+                                    isPlayed: index < model.currentIndex,
+                                    isPlaying: model.isPlaying
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .focusEffectDisabled()
+                            .contextMenu {
                                 if index != model.currentIndex {
-                                    Button {
+                                    Button(role: .destructive) {
                                         model.removeFromQueue(at: index)
                                     } label: {
-                                        Image(systemName: "xmark.circle.fill")
-                                            .foregroundStyle(.secondary)
+                                        Label("Remove from Queue", systemImage: "minus.circle")
                                     }
-                                    .buttonStyle(.card)
-                                    .padding(.trailing, 40)
                                 }
                             }
                         }
                     }
-                    .padding(.bottom, 40)
+                    .padding(.horizontal, 30)
+                    .padding(.bottom, 44)
                 }
             }
-            .frame(width: 620, alignment: .top)
+            .frame(width: 660, alignment: .top)
             .frame(maxHeight: .infinity)
-            .background(.black.opacity(0.85))
+            .background {
+                ZStack {
+                    Rectangle().fill(.ultraThinMaterial)
+                    Rectangle().fill(TVPalette.ground.opacity(0.55))
+                }
+                .overlay(alignment: .leading) {
+                    LinearGradient(colors: [TVPalette.neon.opacity(0.6), TVPalette.neonAlt.opacity(0.35)],
+                                   startPoint: .top, endPoint: .bottom)
+                        .frame(width: 1.5)
+                }
+            }
         }
         .ignoresSafeArea()
         .focusSection()
@@ -1174,6 +1220,7 @@ struct TVPlayerView: View {
             TVTransportButtonLabel(symbol: symbol, big: big)
         }
         .buttonStyle(.plain)
+        .focusEffectDisabled()
     }
 }
 

@@ -191,6 +191,7 @@ struct TVAlbumDetailView: View {
                             )
                         }
                         .buttonStyle(.plain)
+                        .focusEffectDisabled()
                         .tvTrackActions(client: client, token: token, track: track)
                     }
                 }
@@ -389,6 +390,7 @@ struct TVGenreDetailView: View {
                             )
                         }
                         .buttonStyle(.plain)
+                        .focusEffectDisabled()
                         .tvTrackActions(client: client, token: token, track: track)
                     }
                 }
@@ -443,6 +445,7 @@ struct TVFavoritesGridView: View {
                             )
                         }
                         .buttonStyle(.plain)
+                        .focusEffectDisabled()
                         .tvTrackActions(client: client, token: token, track: track)
                     }
                 }

@@ -29,6 +29,11 @@ struct TVSideRail: View {
     @Binding var selection: TVDestination
     var accountName: String
     var accountBadge: Int = 0
+    /// Drawn in place of the account glyph — the rail showed a generic person
+    /// icon while the account screen behind it showed the real picture, so the
+    /// one place the avatar is permanently visible was the one place it wasn't.
+    var user: TVUser? = nil
+    var baseURL: String = ""
 
     static let width: CGFloat = 132
 
@@ -45,10 +50,15 @@ struct TVSideRail: View {
                         title: dest.title(accountName: accountName),
                         systemImage: dest.systemImage,
                         isSelected: selection == dest,
-                        badge: dest == .account ? accountBadge : 0
+                        badge: dest == .account ? accountBadge : 0,
+                        avatar: dest == .account
+                            ? TVAvatarView(user: user, baseURL: baseURL,
+                                           diameter: 40, showsRing: false)
+                            : nil
                     )
                 }
                 .buttonStyle(.plain)
+                .focusEffectDisabled()
             }
 
             Spacer(minLength: 0)
@@ -112,14 +122,24 @@ private struct TVRailItemLabel: View {
     let systemImage: String
     let isSelected: Bool
     var badge: Int = 0
+    /// Replaces the glyph entirely when set (the account row).
+    var avatar: TVAvatarView? = nil
 
     @Environment(\.isFocused) private var isFocused
 
     var body: some View {
         ZStack {
-            Image(systemName: systemImage)
-                .font(.system(size: 30, weight: .semibold))
-                .foregroundStyle(isFocused || isSelected ? Color.white : Color.white.opacity(0.45))
+            if let avatar {
+                avatar
+                    // Dimmed to match the other icons when this tab is neither
+                    // focused nor current, so one row does not sit permanently
+                    // brighter than the rest of the rail.
+                    .opacity(isFocused || isSelected ? 1 : 0.55)
+            } else {
+                Image(systemName: systemImage)
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(isFocused || isSelected ? Color.white : Color.white.opacity(0.45))
+            }
             if badge > 0 {
                 Text("\(badge)")
                     .font(.system(size: 15, weight: .bold))

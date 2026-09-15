@@ -34,7 +34,9 @@ struct TVContentView: View {
                     TVSideRail(
                         selection: $selection,
                         accountName: account.user?.name ?? "Account",
-                        accountBadge: client.notifications.filter(\.isUnread).count
+                        accountBadge: client.notifications.filter(\.isUnread).count,
+                        user: account.user,
+                        baseURL: client.baseURL
                     )
 
                     ZStack {

@@ -395,6 +395,24 @@ struct TVPlaylistTrack: Codable, Hashable, Identifiable {
         guard let trackURL else { return false }
         return trackURL.hasPrefix("http://") || trackURL.hasPrefix("https://")
     }
+
+    /// The bare filename this entry refers to, for matching against the cloud
+    /// library — see `TVBridgeClient.libraryMatch(for:)`.
+    ///
+    /// Both forms the phone writes end in the real filename:
+    ///   local:Imported Music/KPOP Demon Hunters/Takedown.opus.lms
+    ///   file:///private/var/mobile/.../Takedown.opus.lms
+    /// so the last path component is the part that carries across devices. The
+    /// `file://` form is percent-encoded, hence the decode.
+    var libraryFilenameHint: String? {
+        if let localSongID, let last = localSongID.split(separator: "/").last {
+            return String(last)
+        }
+        if let trackURL, let last = trackURL.split(separator: "/").last {
+            return String(last).removingPercentEncoding ?? String(last)
+        }
+        return nil
+    }
 }
 
 struct TVPlaylist: Codable, Hashable, Identifiable {
@@ -527,6 +545,11 @@ final class TVBridgeClient: ObservableObject {
     @Published var friendsListening: [TVFriendListening] = []
     /// Shared listening feed — see TVSocial.swift.
     @Published var socialActivity: [TVSocialActivity] = []
+
+    /// Cloud library keyed by lowercased filename, rebuilt whenever `library`
+    /// changes. Used to resolve playlist entries that only carry a phone-local
+    /// path — see `libraryMatch(for:)`.
+    private(set) var libraryByFilename: [String: UserMusicTrack] = [:]
 
     /// In-flight search query, so a stale/slower response can't overwrite a newer one.
     private var activeSearch = ""
@@ -664,12 +687,15 @@ final class TVBridgeClient: ObservableObject {
             if !decoded.configured {
                 libraryError = "User music storage is not configured on the server."
                 library = []
+                rebuildLibraryIndex()
                 return
             }
             library = decoded.tracks
+            rebuildLibraryIndex()
         } catch {
             libraryError = "Couldn’t load your library. Tap Retry."
             library = []
+            rebuildLibraryIndex()
         }
     }
 
@@ -1194,18 +1220,76 @@ final class TVBridgeClient: ObservableObject {
     /// `local_song_id` (an on-device library item on whichever iPhone/iPad
     /// added them) have no artwork endpoint tvOS can key against, so no
     /// artwork is attached; the player falls back to its placeholder art.
+    /// Playlist entries, resolved against the cloud library when they carry no
+    /// remote URL of their own.
+    ///
+    /// This is why "playlists don't sync to tvOS". They DO sync — the bridge
+    /// returns them intact — but a playlist built on the phone stores each entry
+    /// as a snapshot pointing at the file on THAT device:
+    ///
+    ///     track_url:     file:///private/var/mobile/.../Takedown.opus.lms
+    ///     local_song_id: local:Imported Music/KPOP Demon Hunters/Takedown.opus.lms
+    ///
+    /// A `file://` path inside an iPhone's sandbox means nothing on an Apple TV,
+    /// so every such entry failed `isRemotelyPlayable` and was dropped — leaving
+    /// playlists that arrived, listed, and were completely empty.
+    ///
+    /// But the same track is usually in the user's cloud library, which tvOS can
+    /// stream. Matching the entry to that row turns a dead snapshot into a
+    /// playable track, and brings the artwork with it (these entries carry none
+    /// of their own, which is why playlist rows showed placeholder art even when
+    /// they played).
     func playable(from track: TVPlaylistTrack, token: String) -> TVPlayable? {
-        guard track.isRemotelyPlayable, let urlString = track.trackURL, let url = URL(string: urlString) else {
-            return nil
+        // A genuine remote URL always wins: it is what the playlist actually
+        // points at, and resolving past it could silently substitute a
+        // different recording that happens to share a name.
+        if track.isRemotelyPlayable, let urlString = track.trackURL, let url = URL(string: urlString) {
+            return TVPlayable(
+                id: track.id,
+                title: track.title,
+                artist: track.artist ?? "",
+                streamURL: url,
+                artworkURL: nil,
+                authToken: token
+            )
         }
-        return TVPlayable(
-            id: track.id,
-            title: track.title,
-            artist: track.artist ?? "",
-            streamURL: url,
-            artworkURL: nil,
-            authToken: token
-        )
+        guard let match = libraryMatch(for: track) else { return nil }
+        // Built from the LIBRARY row, not the snapshot — the library row is what
+        // can actually be streamed, favourited and shown artwork for.
+        return playable(from: match, token: token)
+    }
+
+    /// Later duplicates lose: the first row wins, so a filename appearing twice
+    /// resolves consistently rather than depending on dictionary ordering.
+    func rebuildLibraryIndex() {
+        var index: [String: UserMusicTrack] = [:]
+        index.reserveCapacity(library.count)
+        for track in library {
+            let key = track.filename.lowercased()
+            if index[key] == nil { index[key] = track }
+        }
+        libraryByFilename = index
+    }
+
+    /// Finds the cloud-library row a playlist entry refers to.
+    ///
+    /// Filename first: `local_song_id` ends in the file's own name, which
+    /// survives being moved between folders and is far more specific than a
+    /// title. Title+artist is the fallback for entries whose id doesn't carry a
+    /// usable filename — deliberately requiring BOTH to match, since titles
+    /// alone collide constantly across a library (an "Intro" on six albums).
+    func libraryMatch(for track: TVPlaylistTrack) -> UserMusicTrack? {
+        if let name = track.libraryFilenameHint?.lowercased(), !name.isEmpty,
+           let hit = libraryByFilename[name] {
+            return hit
+        }
+        let title = track.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !title.isEmpty else { return nil }
+        let artist = (track.artist ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return library.first {
+            $0.displayTitle.lowercased() == title
+                && (artist.isEmpty || $0.artist.lowercased() == artist)
+        }
     }
 
     // MARK: Add-to-playlist payload mappers
