@@ -43,7 +43,7 @@ extension LibraryManager {
         // devices — see AccountService+Favorites. Local storage stays the
         // synchronous source of truth for rendering; this is the durable copy.
         let song = songsByID[songID]
-        AccountService.shared.pushFavorite(songID: songID, isFavorite: nowFavorite,
+        AccountService.shared?.pushFavorite(songID: songID, isFavorite: nowFavorite,
                                            title: song?.title, artist: song?.artist,
                                            album: song?.album)
     }
@@ -64,7 +64,7 @@ extension LibraryManager {
         persistence.saveFavorites(favoriteSongIDs)
         for songID in toAdd {
             let song = songsByID[songID]
-            AccountService.shared.pushFavorite(songID: songID, isFavorite: true,
+            AccountService.shared?.pushFavorite(songID: songID, isFavorite: true,
                                                title: song?.title, artist: song?.artist,
                                                album: song?.album)
         }
