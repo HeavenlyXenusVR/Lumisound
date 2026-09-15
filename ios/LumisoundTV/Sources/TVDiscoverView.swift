@@ -25,6 +25,7 @@ struct TVDiscoverView: View {
                 discoverMixSection
                 onThisDaySection
                 smartPlaylistsSection
+                nothingYetHint
             }
             .padding(.vertical, 50)
         }
@@ -34,6 +35,34 @@ struct TVDiscoverView: View {
             if client.onThisDay.isEmpty { await client.fetchOnThisDay(token: token) }
             if client.smartPlaylists.isEmpty { await client.fetchSmartPlaylists(token: token) }
             if client.subscriptionFeed.isEmpty { await client.fetchSubscriptionFeed(token: token) }
+        }
+    }
+
+    /// Shown only when EVERY shelf is empty. Each section used to carry its
+    /// own apology row, so a new account saw three separate "nothing here yet"
+    /// bands stacked down the screen and had to scroll past all of them. One
+    /// explanation, once, and only when there is genuinely nothing to browse.
+    @ViewBuilder
+    private var nothingYetHint: some View {
+        let stillLoading = client.isLoadingDiscoverMix || client.isLoadingOnThisDay
+            || client.isLoadingSubscriptionFeed
+        let everythingEmpty = client.discoverMix.isEmpty && client.onThisDay.isEmpty
+            && client.smartPlaylists.isEmpty && client.subscriptionFeed.isEmpty
+        if everythingEmpty && !stillLoading {
+            VStack(spacing: 18) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 64))
+                    .foregroundStyle(.secondary)
+                Text("Discover fills in as you listen")
+                    .font(.system(size: 30, weight: .semibold))
+                Text("Play a few tracks and suggestions, anniversaries and tempo-based playlists will appear here.")
+                    .font(.system(size: 21))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 760)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 80)
         }
     }
 
@@ -64,12 +93,17 @@ struct TVDiscoverView: View {
 
     // MARK: Discover Mix
 
+    @ViewBuilder
     private var discoverMixSection: some View {
-        TVShelfSection(title: "Discover Mix", subtitle: "Suggested based on your most-played artists") {
+        // Collapsed entirely when there's nothing to show. An empty shelf here
+        // still rendered a heading, a subtitle and a full-width apology — a
+        // whole band of screen spent saying "nothing" and pushing real content
+        // below the fold. See `nothingYetHint` for the one place that explains
+        // an empty Discover, shown once rather than once per section.
+        if client.isLoadingDiscoverMix || !client.discoverMix.isEmpty {
+        TVShelfSection(title: "Discover Mix", subtitle: "Based on your most-played artists") {
             if client.isLoadingDiscoverMix {
                 ProgressView().padding(.horizontal, 60)
-            } else if client.discoverMix.isEmpty {
-                emptyRow("Keep listening — suggestions show up once you've built some play history.")
             } else {
                 ForEach(client.discoverMix) { track in
                     NavigationLink(value: TVPlayContext(queue: discoverQueue, startID: track.id)) {
@@ -79,6 +113,7 @@ struct TVDiscoverView: View {
                     .tvSearchTrackActions(client: client, token: token, track: track)
                 }
             }
+        }
         }
     }
 
@@ -90,9 +125,9 @@ struct TVDiscoverView: View {
                 TVSectionHeader(title: "On This Day").padding(.horizontal, 70)
                 ProgressView().padding(.horizontal, 70)
             } else if client.onThisDay.isEmpty {
-                TVSectionHeader(title: "On This Day", subtitle: "What you were playing on this date in years past")
-                    .padding(.horizontal, 70)
-                emptyRow("Nothing played on this date yet — check back as your history grows.")
+                // Nothing at all: this date genuinely has no history most days,
+                // so a permanent empty band here would be the normal case.
+                EmptyView()
             } else {
                 ForEach(client.onThisDay) { group in
                     let queue = group.tracks.compactMap { client.playable(from: $0) }
@@ -117,7 +152,7 @@ struct TVDiscoverView: View {
             if client.isLoadingSmartPlaylists {
                 ProgressView().padding(.horizontal, 60)
             } else if client.smartPlaylists.allSatisfy({ $0.tracks.isEmpty }) {
-                emptyRow("Upload music to your Personal Cloud Library to unlock tempo-based playlists.")
+                EmptyView()
             } else {
                 ForEach(client.smartPlaylists) { bucket in
                     NavigationLink {

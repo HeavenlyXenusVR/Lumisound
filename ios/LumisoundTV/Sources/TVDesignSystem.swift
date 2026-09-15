@@ -101,8 +101,13 @@ struct TVSectionHeader: View {
                 Text(title).font(.system(size: 34, weight: .bold))
             }
             if let subtitle {
+                // Deliberately well below the title (.title3 renders ~29pt on
+                // tvOS, close enough to the 34pt title that shelf subtitles
+                // competed with their own headings and made every screen read
+                // as a wall of text). tvOS guidance is to minimise on-screen
+                // text; the subtitle is a hint, not a second heading.
                 Text(subtitle)
-                    .font(.title3)
+                    .font(.system(size: 21))
                     .foregroundStyle(.secondary)
                     .padding(.leading, 20)
             }
