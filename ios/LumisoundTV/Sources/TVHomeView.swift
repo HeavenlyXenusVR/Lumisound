@@ -60,7 +60,7 @@ struct TVHomeView: View {
         if let track = heroTrack, let first = libraryQueue.first {
             TVHeroBanner(
                 eyebrow: "Recently Added",
-                title: track.title.isEmpty ? track.filename : track.title,
+                title: track.displayTitle,
                 subtitle: track.artist.isEmpty ? "Unknown Artist" : track.artist,
                 art: {
                     TVAuthImage(url: client.userMusicArtworkURL(for: track), token: token) {
@@ -133,7 +133,7 @@ struct TVHomeView: View {
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
 
-            Text(track.title.isEmpty ? track.filename : track.title)
+            Text(track.displayTitle)
                 .font(.headline).lineLimit(2, reservesSpace: true)
             Text(track.artist.isEmpty ? "Unknown Artist" : track.artist)
                 .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)

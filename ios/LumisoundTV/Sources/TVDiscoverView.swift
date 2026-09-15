@@ -209,7 +209,7 @@ struct TVSmartPlaylistDetailView: View {
                             NavigationLink(value: TVPlayContext(queue: queue, startID: track.id)) {
                                 HStack(spacing: 24) {
                                     VStack(alignment: .leading, spacing: 4) {
-                                        Text(track.title.isEmpty ? track.filename : track.title).font(.title3)
+                                        Text(track.displayTitle).font(.title3)
                                         Text(track.artist.isEmpty ? "Unknown Artist" : track.artist)
                                             .font(.callout).foregroundStyle(.secondary)
                                     }

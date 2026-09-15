@@ -4,8 +4,27 @@ import UIKit
 
 extension LibraryManager {
 
+    /// Reduces any favourite id to the part every device agrees on — the bare
+    /// filename, with the "local:" scheme prefix and directory components
+    /// stripped. Must stay in step with tvOS's `TVBridgeClient.favoriteKey`.
+    static func favoriteKey(for songID: String) -> String {
+        var s = songID
+        if s.hasPrefix("local:") { s = String(s.dropFirst("local:".count)) }
+        return s.split(separator: "/").last.map(String.init) ?? s
+    }
+
     func isFavorite(songID: String) -> Bool {
-        favoriteSongIDs.contains(songID)
+        if favoriteSongIDs.contains(songID) { return true }
+        // Cross-device fallback. This app ids a song by its own on-device path
+        // ("local:Imported Music/<folder>/<file>"); the Apple TV sees the same
+        // song as a cloud track keyed by a server-side content hash. Those are
+        // never equal, so a favourite made on one device was invisible on the
+        // other despite both reading the same account's list. The filename is
+        // what they genuinely share — it is what this app uploads and what the
+        // cloud library stores.
+        let key = Self.favoriteKey(for: songID)
+        guard !key.isEmpty else { return false }
+        return favoriteKeyCache.contains(key)
     }
 
     func toggleFavorite(songID: String) {

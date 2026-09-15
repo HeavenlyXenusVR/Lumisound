@@ -171,7 +171,7 @@ struct TVLibraryView: View {
                 }
             }
 
-            Text(track.title.isEmpty ? track.filename : track.title)
+            Text(track.displayTitle)
                 .font(.headline).lineLimit(2, reservesSpace: true)
             Text(track.artist.isEmpty ? "Unknown Artist" : track.artist)
                 .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)

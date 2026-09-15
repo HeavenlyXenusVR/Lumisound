@@ -49,6 +49,27 @@ struct UserMusicTrack: Identifiable, Codable, Hashable {
     /// sorted alphabetically by album/title.
     let uploadedAt: String?
 
+    /// What to actually show for this track, never a raw filename.
+    ///
+    /// Falling back to `filename` put the extension on screen — a locked
+    /// track is stored as "<title>.<realext>.lms", so an empty title surfaced
+    /// as "It's Going Down Now.opus". The server also strips both extensions
+    /// for its own fallback now; this is the client-side half, so a stale or
+    /// older bridge can't put an extension back on screen either.
+    var displayTitle: String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+        var name = filename
+        // Outer container first (".lms"), then the real audio extension.
+        for suffix in [".lms"] where name.lowercased().hasSuffix(suffix) {
+            name = String(name.dropLast(suffix.count))
+        }
+        if let dot = name.lastIndex(of: "."), name[name.index(after: dot)...].count <= 5 {
+            name = String(name[..<dot])
+        }
+        return name.isEmpty ? filename : name
+    }
+
     var durationText: String {
         let s = Int(duration)
         return "\(s / 60):\(String(format: "%02d", s % 60))"
@@ -445,6 +466,19 @@ final class TVBridgeClient: ObservableObject {
 
     // Favorites (Personal Cloud Library tracks only — see `TVFavorite`)
     @Published var favoriteSongIDs: Set<String> = []
+    /// Filename-only forms of `favoriteSongIDs`, for cross-device matching.
+    ///
+    /// The two platforms identify the same song with different ids: the phone
+    /// stores `local:Imported Music/<folder>/<file>` (its own on-device path),
+    /// while a cloud track here is keyed by a server-side content hash. Those
+    /// can never be equal, so favourites made on the phone simply never showed
+    /// up on the Apple TV even though both devices were reading the same
+    /// account's favourites list.
+    ///
+    /// The filename is the one part both sides genuinely share — it is what
+    /// the phone uploads and what the cloud library stores. Verified against
+    /// the real account: 14 of 14 favourites match their cloud track this way.
+    @Published var favoriteKeys: Set<String> = []
     @Published var isLoadingFavorites = false
 
     // Discovery / stats
@@ -763,20 +797,47 @@ final class TVBridgeClient: ObservableObject {
               let favorites = try? JSONDecoder().decode([TVFavorite].self, from: data)
         else { return }
         favoriteSongIDs = Set(favorites.map { $0.songID })
+        favoriteKeys = Set(favorites.map { Self.favoriteKey(for: $0.songID) })
     }
 
-    func isFavorite(_ songID: String) -> Bool { favoriteSongIDs.contains(songID) }
+    /// Reduces any favourite id to the part every device agrees on — the bare
+    /// filename, with the "local:" scheme prefix and any directory components
+    /// removed.
+    static func favoriteKey(for songID: String) -> String {
+        var s = songID
+        if let colon = s.firstIndex(of: ":"), s.hasPrefix("local:") {
+            s = String(s[s.index(after: colon)...])
+        }
+        return s.split(separator: "/").last.map(String.init) ?? s
+    }
+
+    func isFavorite(_ songID: String) -> Bool {
+        if favoriteSongIDs.contains(songID) { return true }
+        // Fall back to the shared filename key so a favourite made on another
+        // device (different id scheme) still reads as favourited here.
+        return favoriteKeys.contains(Self.favoriteKey(for: songID))
+    }
+
+    /// Whether a Personal Cloud Library track is favourited. Matches on the
+    /// FILENAME rather than the track's server id, which is what makes a
+    /// favourite created on the phone visible here.
+    func isFavorite(track: UserMusicTrack) -> Bool {
+        if favoriteSongIDs.contains(track.id) { return true }
+        return favoriteKeys.contains(Self.favoriteKey(for: track.filename))
+    }
 
     /// Optimistically flips local state, then reconciles with the server —
     /// keeps the star responsive to remote-click without waiting on a
     /// round-trip, but self-heals if the request actually failed.
     func toggleFavorite(track: UserMusicTrack, token: String) async {
         let songID = track.id
-        let wasFavorite = favoriteSongIDs.contains(songID)
+        let wasFavorite = isFavorite(songID)
         if wasFavorite {
             favoriteSongIDs.remove(songID)
+            favoriteKeys.remove(Self.favoriteKey(for: songID))
         } else {
             favoriteSongIDs.insert(songID)
+            favoriteKeys.insert(Self.favoriteKey(for: songID))
         }
 
         let ok: Bool
@@ -1091,7 +1152,7 @@ final class TVBridgeClient: ObservableObject {
         guard let url = userMusicStreamURL(for: track) else { return nil }
         return TVPlayable(
             id: track.id,
-            title: track.title.isEmpty ? track.filename : track.title,
+            title: track.displayTitle,
             artist: track.artist,
             streamURL: url,
             artworkURL: userMusicArtworkURL(for: track),
@@ -1133,7 +1194,7 @@ final class TVBridgeClient: ObservableObject {
         guard let url = userMusicStreamURL(for: track) else { return nil }
         return TVSyncTrackBody(
             trackURL: url.absoluteString,
-            title: track.title.isEmpty ? track.filename : track.title,
+            title: track.displayTitle,
             artist: track.artist.isEmpty ? nil : track.artist,
             album: track.album.isEmpty ? nil : track.album,
             durationSeconds: Int(track.duration)

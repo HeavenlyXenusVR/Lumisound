@@ -118,7 +118,7 @@ services:
       # Example: SERVER_MUSIC_DIR=/music  (then add: - /your/music:/music:ro)
       - SERVER_MUSIC_DIR=${SERVER_MUSIC_DIR:-}
       # Per-user music storage. Each user gets their own subdirectory under this path.
-      # Defaults to /mnt/FastSSD/lumisound-user-music (mounted as /usermusic).
+      # Defaults to /mnt/fastssd/lumisound-user-music (mounted as /usermusic).
       - USER_MUSIC_DIR=${USER_MUSIC_DIR:-/usermusic}
       # When "1", per-user cloud-backup uploads are stored gzip-compressed
       # (reversible/lossless — transparently decompressed on stream/download).
@@ -143,7 +143,24 @@ services:
       - ./cache/yt-dlp:/app/.cache/yt-dlp
       - ./cache/pending-downloads:/app/.cache/pending-downloads
       - ./cookies.txt:/app/cookies.txt
-      - /mnt/FastSSD/lumisound-user-music:/usermusic
+      # LOWERCASE "fastssd" — this is the real mountpoint (`/dev/sda`, label
+      # FASTSSD, mounted at /mnt/fastssd). This line said "/mnt/FastSSD", which
+      # on a case-sensitive filesystem is a completely different path, and
+      # Docker silently CREATES a missing bind source rather than failing — so
+      # it quietly made an empty directory on the root disk and mounted that as
+      # the user's entire cloud library.
+      #
+      # It stayed harmless only because the running container predated this
+      # line and kept its original, correct bind. The moment the container was
+      # recreated, the library went from 2,837 files / 11GB to 146 files, every
+      # track lost its stored metadata (so titles fell back to the filename —
+      # ".opus" and all — and artists to "Unknown Artist"), and fresh uploads
+      # started landing on the root disk instead of the SSD.
+      #
+      # If this ever needs to move, change it here rather than relying on the
+      # container's existing mount: a bind source that doesn't exist is created
+      # empty, not reported.
+      - /mnt/fastssd/lumisound-user-music:/usermusic
       # Optional: server-wide shared music directory (read-only)
       # - /path/to/your/music:/music:ro
     healthcheck:

@@ -33,7 +33,14 @@ final class LibraryManager: ObservableObject {
     @Published var albums: [String] = []
     @Published var genres: [String] = []
     @Published var playlists: [Playlist] = []
-    @Published var favoriteSongIDs: Set<String> = []
+    @Published var favoriteSongIDs: Set<String> = [] {
+        didSet { favoriteKeyCache = Set(favoriteSongIDs.map { Self.favoriteKey(for: $0) }) }
+    }
+
+    /// Filename-only forms of `favoriteSongIDs`, kept in step by the `didSet`
+    /// above so `isFavorite` can do its cross-device match as a set lookup
+    /// rather than scanning every favourite on every row render.
+    private(set) var favoriteKeyCache: Set<String> = []
     @Published var isScanning: Bool = false
     @Published var scanProgress: LibraryScanProgress? = nil
     /// Set when `scanMediaLibrary` has bailed out after repeated incomplete
@@ -122,7 +129,7 @@ final class LibraryManager: ObservableObject {
     var metadataRefreshCursor = 0
 
     var favoriteSongs: [Song] {
-        allSongs.filter { favoriteSongIDs.contains($0.id) }
+        allSongs.filter { isFavorite(songID: $0.id) }
     }
 
     init(persistence: PersistenceService = .shared, artwork: ArtworkService = .shared) {

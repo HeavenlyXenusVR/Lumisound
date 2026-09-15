@@ -35,7 +35,7 @@ struct TVGenreGroup: Identifiable, Hashable {
 /// Track order within an album: by track number (untagged tracks sort last),
 /// then title — matches `AlbumDetailView`'s ordering on iOS.
 private func albumSortKey(_ t: UserMusicTrack) -> (Int, String) {
-    (Int(t.trackNumber) ?? Int.max, t.title.isEmpty ? t.filename : t.title)
+    (Int(t.trackNumber) ?? Int.max, t.displayTitle)
 }
 
 func tvAlbumGroups(from library: [UserMusicTrack]) -> [TVAlbumGroup] {
@@ -184,7 +184,7 @@ struct TVAlbumDetailView: View {
                                     .foregroundStyle(.secondary)
                                     .frame(width: 44, alignment: .trailing)
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text(track.title.isEmpty ? track.filename : track.title)
+                                    Text(track.displayTitle)
                                         .font(.title3)
                                     Text(track.durationText).font(.callout).foregroundStyle(.secondary)
                                 }
@@ -385,7 +385,7 @@ struct TVGenreDetailView: View {
                         NavigationLink(value: TVPlayContext(queue: queue, startID: track.id)) {
                             HStack(spacing: 24) {
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text(track.title.isEmpty ? track.filename : track.title).font(.title3)
+                                    Text(track.displayTitle).font(.title3)
                                     Text(track.artist.isEmpty ? "Unknown Artist" : track.artist)
                                         .font(.callout).foregroundStyle(.secondary)
                                 }
@@ -447,7 +447,7 @@ struct TVFavoritesGridView: View {
                                 .frame(width: 280, height: 280)
                                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                                 .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
-                                Text(track.title.isEmpty ? track.filename : track.title)
+                                Text(track.displayTitle)
                                     .font(.headline).lineLimit(2, reservesSpace: true)
                                 Text(track.artist.isEmpty ? "Unknown Artist" : track.artist)
                                     .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)

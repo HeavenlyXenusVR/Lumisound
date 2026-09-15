@@ -165,6 +165,23 @@ SUPPORTED_AUDIO_EXTS: frozenset[str] = frozenset({
 LUMISOUND_LOCK_EXT = "lms"
 
 
+def _locked_display_stem(filename: str) -> str:
+    """Human-readable title for a Lumisound-locked filename, with BOTH the
+    outer `.lms` and the inner audio extension removed —
+    "Song.opus.lms" -> "Song".
+
+    `pathlib.Path(...).stem` only removes one suffix, which left the inner
+    extension in every filename-derived title. Falls back to the plain stem
+    when the name isn't the locked `<title>.<realext>.lms` shape, so an
+    unexpected name still loses its extension rather than gaining one.
+    """
+    path = pathlib.Path(filename)
+    stem = path.stem                       # "Song.opus.lms" -> "Song.opus"
+    if _locked_inner_ext(filename) is not None:
+        return pathlib.Path(stem).stem     # -> "Song"
+    return stem
+
+
 def _locked_inner_ext(filename: str) -> Optional[str]:
     """Returns the real (inner) audio extension for a Lumisound-locked
     `<realext>.lms` filename (e.g. "Song.opus.lms" -> "opus"), or None if
@@ -9763,9 +9780,13 @@ async def get_user_music(
         if is_locked:
             meta = stored_meta.get(rel_path, {})
             ext = _locked_inner_ext(fpath.name) or ""
-            # Strip only the outer ".lms" for the filename-derived fallback
-            # title, same as the client's own effectiveExtension unwrapping.
-            title = meta.get("title") or fpath.stem
+            # Strip BOTH extensions for the filename-derived fallback title.
+            # A locked file is named "<title>.<realext>.lms", so `fpath.stem`
+            # removes only the outer ".lms" and leaves "<title>.opus" — which
+            # is what clients then displayed verbatim whenever a track had no
+            # stored metadata row, e.g. "It's Going Down Now.opus" on the
+            # Apple TV. The inner extension is never part of the title.
+            title = meta.get("title") or _locked_display_stem(fpath.name)
             track_number = ""
         else:
             meta = tag_results.get(abs_path, {})
