@@ -22,10 +22,17 @@ import SwiftUI
 // artwork with badges. Grids are kept for Albums/Artists/Genres, where the
 // square art really is the item.
 //
-// Focus follows the tvOS idiom used elsewhere in this port (`TVChip`,
-// `TVNavPillLabel`): read `isFocused` off the environment inside a `.plain`
-// button's label rather than having the row manage focus itself, and signal it
-// with a fill + scale + elevation rather than colour alone.
+// Focus follows the tvOS idiom used elsewhere in this port (`TVChip`, the side
+// rail's items): read `isFocused` off the environment inside a `.plain` button's
+// label rather than having the row manage focus itself.
+//
+// The row is a neon card (see `TVNeonCard`) whose rim lights on focus, with a
+// play affordance on the trailing edge. Focus does NOT invert the row to a white
+// fill, which is what it did when rows were introduced: at 10 feet a white bar
+// across the screen is a flashbulb, it flattens the depth the rest of the layout
+// has, and it forced every piece of text on the row to carry a second colour for
+// the inverted case. A rim that lights is legible from a sofa and needs none of
+// that.
 struct TVTrackRow: View {
     let artworkURL: URL?
     let token: String?
@@ -45,31 +52,33 @@ struct TVTrackRow: View {
     @Environment(\.isFocused) private var isFocused
 
     var body: some View {
-        HStack(spacing: 26) {
+        HStack(spacing: 24) {
             if let trackNumber {
                 Text("\(trackNumber)")
                     .font(TVType.meta)
-                    .foregroundStyle(isFocused ? .black.opacity(0.5) : .secondary)
-                    .frame(width: 52, alignment: .trailing)
+                    .foregroundStyle(isFocused ? Color.white : Color.white.opacity(0.45))
+                    .frame(width: 46, alignment: .trailing)
             } else {
                 TVAuthImage(url: artworkURL, token: token) {
                     TVArtPlaceholder(systemImage: placeholderSymbol, iconScale: 0.5)
                 }
-                .frame(width: 92, height: 92)
-                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                // Only the focused row lifts its artwork. An unfocused row with
-                // a drop shadow reads as "also selected", which is what made the
-                // old grid so noisy — every tile was elevated at once.
-                .shadow(color: .black.opacity(isFocused ? 0.5 : 0), radius: isFocused ? 12 : 0, y: 5)
+                .frame(width: 86, height: 86)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.45), radius: isFocused ? 14 : 6, y: 4)
             }
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(title)
                     .font(TVType.rowTitle)
+                    .foregroundStyle(.white)
                     .lineLimit(1)
                 Text(artist.isEmpty ? "Unknown Artist" : artist)
                     .font(TVType.rowDetail)
-                    .foregroundStyle(isFocused ? .black.opacity(0.62) : .secondary)
+                    .foregroundStyle(.white.opacity(0.5))
                     .lineLimit(1)
             }
 
@@ -77,29 +86,37 @@ struct TVTrackRow: View {
 
             if isFavorite {
                 Image(systemName: "star.fill")
-                    .font(.system(size: 21))
-                    // Yellow-on-white is illegible on the focused fill, so the
-                    // star takes the accent colour there instead of vanishing.
-                    .foregroundStyle(isFocused ? Color.accentColor : Color.yellow)
+                    .font(.system(size: 20))
+                    .foregroundStyle(TVPalette.neonAlt)
+                    .shadow(color: TVPalette.neonAlt.opacity(0.8), radius: 8)
             }
             if let detail {
                 Text(detail)
                     .font(TVType.meta)
-                    .foregroundStyle(isFocused ? .black.opacity(0.55) : .secondary)
+                    .foregroundStyle(.white.opacity(0.45))
             }
+
+            // Not a separate button — a second focusable element per row would
+            // double the presses needed to get down a list, and the row already
+            // plays on select. This shows WHERE select will take you.
+            Image(systemName: "play.fill")
+                .font(.system(size: 20, weight: .bold))
+                .foregroundStyle(isFocused ? Color.black : Color.white.opacity(0.8))
+                .frame(width: 50, height: 50)
+                .background {
+                    Circle().fill(
+                        isFocused
+                            ? AnyShapeStyle(LinearGradient(
+                                colors: [TVPalette.neon, TVPalette.neonAlt],
+                                startPoint: .topLeading, endPoint: .bottomTrailing))
+                            : AnyShapeStyle(Color.white.opacity(0.10))
+                    )
+                }
+                .shadow(color: TVPalette.neon.opacity(isFocused ? 0.75 : 0), radius: 14)
         }
-        // Foreground is set once, here, so the title inherits it and only the
-        // secondary lines above need to override.
-        .foregroundStyle(isFocused ? Color.black : Color.white)
         .padding(.horizontal, 22)
         .padding(.vertical, 14)
-        .background {
-            RoundedRectangle(cornerRadius: TVMetrics.cardCorner, style: .continuous)
-                .fill(isFocused ? AnyShapeStyle(Color.white) : AnyShapeStyle(Color.white.opacity(0.06)))
-        }
-        .scaleEffect(isFocused ? 1.014 : 1)
-        .shadow(color: .black.opacity(isFocused ? 0.45 : 0), radius: isFocused ? 22 : 0, y: 10)
-        .animation(.spring(response: 0.3, dampingFraction: 0.78), value: isFocused)
+        .tvNeonCard(isFocused: isFocused)
     }
 }
 

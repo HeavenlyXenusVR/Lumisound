@@ -62,6 +62,76 @@ enum TVType {
     static let eyebrow = Font.system(size: 17, weight: .bold)
 }
 
+// MARK: Palette
+
+/// The port's colour ground. Deliberately NOT black: a pure-black app has no
+/// colour of its own, so every screen is defined entirely by whatever artwork
+/// happens to be on it, and with no artwork it is nothing at all. A deep indigo
+/// ground gives the app an identity that survives an empty library, and gives
+/// the neon edges below something to glow against — a bright rim on black reads
+/// as a hard line, the same rim on indigo reads as light.
+enum TVPalette {
+    /// Base ground, darkest point.
+    static let ground = Color(red: 0.035, green: 0.043, blue: 0.145)
+    /// Raised surfaces — cards, rails, panels.
+    static let surface = Color(red: 0.078, green: 0.094, blue: 0.267)
+    /// Primary neon: cyan-leaning blue.
+    static let neon = Color(red: 0.290, green: 0.702, blue: 1.0)
+    /// Secondary neon, used opposite `neon` in gradient strokes.
+    static let neonAlt = Color(red: 0.639, green: 0.416, blue: 1.0)
+}
+
+// MARK: Neon card
+
+/// The recurring surface treatment: a translucent fill over the indigo ground,
+/// a thin two-stop gradient rim, and an outer glow that intensifies on focus.
+///
+/// Focus is carried by the *glow*, not by inverting the fill to white. On a
+/// 10-foot display a white fill is a flashbulb — it drags the eye away from the
+/// content and destroys any sense of depth the rest of the screen has. A rim
+/// that lights up keeps the surface readable and still reads clearly as focus
+/// from across a room, which is what the tvOS focus idiom is actually for.
+struct TVNeonCard: ViewModifier {
+    var cornerRadius: CGFloat = TVMetrics.cardCorner
+    var isFocused: Bool = false
+    /// Tints the rim — pass an artwork-derived colour to make the edge take the
+    /// colour of the music.
+    var tint: Color? = nil
+
+    private var rim: LinearGradient {
+        let a = tint ?? TVPalette.neon
+        let b = tint ?? TVPalette.neonAlt
+        return LinearGradient(
+            colors: [a.opacity(isFocused ? 0.95 : 0.40), b.opacity(isFocused ? 0.85 : 0.22)],
+            startPoint: .topLeading, endPoint: .bottomTrailing
+        )
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(TVPalette.surface.opacity(isFocused ? 0.85 : 0.45))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(rim, lineWidth: isFocused ? 2.5 : 1.2)
+            }
+            .shadow(color: (tint ?? TVPalette.neon).opacity(isFocused ? 0.55 : 0),
+                    radius: isFocused ? 26 : 0)
+            .scaleEffect(isFocused ? 1.02 : 1)
+            .animation(.spring(response: 0.3, dampingFraction: 0.78), value: isFocused)
+    }
+}
+
+extension View {
+    func tvNeonCard(cornerRadius: CGFloat = TVMetrics.cardCorner,
+                    isFocused: Bool = false,
+                    tint: Color? = nil) -> some View {
+        modifier(TVNeonCard(cornerRadius: cornerRadius, isFocused: isFocused, tint: tint))
+    }
+}
+
 // MARK: Ambient background
 
 /// The backdrop behind every screen: the **currently playing artwork**, blown
@@ -106,7 +176,7 @@ struct TVAmbientBackground: View {
                 .saturation(1.3)
                 // Without this the backdrop competes with the foreground and
                 // nothing on top of it is legible. It is a wash, not an image.
-                .overlay(Color.black.opacity(0.66))
+                .overlay(TVPalette.ground.opacity(0.72))
                 .id(track.id)
                 .transition(.opacity)
                 .animation(.easeInOut(duration: 0.8), value: track.id)
@@ -115,7 +185,7 @@ struct TVAmbientBackground: View {
             // Bottom scrim so the mini-player bar and any bottom-aligned text
             // always have something solid to sit against.
             LinearGradient(
-                colors: [.clear, .black.opacity(0.75)],
+                colors: [.clear, TVPalette.ground.opacity(0.85)],
                 startPoint: .center, endPoint: .bottom
             )
         }
@@ -127,14 +197,19 @@ struct TVAmbientBackground: View {
     /// some depth to it.
     private var colorFloor: some View {
         ZStack {
-            Color.black
-            RadialGradient(
-                colors: [accent.opacity(0.42), .clear],
-                center: .init(x: 0.12, y: 0.05), startRadius: 0, endRadius: 1150
+            // Indigo, not black — see TVPalette. The app keeps an identity of
+            // its own even with an empty library and no artwork to sample.
+            LinearGradient(
+                colors: [TVPalette.surface, TVPalette.ground],
+                startPoint: .topLeading, endPoint: .bottomTrailing
             )
             RadialGradient(
-                colors: [Color.purple.opacity(0.34), .clear],
-                center: .init(x: 0.92, y: 0.88), startRadius: 0, endRadius: 1000
+                colors: [TVPalette.neon.opacity(0.30), .clear],
+                center: .init(x: 0.10, y: 0.02), startRadius: 0, endRadius: 1250
+            )
+            RadialGradient(
+                colors: [TVPalette.neonAlt.opacity(0.28), .clear],
+                center: .init(x: 0.95, y: 0.92), startRadius: 0, endRadius: 1050
             )
         }
     }
@@ -253,10 +328,10 @@ extension View {
 
 // MARK: - Top-level destinations
 //
-// The root shell used to be a stock `TabView` — tvOS renders that as its own
-// fixed top tab bar chrome, which can't be restyled and reads as a completely
-// generic "any tvOS app" shell. `TVTopNavBar` below replaces it with a custom
-// row we fully control, driven by this selection enum instead of `.tabItem`.
+// The shell's six destinations. Rendered by `TVSideRail` as a vertical icon
+// rail; before that a `TVTopNavBar` pill row, and before that a stock `TabView`
+// whose fixed top chrome could not be restyled. Only the enum survived each
+// change, which is the point of it being separate from whatever draws it.
 
 enum TVDestination: String, CaseIterable, Identifiable {
     case home, library, playlists, discover, search, account
@@ -282,78 +357,6 @@ enum TVDestination: String, CaseIterable, Identifiable {
         case .search:    return "Search"
         case .account:   return accountName
         }
-    }
-}
-
-/// One pill in `TVTopNavBar` — reads focus off its own environment (tvOS
-/// populates `@Environment(\.isFocused)` on a `Button` label's subtree while
-/// that button is the focused element) rather than the button carrying any
-/// focus styling itself, same pattern as `TVPlayerView`'s transport buttons.
-private struct TVNavPillLabel: View {
-    let title: String
-    let systemImage: String
-    let isSelected: Bool
-    @Environment(\.isFocused) private var isFocused
-
-    var body: some View {
-        Label(title, systemImage: systemImage)
-            .font(.system(size: 25, weight: isSelected || isFocused ? .bold : .semibold))
-            .foregroundStyle(
-                isFocused ? Color.black
-                : isSelected ? Color.white
-                : Color.white.opacity(0.55)
-            )
-            .padding(.horizontal, 30)
-            .padding(.vertical, 16)
-            .background(
-                Capsule().fill(
-                    isFocused ? Color.white
-                    : isSelected ? Color.white.opacity(0.16)
-                    : Color.clear
-                )
-            )
-            .scaleEffect(isFocused ? 1.08 : 1.0)
-            .shadow(color: isFocused ? .black.opacity(0.35) : .clear, radius: isFocused ? 16 : 0, y: 8)
-            .animation(.spring(response: 0.32, dampingFraction: 0.75), value: isFocused)
-    }
-}
-
-/// Custom persistent top navigation replacing the stock `TabView` tab bar —
-/// a translucent pill row that floats over `TVAmbientBackground` instead of
-/// tvOS's own opaque system chrome.
-struct TVTopNavBar: View {
-    @Binding var selection: TVDestination
-    var accountName: String
-    var accountBadge: Int = 0
-
-    var body: some View {
-        HStack(spacing: 22) {
-            ForEach(TVDestination.allCases) { dest in
-                Button {
-                    selection = dest
-                } label: {
-                    TVNavPillLabel(
-                        title: dest.title(accountName: accountName),
-                        systemImage: dest.systemImage,
-                        isSelected: selection == dest
-                    )
-                }
-                .buttonStyle(.plain)
-                .overlay(alignment: .topTrailing) {
-                    if dest == .account, accountBadge > 0 {
-                        Text("\(accountBadge)")
-                            .font(.caption2.weight(.bold))
-                            .padding(6)
-                            .background(Color.red, in: Circle())
-                            .offset(x: 8, y: -8)
-                    }
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, TVMetrics.margin)
-        .padding(.top, 54)
-        .padding(.bottom, 26)
     }
 }
 

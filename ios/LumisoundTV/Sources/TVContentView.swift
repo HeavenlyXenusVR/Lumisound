@@ -15,12 +15,28 @@ struct TVContentView: View {
     var body: some View {
         if account.isLoggedIn, let token = account.token {
             NavigationStack {
-                VStack(spacing: 0) {
-                    TVTopNavBar(
+                // Three columns: navigation | content | what's playing.
+                //
+                // This replaces a top nav bar over a full-width content area with
+                // a mini-player strip inset across the bottom. Side by side, a
+                // left/right move changes region and an up/down move stays inside
+                // one, so navigation is no longer in the path of scrolling a list
+                // and the player is no longer in the path of leaving it.
+                //
+                // The player column is composed with a plain `if`. v1.7.0 pinned
+                // the player as a `safeAreaInset` that rendered an empty view when
+                // nothing was playing, and wrapped it in a focus section — a
+                // zero-size focus section inside a safe-area inset, in exactly the
+                // state the app launches in, which made it relaunch in a loop.
+                // Here, nothing playing means no view at all: nothing to size,
+                // nothing to focus, no empty branch to get wrong.
+                HStack(spacing: 0) {
+                    TVSideRail(
                         selection: $selection,
                         accountName: account.user?.name ?? "Account",
                         accountBadge: client.notifications.filter(\.isUnread).count
                     )
+
                     ZStack {
                         switch selection {
                         case .home:
@@ -37,19 +53,20 @@ struct TVContentView: View {
                             TVAccountView(client: client, account: account, token: token)
                         }
                     }
+                    .frame(maxWidth: .infinity)
+                    .focusSection()
+
+                    // Hidden while the full player is up: that screen is pushed
+                    // over this shell and already shows everything the column
+                    // does, so leaving it visible would duplicate the artwork and
+                    // take focus targets away from the player's own transport.
+                    if player.current != nil, !player.isShowingFullPlayer {
+                        TVNowPlayingPanel(model: player, client: client, token: token)
+                            .transition(.move(edge: .trailing))
+                    }
                 }
-                // Pinned under the whole shell so "what's playing" and the way
-                // back to it are reachable from every tab — see TVMiniPlayerBar.
-                //
-                // `.focusSection()` is applied INSIDE the bar, on the real row,
-                // not out here on the container. Out here it also decorated the
-                // empty view the bar renders when nothing is playing — a
-                // zero-size focus section living in a safe-area inset, which is
-                // exactly the launch state (nothing playing) and exactly when
-                // the app was dying and relaunching in a loop.
-                .safeAreaInset(edge: .bottom) {
-                    TVMiniPlayerBar(model: player, client: client, token: token)
-                }
+                .animation(.easeOut(duration: 0.3), value: player.current == nil)
+                .background(TVAmbientBackground())
                 .navigationDestination(for: TVPlayContext.self) { ctx in
                     TVPlayerView(context: ctx, client: client, token: token)
                 }
