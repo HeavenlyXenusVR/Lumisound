@@ -63,15 +63,15 @@ struct UserMusicTrack: Identifiable, Codable, Hashable {
     let isLocked: Bool
     /// Server-measured tempo — including for locked tracks, which this device
     /// cannot analyse without downloading and unlocking them first.
-    let bpm: Double?
+    var bpm: Double? = nil
     /// How the track ends and begins — see TransitionProfile. All optional:
     /// they are nil until the server's backfill has reached the track, and an
     /// older bridge does not send them at all.
-    let trailingSilenceS: Double?
-    let outroSlopeDB: Double?
-    let outroColdStop: Bool?
-    let introLeadInS: Double?
-    let introOnsetHardness: Double?
+    var trailingSilenceS: Double? = nil
+    var outroSlopeDB: Double? = nil
+    var outroColdStop: Bool? = nil
+    var introLeadInS: Double? = nil
+    var introOnsetHardness: Double? = nil
 
     var durationText: String {
         let s = Int(duration)

@@ -89,6 +89,7 @@ struct Song: Identifiable, Hashable, Codable {
         sourceTrackID: String? = nil,
         httpHeaders: [String: String]? = nil,
         bpm: Double? = nil,
+        transitionProfile: TransitionProfile? = nil,
         dateAdded: Date? = nil,
         queueSource: QueueSource? = nil
     ) {
@@ -108,6 +109,7 @@ struct Song: Identifiable, Hashable, Codable {
         self.sourceTrackID = sourceTrackID
         self.httpHeaders = httpHeaders
         self.bpm = bpm
+        self.transitionProfile = transitionProfile
         self.dateAdded = dateAdded
         self.queueSource = queueSource
     }
