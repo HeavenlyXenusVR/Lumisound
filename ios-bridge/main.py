@@ -11854,6 +11854,74 @@ async def get_user_lyrics(
 
 
 
+class UserLyricsSubmission(BaseModel):
+    title: str
+    artist: str = ""
+    synced_lyrics: Optional[str] = None
+    plain_lyrics: Optional[str] = None
+
+
+@app.post("/user/lyrics", status_code=204)
+async def submit_user_lyrics(
+    body: UserLyricsSubmission,
+    user: dict = Depends(get_current_user),
+):
+    """Stores lyrics a signed-in user already has locally.
+
+    The companion to `GET /user/lyrics`. Exists for the same reason: the
+    pre-existing submit path is gated on the SERVICE api key, and a client
+    holding only an account JWT cannot reach it.
+
+    Its first real use is recovering Aria transcriptions produced before they
+    were persisted server-side — those were written to a file on one phone and
+    never sent anywhere, so the phone that made them is currently the only copy.
+
+    `submitted_by_user_id` records who supplied it. The cache itself is keyed by
+    title+artist and shared, which is the established behaviour of this table
+    (an existing correction submitted from a phone behaves the same way), but
+    without provenance there would be no way to tell a user's own contribution
+    from an automatic fetch after the fact.
+    """
+    title = (body.title or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title is required")
+    synced = (body.synced_lyrics or "").strip() or None
+    plain = (body.plain_lyrics or "").strip() or None
+    if not synced and not plain:
+        raise HTTPException(status_code=400, detail="Provide synced_lyrics and/or plain_lyrics")
+
+    cache_id = _lyrics_cache_id(title, body.artist or "")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            # Does NOT clobber an existing user-submitted row. A track that
+            # already has a human-corrected or Aria-generated version should not
+            # be overwritten by whatever another device happens to be carrying —
+            # this runs as a bulk migration, so it must be the cautious one.
+            await cur.execute(
+                """
+                INSERT INTO ios_lyrics_cache
+                    (id, title, artist, synced_lyrics, plain_lyrics, found,
+                     is_user_submitted, submitted_by_user_id)
+                VALUES (%s, %s, %s, %s, %s, TRUE, TRUE, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    synced_lyrics = CASE
+                        WHEN ios_lyrics_cache.is_user_submitted THEN ios_lyrics_cache.synced_lyrics
+                        ELSE EXCLUDED.synced_lyrics END,
+                    plain_lyrics = CASE
+                        WHEN ios_lyrics_cache.is_user_submitted THEN ios_lyrics_cache.plain_lyrics
+                        ELSE EXCLUDED.plain_lyrics END,
+                    found = TRUE,
+                    is_user_submitted = TRUE,
+                    submitted_by_user_id = COALESCE(
+                        ios_lyrics_cache.submitted_by_user_id, EXCLUDED.submitted_by_user_id)
+                """,
+                (cache_id, title, body.artist or "", synced, plain, user["sub"]),
+            )
+    return Response(status_code=204)
+
+
+
 @app.post("/user/lyrics/prefetch")
 async def prefetch_lyrics(
     body: LyricsPrefetchRequest,

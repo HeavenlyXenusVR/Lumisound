@@ -119,6 +119,9 @@ final class AccountService: ObservableObject {
         Task { @MainActor [weak self, weak library] in
             guard let self, let library, self.isLoggedIn else { return }
             await self.mergeFavoritesFromServer(into: library)
+            // One-time catch-up for lyrics Aria generated before they were
+            // persisted server-side — see LyricsMigrationService.
+            LyricsMigrationService.shared.migrateIfNeeded(library: library, account: self)
         }
         // Widened from 8 to 20 min now that it's a safety net rather than
         // the primary mechanism — LiveUpdateService's "sync_changed" push

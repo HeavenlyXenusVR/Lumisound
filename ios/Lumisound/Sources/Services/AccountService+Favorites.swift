@@ -95,3 +95,32 @@ extension AccountService {
         }
     }
 }
+
+// MARK: - Lyrics
+
+extension AccountService {
+    /// Stores lyrics against the account so every device can see them.
+    ///
+    /// Posts to `/user/lyrics`, not the service-key-gated submit path — this
+    /// carries the user's own token. Returns whether it was accepted, so a
+    /// bulk migration can retry a failure on the next launch rather than
+    /// marking it done.
+    func submitLyrics(title: String, artist: String, syncedLyrics: String) async -> Bool {
+        guard token != nil else { return false }
+        struct Body: Encodable {
+            let title: String
+            let artist: String
+            let synced_lyrics: String
+        }
+        do {
+            _ = try await makeRequest(
+                "/user/lyrics", method: "POST",
+                body: Body(title: title, artist: artist, synced_lyrics: syncedLyrics)
+            )
+            return true
+        } catch {
+            appWarn("submitLyrics(\(title)) failed: \(error.localizedDescription)", category: "network")
+            return false
+        }
+    }
+}
