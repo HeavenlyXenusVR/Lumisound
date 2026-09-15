@@ -365,7 +365,9 @@ final class TVPlayerModel: ObservableObject {
             activeCrossfadeDuration = TVAutoCrossfade.duration(
                 outgoingDuration: duration,
                 incomingDuration: 0,
-                bpm: nil,
+                // The INCOMING track's tempo: the fade lands on its downbeat,
+                // which is the one the listener is about to be following.
+                bpm: nextItem.bpm,
                 tailLevel: tail
             )
         } else {

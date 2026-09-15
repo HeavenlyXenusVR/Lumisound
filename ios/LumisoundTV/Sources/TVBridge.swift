@@ -48,6 +48,10 @@ struct UserMusicTrack: Identifiable, Codable, Hashable {
     /// a "Recently Added" shelf, since `/user/music` otherwise returns tracks
     /// sorted alphabetically by album/title.
     let uploadedAt: String?
+    /// Tempo, measured server-side (see ios-bridge/locked_media.py) — including
+    /// for locked files, which no client can analyse itself. Nil when the track
+    /// has no steady beat the estimator would commit to.
+    let bpm: Double?
 
     /// What to actually show for this track, never a raw filename.
     ///
@@ -87,6 +91,7 @@ struct UserMusicTrack: Identifiable, Codable, Hashable {
         case serverPath  = "server_path"
         case isLocked    = "is_locked"
         case uploadedAt  = "uploaded_at"
+        case bpm
     }
 }
 
@@ -447,6 +452,9 @@ struct TVPlayable: Identifiable, Hashable {
     /// `isLocked` — needed to name the unlocked temp file correctly. See
     /// `TVPlayerModel.resolvedAsset(for:)`.
     var ext: String = ""
+    /// Server-measured tempo, used to beat-snap Auto Crossfade. Nil when
+    /// unknown, in which case the fade simply is not snapped.
+    var bpm: Double? = nil
 }
 
 // MARK: - TVSyncTrackBody (POST /user/playlists/{id}/tracks request body —
@@ -1211,7 +1219,8 @@ final class TVBridgeClient: ObservableObject {
             authToken: token,
             favoriteSongID: track.id,
             isLocked: track.isLocked,
-            ext: track.ext
+            ext: track.ext,
+            bpm: track.bpm
         )
     }
 

@@ -12,3 +12,5 @@ pyotp==2.9.0
 aioapns==4.0
 firebase-admin==7.5.0
 lupa==2.4
+# Onset-envelope autocorrelation for BPM estimation — see locked_media.py.
+numpy==2.3.3

@@ -9436,6 +9436,53 @@ async def server_artwork(
         raise HTTPException(status_code=500, detail="Artwork extraction failed")
 
     if not stdout_bytes:
+        # Last resort: read INSIDE the lock.
+        #
+        # The ffmpeg pass above sees a locked (.lms) track as noise, so for the
+        # bulk of a cloud library it can never find anything — which is why a
+        # locked track's only source of artwork used to be a thumbnail the phone
+        # uploaded separately, and why tracks backed up without one showed a
+        # placeholder forever. `locked_media` unmasks a temporary copy and looks
+        # in both the embedded picture and the tags (including the URL the iOS
+        # app writes into `lumisound_thumbnail`, which ffprobe never prints).
+        #
+        # The result is written into the same `.artwork/<id>.jpg` the fast path
+        # above reads, so this cost is paid once per track rather than on every
+        # request. The stored file is never modified — see locked_media.
+        try:
+            import locked_media
+            data, source = await locked_media.extract_artwork_async(full_path)
+        except Exception as exc:
+            logger.warning("user_music_artwork: locked extraction failed for %s: %s", path, exc)
+            data, source = None, "error"
+
+        if data:
+            try:
+                pool = await get_pool()
+                async with pool.acquire() as conn:
+                    async with conn.cursor() as cur:
+                        await cur.execute(
+                            "SELECT id FROM ios_user_music_metadata WHERE user_id = %s AND relative_path = %s",
+                            (user_id, path),
+                        )
+                        row = await cur.fetchone()
+                        if row:
+                            cache_path = _locked_artwork_path(music_dir, row[0])
+                            cache_path.parent.mkdir(parents=True, exist_ok=True)
+                            cache_path.write_bytes(data)
+                            await cur.execute(
+                                "UPDATE ios_user_music_metadata SET has_artwork = TRUE "
+                                "WHERE user_id = %s AND id = %s",
+                                (user_id, row[0]),
+                            )
+                logger.info("user_music_artwork: recovered %s artwork for %s (%d bytes)",
+                            source, path, len(data))
+            except Exception as exc:
+                # Caching is an optimisation; serving the image is the job.
+                logger.warning("user_music_artwork: could not cache recovered artwork for %s: %s", path, exc)
+            from fastapi.responses import Response
+            return Response(content=data, media_type="image/jpeg")
+
         raise HTTPException(status_code=404, detail="No embedded artwork found")
 
     from fastapi.responses import Response
@@ -9748,15 +9795,15 @@ async def get_user_music(
         async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
-                    "SELECT relative_path, title, artist, album, genre, duration_seconds, has_artwork, uploaded_at "
+                    "SELECT relative_path, title, artist, album, genre, duration_seconds, has_artwork, uploaded_at, bpm "
                     "FROM ios_user_music_metadata WHERE user_id = %s AND relative_path IS NOT NULL",
                     (user_id,),
                 )
                 rows = await cur.fetchall()
-        for rp, m_title, m_artist, m_album, m_genre, m_duration, m_has_artwork, m_uploaded_at in rows:
+        for rp, m_title, m_artist, m_album, m_genre, m_duration, m_has_artwork, m_uploaded_at, m_bpm in rows:
             stored_meta[rp] = {
                 "title": m_title, "artist": m_artist, "album": m_album,
-                "genre": m_genre, "duration": m_duration, "has_artwork": m_has_artwork,
+                "genre": m_genre, "duration": m_duration, "has_artwork": m_has_artwork, "bpm": m_bpm,
             }
             if m_uploaded_at is not None:
                 uploaded_at_by_path[rp] = m_uploaded_at.isoformat()
@@ -9824,6 +9871,9 @@ async def get_user_music(
             "genre": meta.get("genre") or "",
             "track_number": track_number,
             "has_artwork": bool(meta.get("has_artwork")),
+            # Measured server-side by locked_media's onset-autocorrelation pass,
+            # including for locked files the clients cannot analyse themselves.
+            "bpm": meta.get("bpm"),
             "server_path": rel_path,
             "filename": fpath.name,
             "ext": ext,
@@ -10449,6 +10499,53 @@ async def user_music_artwork(
         raise HTTPException(status_code=500, detail="Artwork extraction failed")
 
     if not stdout_bytes:
+        # Last resort: read INSIDE the lock.
+        #
+        # The ffmpeg pass above sees a locked (.lms) track as noise, so for the
+        # bulk of a cloud library it can never find anything — which is why a
+        # locked track's only source of artwork used to be a thumbnail the phone
+        # uploaded separately, and why tracks backed up without one showed a
+        # placeholder forever. `locked_media` unmasks a temporary copy and looks
+        # in both the embedded picture and the tags (including the URL the iOS
+        # app writes into `lumisound_thumbnail`, which ffprobe never prints).
+        #
+        # The result is written into the same `.artwork/<id>.jpg` the fast path
+        # above reads, so this cost is paid once per track rather than on every
+        # request. The stored file is never modified — see locked_media.
+        try:
+            import locked_media
+            data, source = await locked_media.extract_artwork_async(full_path)
+        except Exception as exc:
+            logger.warning("user_music_artwork: locked extraction failed for %s: %s", path, exc)
+            data, source = None, "error"
+
+        if data:
+            try:
+                pool = await get_pool()
+                async with pool.acquire() as conn:
+                    async with conn.cursor() as cur:
+                        await cur.execute(
+                            "SELECT id FROM ios_user_music_metadata WHERE user_id = %s AND relative_path = %s",
+                            (user_id, path),
+                        )
+                        row = await cur.fetchone()
+                        if row:
+                            cache_path = _locked_artwork_path(music_dir, row[0])
+                            cache_path.parent.mkdir(parents=True, exist_ok=True)
+                            cache_path.write_bytes(data)
+                            await cur.execute(
+                                "UPDATE ios_user_music_metadata SET has_artwork = TRUE "
+                                "WHERE user_id = %s AND id = %s",
+                                (user_id, row[0]),
+                            )
+                logger.info("user_music_artwork: recovered %s artwork for %s (%d bytes)",
+                            source, path, len(data))
+            except Exception as exc:
+                # Caching is an optimisation; serving the image is the job.
+                logger.warning("user_music_artwork: could not cache recovered artwork for %s: %s", path, exc)
+            from fastapi.responses import Response
+            return Response(content=data, media_type="image/jpeg")
+
         raise HTTPException(status_code=404, detail="No embedded artwork found")
 
     from fastapi.responses import Response
