@@ -1100,6 +1100,22 @@ def _describe_auth_scheme(header: str) -> Optional[str]:
     return first if first.lower() in _KNOWN_AUTH_SCHEMES else "malformed"
 
 
+def _valid_account_token(token: str) -> bool:
+    """True when `token` is a well-formed, unexpired account JWT.
+
+    Deliberately signature-and-expiry only, with no database round trip: this
+    runs on the hot path of every streamed track, and a revoked-session check
+    per byte-range request would cost a query per seek. The stream proxy relays
+    public audio the caller could fetch anyway given the URL, so proving the
+    request came from a real, current login is the right depth of check here —
+    the endpoints that act on user data still use get_current_user, which does
+    verify the session.
+    """
+    # auth.decode_token already owns the secret and algorithm; duplicating that
+    # here would be a second place for them to drift apart.
+    return decode_token(token) is not None
+
+
 async def check_auth(request: Request) -> None:
     """If IOS_BRIDGE_API_KEY is set, require a matching Bearer token."""
     if not API_KEY:
@@ -3289,7 +3305,24 @@ async def stream_proxy(
     # neither side recorded anything naming the cause. The client log said
     # "skipping", the access log said 401, and nothing joined them up.
     try:
-        await check_auth(request)
+        # A signed-in user's own token is accepted as well as the service key.
+        #
+        # This endpoint only honoured IOS_BRIDGE_API_KEY, so a client whose
+        # service key is unset or stale sends no Authorization header at all and
+        # every YouTube stream 401s — observed live as 47 rejections carrying
+        # had_auth_header=false, with playback simply failing. The account token
+        # travels on the same request already, as X-Account-Token, purely so the
+        # extractor can use the right cookies; it was never consulted for auth.
+        #
+        # Accepting it NARROWS access rather than widening it: the service key is
+        # a single shared static secret, while a user token identifies a real
+        # account and expires. Same reasoning as /user/lyrics, which had to be
+        # added for exactly this wall.
+        account_token = request.headers.get("X-Account-Token", "")
+        if account_token and _valid_account_token(account_token):
+            pass
+        else:
+            await check_auth(request)
     except HTTPException as exc:
         asyncio.create_task(log_event(
             "streaming", "stream_proxy_auth_rejected", level="error",

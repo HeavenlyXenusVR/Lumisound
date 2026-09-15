@@ -633,6 +633,20 @@ final class TVBridgeClient: ObservableObject {
         } catch {
             if retries > 0 { return try await dataWithRetry(request, retries: retries - 1) }
             let ns = error as NSError
+
+            // A cancelled request is not a failure.
+            //
+            // NSURLErrorCancelled (-999) is what every `.task` produces when its
+            // screen goes away mid-request, which on a remote-driven UI happens
+            // constantly — 90 of these in a day, all of them -999, on paths like
+            // /user/on-this-day and /user/music/smart-playlists that a tab
+            // simply navigated away from. Logging them as errors buried the real
+            // network failures underneath, exactly as cancelled artwork loads
+            // did before that path was fixed.
+            if ns.code == NSURLErrorCancelled {
+                throw error
+            }
+
             TVRemoteLogger.logError(
                 category: "network", event: "request_failed_after_retries",
                 message: error.localizedDescription,

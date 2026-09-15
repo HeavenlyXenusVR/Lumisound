@@ -163,6 +163,13 @@ def _run_gemini_request(system_prompt: str, user_content: dict, schema: dict, im
     return text
 
 
+# Statuses worth a second try — the same set lyrics_ai uses, so both Aria paths
+# treat upstream capacity identically rather than one silently giving up.
+_RETRYABLE_STATUSES = frozenset({500, 502, 503, 504})
+_MAX_TRANSIENT_ATTEMPTS = 3
+_TRANSIENT_BACKOFF_SECONDS = 1.5
+
+
 async def call_intelligence(
     task: str,
     system_prompt: str,
@@ -190,10 +197,37 @@ async def call_intelligence(
     if until is not None and time.monotonic() < until:
         return None
 
+    # Transient upstream capacity is retried, not surfaced as a failure.
+    #
+    # 503 UNAVAILABLE ("this model is currently experiencing high demand") is
+    # Gemini telling us to come back shortly, and it accounted for every
+    # intelligence failure logged in the last day — all of them Aria's DJ
+    # transitions. The lyrics path already retries these (see
+    # lyrics_ai._RETRYABLE_STATUSES); this one did not, so a momentary capacity
+    # spike silently cost the user the feature. Kept short and bounded: a DJ
+    # blurb is worth a second attempt, not a long one, because the track it
+    # introduces is already playing.
+    last_error: Exception | None = None
+    for attempt in range(_MAX_TRANSIENT_ATTEMPTS):
+        try:
+            text = await asyncio.to_thread(
+                _run_gemini_request, system_prompt, user_content, schema, image_urls or []
+            )
+            break
+        except genai_errors.APIError as exc:
+            last_error = exc
+            if exc.code in _RETRYABLE_STATUSES and attempt < _MAX_TRANSIENT_ATTEMPTS - 1:
+                delay = _TRANSIENT_BACKOFF_SECONDS * (attempt + 1)
+                logger.info("intelligence task %s got %s; retrying in %.1fs", task, exc.code, delay)
+                await asyncio.sleep(delay)
+                continue
+            raise
+    else:
+        # Exhausted every attempt on a retryable status.
+        if last_error is not None:
+            raise last_error
+
     try:
-        text = await asyncio.to_thread(
-            _run_gemini_request, system_prompt, user_content, schema, image_urls or []
-        )
         parsed = json.loads(text)
         # Fire-and-forget: don't let the event-log write add latency to a
         # request that already got its answer. One row per call (never
