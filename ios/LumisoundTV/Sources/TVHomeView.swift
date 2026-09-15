@@ -175,7 +175,7 @@ struct TVHomeView: View {
             TVAuthImage(url: client.userMusicArtworkURL(for: track), token: token) {
                 TVArtPlaceholder(systemImage: "music.note")
             }
-            .frame(width: 280, height: 280)
+            .frame(width: 210, height: 210)
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
 
@@ -184,7 +184,7 @@ struct TVHomeView: View {
             Text(track.artist.isEmpty ? "Unknown Artist" : track.artist)
                 .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
         }
-        .frame(width: 280)
+        .frame(width: 210)
     }
 
     // MARK: Your Playlists
@@ -212,7 +212,7 @@ struct TVHomeView: View {
     private func playlistCard(_ playlist: TVPlaylist) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             TVArtPlaceholder(systemImage: "music.note.list", iconScale: 1.15)
-                .frame(width: 280, height: 280)
+                .frame(width: 210, height: 210)
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
 
@@ -220,7 +220,7 @@ struct TVHomeView: View {
             Text("\(playlist.tracks.count) \(playlist.tracks.count == 1 ? "song" : "songs")")
                 .font(.subheadline).foregroundStyle(.secondary)
         }
-        .frame(width: 280)
+        .frame(width: 210)
     }
 
     // MARK: Discover Mix
@@ -271,7 +271,7 @@ struct TVHomeView: View {
     private func smartPlaylistCard(_ bucket: TVSmartPlaylistBucket) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             TVArtPlaceholder(systemImage: smartPlaylistIcon(bucket.key), iconScale: 1.15)
-                .frame(width: 280, height: 280)
+                .frame(width: 210, height: 210)
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
 
@@ -279,7 +279,7 @@ struct TVHomeView: View {
             Text("\(bucket.tracks.count) \(bucket.tracks.count == 1 ? "song" : "songs")")
                 .font(.subheadline).foregroundStyle(.secondary)
         }
-        .frame(width: 280)
+        .frame(width: 210)
     }
 
     private func smartPlaylistIcon(_ key: String) -> String {

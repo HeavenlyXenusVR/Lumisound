@@ -62,7 +62,7 @@ struct TVTrackRow: View {
                 TVAuthImage(url: artworkURL, token: token) {
                     TVArtPlaceholder(systemImage: placeholderSymbol, iconScale: 0.5)
                 }
-                .frame(width: 86, height: 86)
+                .frame(width: 72, height: 72)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -102,7 +102,7 @@ struct TVTrackRow: View {
             Image(systemName: "play.fill")
                 .font(.system(size: 20, weight: .bold))
                 .foregroundStyle(isFocused ? Color.black : Color.white.opacity(0.8))
-                .frame(width: 50, height: 50)
+                .frame(width: 42, height: 42)
                 .background {
                     Circle().fill(
                         isFocused
@@ -115,7 +115,7 @@ struct TVTrackRow: View {
                 .shadow(color: TVPalette.neon.opacity(isFocused ? 0.75 : 0), radius: 14)
         }
         .padding(.horizontal, 22)
-        .padding(.vertical, 14)
+        .padding(.vertical, 11)
         .tvNeonCard(isFocused: isFocused)
     }
 }

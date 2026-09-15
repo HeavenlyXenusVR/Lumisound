@@ -99,21 +99,18 @@ struct TVAlbumsGridView: View {
     @State private var cachedAlbums: [TVAlbumGroup] = []
 
     var body: some View {
-        ScrollView {
+        Group {
             if cachedAlbums.isEmpty {
                 Text("No albums yet.").font(.title3).foregroundStyle(.secondary).padding(.top, 100)
             } else {
-                LazyVGrid(columns: columns, spacing: 48) {
-                    ForEach(cachedAlbums) { album in
-                        NavigationLink {
-                            TVAlbumDetailView(client: client, token: token, album: album)
-                        } label: {
-                            albumCard(album)
-                        }
-                        .buttonStyle(.card)
+                TVCardGrid(items: cachedAlbums) { album, cell in
+                    NavigationLink {
+                        TVAlbumDetailView(client: client, token: token, album: album)
+                    } label: {
+                        albumCard(album, width: cell)
                     }
+                    .buttonStyle(.card)
                 }
-                .padding(TVMetrics.margin)
             }
         }
         .task(id: library.count) {
@@ -122,20 +119,18 @@ struct TVAlbumsGridView: View {
         }
     }
 
-    private func albumCard(_ album: TVAlbumGroup) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+    private func albumCard(_ album: TVAlbumGroup, width: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
             TVAuthImage(url: client.userMusicArtworkURL(for: album.representativeTrack), token: token) {
                 TVArtPlaceholder(systemImage: "square.stack")
             }
-            .frame(maxWidth: .infinity)
-                .aspectRatio(1, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
+            .frame(width: width, height: width)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .shadow(color: .black.opacity(0.4), radius: 12, y: 6)
 
-            Text(album.name).font(.headline).lineLimit(2, reservesSpace: true)
-            Text(album.artistName).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+            TVCardCaption(title: album.name, subtitle: album.artistName, width: width)
         }
-        .frame(maxWidth: .infinity)
+        .frame(width: width)
     }
 }
 
@@ -216,21 +211,18 @@ struct TVArtistsGridView: View {
     @State private var cachedArtists: [TVArtistGroup] = []
 
     var body: some View {
-        ScrollView {
+        Group {
             if cachedArtists.isEmpty {
                 Text("No artists yet.").font(.title3).foregroundStyle(.secondary).padding(.top, 100)
             } else {
-                LazyVGrid(columns: columns, spacing: 48) {
-                    ForEach(cachedArtists) { artist in
-                        NavigationLink {
-                            TVArtistDetailView(client: client, token: token, artist: artist)
-                        } label: {
-                            artistCard(artist)
-                        }
-                        .buttonStyle(.card)
+                TVCardGrid(items: cachedArtists) { artist, cell in
+                    NavigationLink {
+                        TVArtistDetailView(client: client, token: token, artist: artist)
+                    } label: {
+                        artistCard(artist, width: cell)
                     }
+                    .buttonStyle(.card)
                 }
-                .padding(TVMetrics.margin)
             }
         }
         .task(id: library.count) {
@@ -245,27 +237,26 @@ struct TVArtistsGridView: View {
         return client.userMusicArtworkURL(for: track)
     }
 
-    private func artistCard(_ artist: TVArtistGroup) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+    private func artistCard(_ artist: TVArtistGroup, width: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
             // An artist has no artwork of its own server-side, so the first of
             // its tracks that HAS a cover stands in — the same substitution
-            // every music app makes. Before this the card always drew the
-            // placeholder, so every artist was the same grey mic glyph and the
-            // grid told you nothing but the names.
+            // every music app makes.
             TVAuthImage(url: artistArtworkURL(artist), token: token) {
-                TVArtPlaceholder(systemImage: "music.mic", iconScale: 1.35)
+                TVArtPlaceholder(systemImage: "music.mic", iconScale: 1.2)
             }
-                .frame(maxWidth: .infinity)
-                .aspectRatio(1, contentMode: .fit)
-                .clipShape(Circle())
-                .overlay { Circle().strokeBorder(.white.opacity(0.12), lineWidth: 1) }
-                .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
+            .frame(width: width, height: width)
+            .clipShape(Circle())
+            .overlay { Circle().strokeBorder(.white.opacity(0.12), lineWidth: 1) }
+            .shadow(color: .black.opacity(0.4), radius: 12, y: 6)
 
-            Text(artist.name).font(.headline).lineLimit(2, reservesSpace: true)
-            Text("\(artist.albumCount) \(artist.albumCount == 1 ? "album" : "albums") · \(artist.tracks.count) \(artist.tracks.count == 1 ? "song" : "songs")")
-                .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+            TVCardCaption(
+                title: artist.name,
+                subtitle: "\(artist.albumCount) \(artist.albumCount == 1 ? "album" : "albums") · \(artist.tracks.count) \(artist.tracks.count == 1 ? "song" : "songs")",
+                width: width
+            )
         }
-        .frame(maxWidth: .infinity)
+        .frame(width: width)
     }
 }
 
@@ -276,40 +267,39 @@ struct TVArtistDetailView: View {
     let token: String
     let artist: TVArtistGroup
 
-    private var columns: [GridItem] { TVGridLayout.columns() }
-
     var body: some View {
         let albums = tvAlbumGroups(from: artist.tracks)
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                Text(artist.name)
-                    .font(.system(size: 40, weight: .bold))
-                    .padding(.horizontal, 60)
-                    .padding(.top, 40)
+        // The title sits ABOVE the grid rather than inside it: TVCardGrid owns
+        // its own ScrollView (it has to measure the available width), and
+        // nesting one scroll view inside another gives two competing scroll
+        // areas and a focus path that can fall between them.
+        VStack(alignment: .leading, spacing: 16) {
+            Text(artist.name)
+                .font(TVType.section)
+                .lineLimit(2)
+                .padding(.horizontal, TVMetrics.margin)
+                .padding(.top, 30)
 
-                LazyVGrid(columns: columns, spacing: 48) {
-                    ForEach(albums) { album in
-                        NavigationLink {
-                            TVAlbumDetailView(client: client, token: token, album: album)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 10) {
-                                TVAuthImage(url: client.userMusicArtworkURL(for: album.representativeTrack), token: token) {
-                                    TVArtPlaceholder(systemImage: "square.stack")
-                                }
-                                .frame(maxWidth: .infinity)
-                .aspectRatio(1, contentMode: .fit)
-                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                                .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
-                                Text(album.name).font(.headline).lineLimit(2, reservesSpace: true)
-                                Text("\(album.tracks.count) \(album.tracks.count == 1 ? "song" : "songs")")
-                                    .font(.subheadline).foregroundStyle(.secondary)
-                            }
-                            .frame(maxWidth: .infinity)
+            TVCardGrid(items: albums) { album, cell in
+                NavigationLink {
+                    TVAlbumDetailView(client: client, token: token, album: album)
+                } label: {
+                    VStack(alignment: .leading, spacing: 9) {
+                        TVAuthImage(url: client.userMusicArtworkURL(for: album.representativeTrack), token: token) {
+                            TVArtPlaceholder(systemImage: "square.stack")
                         }
-                        .buttonStyle(.card)
+                        .frame(width: cell, height: cell)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .shadow(color: .black.opacity(0.4), radius: 12, y: 6)
+                        TVCardCaption(
+                            title: album.name,
+                            subtitle: "\(album.tracks.count) \(album.tracks.count == 1 ? "song" : "songs")",
+                            width: cell
+                        )
                     }
+                    .frame(width: cell)
                 }
-                .padding(TVMetrics.margin)
+                .buttonStyle(.card)
             }
         }
         .tvAmbientBackground()
@@ -329,21 +319,18 @@ struct TVGenresGridView: View {
     @State private var cachedGenres: [TVGenreGroup] = []
 
     var body: some View {
-        ScrollView {
+        Group {
             if cachedGenres.isEmpty {
                 Text("No genre-tagged songs yet.").font(.title3).foregroundStyle(.secondary).padding(.top, 100)
             } else {
-                LazyVGrid(columns: columns, spacing: 48) {
-                    ForEach(cachedGenres) { genre in
-                        NavigationLink {
-                            TVGenreDetailView(client: client, token: token, genre: genre)
-                        } label: {
-                            genreCard(genre)
-                        }
-                        .buttonStyle(.card)
+                TVCardGrid(items: cachedGenres) { genre, cell in
+                    NavigationLink {
+                        TVGenreDetailView(client: client, token: token, genre: genre)
+                    } label: {
+                        genreCard(genre, width: cell)
                     }
+                    .buttonStyle(.card)
                 }
-                .padding(TVMetrics.margin)
             }
         }
         .task(id: library.count) {
@@ -352,19 +339,20 @@ struct TVGenresGridView: View {
         }
     }
 
-    private func genreCard(_ genre: TVGenreGroup) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            TVArtPlaceholder(systemImage: "guitars", iconScale: 1.15)
-                .frame(maxWidth: .infinity)
-                .aspectRatio(1, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
+    private func genreCard(_ genre: TVGenreGroup, width: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            TVArtPlaceholder(systemImage: "guitars", iconScale: 1.0)
+                .frame(width: width, height: width)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .shadow(color: .black.opacity(0.4), radius: 12, y: 6)
 
-            Text(genre.name).font(.headline).lineLimit(2, reservesSpace: true)
-            Text("\(genre.tracks.count) \(genre.tracks.count == 1 ? "song" : "songs")")
-                .font(.subheadline).foregroundStyle(.secondary)
+            TVCardCaption(
+                title: genre.name,
+                subtitle: "\(genre.tracks.count) \(genre.tracks.count == 1 ? "song" : "songs")",
+                width: width
+            )
         }
-        .frame(maxWidth: .infinity)
+        .frame(width: width)
     }
 }
 

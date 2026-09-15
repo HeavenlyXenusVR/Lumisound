@@ -58,16 +58,27 @@ struct TVContentView: View {
                     .frame(maxWidth: .infinity)
                     .focusSection()
 
-                    // Hidden while the full player is up: that screen is pushed
-                    // over this shell and already shows everything the column
-                    // does, so leaving it visible would duplicate the artwork and
-                    // take focus targets away from the player's own transport.
-                    if player.current != nil, !player.isShowingFullPlayer {
+                    // The player column is HIDDEN on Search.
+                    //
+                    // tvOS's search surface brings the system keyboard, which it
+                    // lays out across the full width of the window regardless of
+                    // what else is on screen — so with the card present the
+                    // keyboard drew straight over it and over the rail, which is
+                    // the overlap in the 1.13.2 screenshot. Nothing in the app
+                    // can reposition a system keyboard, so the fix is to give the
+                    // screen the width it is going to take anyway.
+                    //
+                    // Hidden for the full player too: that screen is pushed over
+                    // this shell and already shows everything the card does.
+                    if player.current != nil,
+                       !player.isShowingFullPlayer,
+                       selection != .search {
                         TVNowPlayingPanel(model: player, client: client, token: token)
                             .transition(.move(edge: .trailing))
                     }
                 }
                 .animation(.easeOut(duration: 0.3), value: player.current == nil)
+                .animation(.easeOut(duration: 0.25), value: selection == .search)
                 .background(TVAmbientBackground())
                 .navigationDestination(for: TVPlayContext.self) { ctx in
                     TVPlayerView(context: ctx, client: client, token: token)

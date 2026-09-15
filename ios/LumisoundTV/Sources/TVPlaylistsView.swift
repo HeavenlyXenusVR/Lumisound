@@ -161,7 +161,7 @@ struct TVPlaylistsView: View {
             Text("\(playlist.tracks.count) \(playlist.tracks.count == 1 ? "song" : "songs")")
                 .font(.subheadline).foregroundStyle(.secondary)
         }
-        .frame(width: 280)
+        .frame(width: 210)
     }
 }
 

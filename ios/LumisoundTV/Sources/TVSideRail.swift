@@ -35,7 +35,7 @@ struct TVSideRail: View {
     var user: TVUser? = nil
     var baseURL: String = ""
 
-    static let width: CGFloat = 132
+    static let width: CGFloat = 112
 
     var body: some View {
         VStack(spacing: 14) {
@@ -92,7 +92,11 @@ struct TVSideRail: View {
                 .frame(width: 1.5)
             }
         }
-        .ignoresSafeArea(edges: .vertical)
+        // `.leading` as well as `.vertical`: with only the vertical edges
+        // ignored, tvOS's horizontal safe-area inset left a strip of backdrop
+        // between the rail and the screen edge — the rail floated slightly
+        // inboard instead of being anchored to the side of the picture.
+        .ignoresSafeArea(edges: [.vertical, .leading])
         .focusSection()
     }
 
@@ -137,7 +141,7 @@ private struct TVRailItemLabel: View {
                     .opacity(isFocused || isSelected ? 1 : 0.55)
             } else {
                 Image(systemName: systemImage)
-                    .font(.system(size: 30, weight: .semibold))
+                    .font(.system(size: 26, weight: .semibold))
                     .foregroundStyle(isFocused || isSelected ? Color.white : Color.white.opacity(0.45))
             }
             if badge > 0 {
@@ -148,7 +152,7 @@ private struct TVRailItemLabel: View {
                     .offset(x: 19, y: -16)
             }
         }
-        .frame(width: 68, height: 62)
+        .frame(width: 60, height: 54)
         .background {
             // The selected destination keeps a quiet marker; the focused one
             // gets the lit surface. Both states must be distinguishable at once,

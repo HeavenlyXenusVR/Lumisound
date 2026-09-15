@@ -36,9 +36,9 @@ import SwiftUI
 enum TVMetrics {
     /// Horizontal screen margin. tvOS overscan already eats the outer ~60pt on
     /// some sets, so content starts well inboard of the frame edge.
-    static let margin: CGFloat = 80
+    static let margin: CGFloat = 56
     /// Gap between major sections down a screen.
-    static let section: CGFloat = 52
+    static let section: CGFloat = 40
     /// Gap between sibling rows in a list.
     static let row: CGFloat = 12
     static let cardCorner: CGFloat = 14
@@ -47,19 +47,19 @@ enum TVMetrics {
 
 enum TVType {
     /// Screen titles ("Library", "Discover") — one per screen, nothing else.
-    static let display = Font.system(size: 58, weight: .heavy)
+    static let display = Font.system(size: 46, weight: .heavy)
     /// Hero/Now Playing track titles.
-    static let hero = Font.system(size: 44, weight: .bold)
+    static let hero = Font.system(size: 36, weight: .bold)
     /// Section headings inside a screen.
-    static let section = Font.system(size: 32, weight: .bold)
+    static let section = Font.system(size: 26, weight: .bold)
     /// The primary line of a list row or card.
-    static let rowTitle = Font.system(size: 27, weight: .semibold)
+    static let rowTitle = Font.system(size: 23, weight: .semibold)
     /// Secondary/supporting text — artists, counts, hints.
-    static let rowDetail = Font.system(size: 22, weight: .regular)
+    static let rowDetail = Font.system(size: 19, weight: .regular)
     /// Numeric/trailing metadata: durations, indices, "3 of 40".
-    static let meta = Font.system(size: 20, weight: .medium).monospacedDigit()
+    static let meta = Font.system(size: 17, weight: .medium).monospacedDigit()
     /// All-caps kicker above a title.
-    static let eyebrow = Font.system(size: 17, weight: .bold)
+    static let eyebrow = Font.system(size: 15, weight: .bold)
 }
 
 // MARK: Palette
@@ -302,7 +302,7 @@ struct TVSectionHeader: View {
             HStack(spacing: 14) {
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
                     .fill(Color.accentColor)
-                    .frame(width: 6, height: 34)
+                    .frame(width: 5, height: 26)
                 Text(title).font(TVType.section)
             }
             if let subtitle {
@@ -398,7 +398,7 @@ struct TVChip: View {
                 Text(title)
             }
         }
-        .font(.system(size: 21, weight: isSelected || isFocused ? .bold : .medium))
+        .font(.system(size: 19, weight: isSelected || isFocused ? .bold : .medium))
         .foregroundStyle(
             isFocused ? Color.black
             : isSelected ? Color.white
@@ -544,9 +544,85 @@ struct TVShelfSection<Content: View>: View {
             .padding(.horizontal, TVMetrics.margin)
 
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 32) { content() }
-                    .padding(.horizontal, TVMetrics.margin)
+                HStack(spacing: 26) { content() }
+                    .padding(.leading, TVMetrics.margin)
+                    // Extra room on the trailing edge so the row runs out in
+                    // empty space instead of being cut through a card at the
+                    // boundary with the now-playing column.
+                    .padding(.trailing, TVMetrics.margin + 40)
             }
         }
+    }
+}
+
+// MARK: - Card grid
+
+/// A grid of artwork cards laid out at a DEFINITE width per cell.
+///
+/// The grids used `LazyVGrid` with flexible columns and cards sized
+/// `.frame(maxWidth: .infinity)`, which looks right and is not. `.buttonStyle(.card)`
+/// proposes an UNCONSTRAINED width to its label, so a `Text` inside reports its
+/// full single-line ideal width, `maxWidth: .infinity` resolves to that ideal
+/// rather than to the cell, and every card grew as wide as its longest title —
+/// overlapping its neighbours and printing titles straight through one another.
+/// Flexible columns cannot fix it, because the card never asks the column how
+/// wide it is.
+///
+/// Measuring the container and handing each card an exact width removes the
+/// ambiguity: the card is told its size instead of inferring one from its
+/// contents. That is also what makes the column-count setting mean anything —
+/// the count decides the width, rather than the content deciding the count.
+struct TVCardGrid<Item: Identifiable, Card: View>: View {
+    let items: [Item]
+    var spacing: CGFloat = 36
+    var topPadding: CGFloat = 4
+    @ViewBuilder var card: (Item, CGFloat) -> Card
+
+    var body: some View {
+        GeometryReader { geo in
+            let count = max(2, min(4, TVAudioSettings.shared.gridColumns))
+            let usable = geo.size.width - TVMetrics.margin * 2 - spacing * CGFloat(count - 1)
+            let cell = max(140, usable / CGFloat(count))
+            ScrollView {
+                LazyVGrid(
+                    columns: Array(repeating: GridItem(.fixed(cell), spacing: spacing), count: count),
+                    spacing: spacing + 12
+                ) {
+                    ForEach(items) { item in
+                        card(item, cell)
+                    }
+                }
+                .padding(.horizontal, TVMetrics.margin)
+                .padding(.top, topPadding)
+                .padding(.bottom, 60)
+            }
+        }
+    }
+}
+
+/// The caption under a grid card, clamped to the cell's width.
+///
+/// `reservesSpace: true` on the title keeps every card in a row the same height
+/// whether its title wraps to one line or two — without it, rows of cards sit at
+/// staggered heights.
+struct TVCardCaption: View {
+    let title: String
+    let subtitle: String
+    let width: CGFloat
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.system(size: 21, weight: .semibold))
+                .lineLimit(2, reservesSpace: true)
+                .multilineTextAlignment(.leading)
+            Text(subtitle)
+                .font(.system(size: 18))
+                .foregroundStyle(.white.opacity(0.5))
+                .lineLimit(1)
+        }
+        // Definite width, so the text wraps inside the cell instead of reporting
+        // an ideal width that stretches the whole card.
+        .frame(width: width, alignment: .leading)
     }
 }
