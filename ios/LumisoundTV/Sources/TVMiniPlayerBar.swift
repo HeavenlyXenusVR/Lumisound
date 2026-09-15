@@ -50,7 +50,13 @@ struct TVMiniPlayerBar: View {
             .animation(.easeOut(duration: 0.18), value: focused)
             .padding(.horizontal, 60)
             .padding(.bottom, 28)
+            // On the real row only — never on the empty branch below.
+            .focusSection()
             .transition(.move(edge: .bottom).combined(with: .opacity))
+        } else {
+            // Explicitly nothing — a safe-area inset whose content is an
+            // implicit empty branch still participates in layout and focus.
+            EmptyView()
         }
     }
 
