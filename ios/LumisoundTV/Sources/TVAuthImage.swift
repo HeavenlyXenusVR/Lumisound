@@ -18,6 +18,31 @@ import SwiftUI
 //      more often than a genuinely missing/dead URL. One retry after a short
 //      delay covers the transient case without hammering a URL that's
 //      actually gone.
+/// Artwork loads go through their own session, not `URLSession.shared`.
+///
+/// Telemetry showed 300 artwork failures in a day with status -1 — no HTTP
+/// response at all. Not missing files: the grids request dozens of covers at
+/// once (more since the column count became configurable), and the default
+/// session allows only a handful of connections per host, so the rest queue and
+/// time out. The failures scale with how fast you scroll, which is exactly the
+/// shape of connection starvation rather than of anything being wrong on the
+/// server.
+///
+/// A larger connection pool lets a screenful actually load, and a real cache
+/// means scrolling back to a row costs nothing — the previous behaviour refetched
+/// every cover every time it came back on screen, which was most of the load
+/// causing the starvation in the first place.
+private let tvArtworkSession: URLSession = {
+    let config = URLSessionConfiguration.default
+    config.httpMaximumConnectionsPerHost = 12
+    config.requestCachePolicy = .returnCacheDataElseLoad
+    config.timeoutIntervalForRequest = 25
+    config.urlCache = URLCache(memoryCapacity: 64 * 1024 * 1024,
+                               diskCapacity: 512 * 1024 * 1024,
+                               diskPath: "tv-artwork")
+    return URLSession(configuration: config)
+}()
+
 struct TVAuthImage<Placeholder: View>: View {
     let url: URL?
     let token: String?
@@ -60,6 +85,12 @@ struct TVAuthImage<Placeholder: View>: View {
         }
         let lastStatus = result.status
         let ui = result.image
+        // A cancelled load is not an error. `.task(id:)` cancels this the moment
+        // the row scrolls off, which on a long list happens constantly — logging
+        // those as failures buried the real ones and made artwork look far more
+        // broken than it was.
+        if Task.isCancelled { return }
+
         guard let ui else {
             // Both attempts failed — leave whatever was already on screen
             // (e.g. the previous track's art, or the placeholder) rather
@@ -73,8 +104,14 @@ struct TVAuthImage<Placeholder: View>: View {
             // here means the server has no stored thumbnail for a locked
             // track — it cannot extract one from locked bytes, so a
             // pre-uploaded thumbnail is its only source.
-            TVRemoteLogger.logError(
-                category: "artwork", event: "artwork_load_failed",
+            // 404 is a normal state, not a fault: the server has no stored
+            // thumbnail for that track and cannot extract one from locked bytes.
+            // Logged at info so it stays countable without sitting in the error
+            // feed next to genuine failures.
+            TVRemoteLogger.log(
+                category: "artwork",
+                event: lastStatus == 404 ? "artwork_absent" : "artwork_load_failed",
+                level: lastStatus == 404 ? "info" : "error",
                 message: "HTTP \(lastStatus)",
                 detail: ["status": lastStatus, "url": url.path,
                          "isUserMusic": url.path.contains("/user/music/artwork"),
@@ -110,7 +147,7 @@ struct TVAuthImage<Placeholder: View>: View {
         }
         var req = URLRequest(url: url)
         if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
-        guard let (data, response) = try? await URLSession.shared.data(for: req) else {
+        guard let (data, response) = try? await tvArtworkSession.data(for: req) else {
             return (nil, -1)
         }
         let status = (response as? HTTPURLResponse)?.statusCode ?? -1

@@ -247,7 +247,11 @@ struct TVNowPlayingPanel: View {
                         .animation(.easeOut(duration: 0.25), value: idx)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // Fixed and clipped for the same reason as the full player's — the
+            // window is a ForEach over changing indices, so lines animate in and
+            // out and were drawn past the card's edge mid-transition.
+            .frame(maxWidth: .infinity, minHeight: 104, maxHeight: 104, alignment: .topLeading)
+            .clipped()
             .padding(.horizontal, 20)
             .padding(.vertical, 18)
             .tvNeonCard(cornerRadius: TVMetrics.panelCorner)

@@ -179,7 +179,10 @@ final class TVPlayerModel: ObservableObject {
             failureObservers.append(failureObs)
 
             // Drives the scrubber + elapsed/remaining time, and the crossfade trigger.
-            let interval = CMTime(seconds: 0.5, preferredTimescale: 600)
+            // 0.2s, not 0.5s: this timer is what advances the lyric
+            // highlight, and at 0.5s the lit line lagged the audio by up to
+            // half a second, which reads as lyrics simply being out of sync.
+            let interval = CMTime(seconds: 0.2, preferredTimescale: 600)
             let timeObs = p.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self, weak p] time in
                 Task { @MainActor in
                     guard let self, let p, self.player === p else { return }
@@ -859,12 +862,22 @@ struct TVPlayerView: View {
                 }
             }
         }
+        // A FIXED height, clipped.
+        //
+        // Two problems this solves. The block's height varied with how many
+        // lines the current window happened to wrap to, so the panel resized
+        // itself as the song played. And because the window is a `ForEach` over
+        // changing indices, lines are inserted and removed as the song advances
+        // — SwiftUI animates those in and out, and with nothing clipping the
+        // container they were drawn outside it mid-transition, which is the
+        // text appearing over the edge of the box.
+        //
+        // Still not `maxHeight: .infinity`: a child asking for infinity
+        // overrides a parent that wanted to hug its content, which is what kept
+        // the whole panel stretched to the window earlier.
+        .frame(height: 210, alignment: .top)
+        .clipped()
         .animation(.easeOut(duration: 0.28), value: idx)
-        // Deliberately NOT `maxHeight: .infinity`. That is what kept the panel
-        // stretched after it was supposedly fixed to hug its content: this
-        // column claimed all available height from inside the row, the row grew
-        // to match, and the panel grew with it. A child asking for infinity
-        // overrides a parent that wanted to be small.
     }
 
     /// Index of the last lyric line whose timestamp has passed, or -1 before the
