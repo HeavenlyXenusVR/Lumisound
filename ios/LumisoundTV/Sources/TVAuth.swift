@@ -3,9 +3,32 @@ import Foundation
 // MARK: - Auth models
 
 struct TVUser: Codable, Hashable {
+    let id: String?
     let username: String?
     let display_name: String?
+    /// Externally-hosted avatar, when the account has one set that way. Accounts
+    /// that uploaded an image instead have it stored as bytes on the server and
+    /// served from `/user/avatar/{id}` — see `avatarURL(baseURL:)`.
+    let avatar_url: String?
+
     var name: String { display_name ?? username ?? "You" }
+
+    /// Where to load this user's picture from, preferring the uploaded image.
+    ///
+    /// All four fields are optional and decoded leniently: this type is built
+    /// from several different endpoints' user objects, and an older bridge (or
+    /// a response that only carries a name) must still decode rather than fail
+    /// the whole login. `id` being nil simply means no uploaded-avatar URL can
+    /// be formed, which the caller renders as the placeholder glyph.
+    func avatarURL(baseURL: String) -> URL? {
+        if let id, !id.isEmpty {
+            return URL(string: "\(baseURL)/user/avatar/\(id)")
+        }
+        if let avatar_url, !avatar_url.isEmpty {
+            return URL(string: avatar_url)
+        }
+        return nil
+    }
 }
 
 private struct TVAuthResponse: Decodable {

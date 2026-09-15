@@ -75,7 +75,13 @@ struct TVContentView: View {
             // the nav bar's unread badge is accurate even before Account is
             // ever visited this session.
             .task {
+                // Runs for the life of the session — see TVAdvancedTelemetry.
+                TVAdvancedTelemetry.HitchMonitor.shared.start()
+                TVAdvancedTelemetry.noteScreen(selection.rawValue)
                 if client.notifications.isEmpty { await client.fetchNotifications(token: token) }
+            }
+            .onChange(of: selection) { newValue in
+                TVAdvancedTelemetry.noteScreen(newValue.rawValue)
             }
         } else {
             TVLoginView(account: account)
@@ -247,6 +253,10 @@ struct TVAccountView: View {
                             .padding(.top, 10)
                         TVFriendsListeningCard(friendsListening: client.friendsListening)
                     }
+
+                    TVSectionHeader(title: "Listening Activity")
+                        .padding(.top, 10)
+                    TVSocialActivityFeed(activity: client.socialActivity)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -255,15 +265,13 @@ struct TVAccountView: View {
         .task {
             if client.notifications.isEmpty { await client.fetchNotifications(token: token) }
             await client.fetchFriendsListening(token: token)
+            await client.fetchSocialActivity(token: token)
         }
     }
 
     private var profileCard: some View {
         VStack(spacing: 18) {
-            Image(systemName: "person.crop.circle.fill")
-                .font(.system(size: 100))
-                .foregroundStyle(.tint)
-                .shadow(color: Color.accentColor.opacity(0.6), radius: 24)
+            TVAvatarView(user: account.user, baseURL: client.baseURL, diameter: 150)
             Text(account.user?.name ?? "Signed in")
                 .font(.title2.weight(.semibold))
                 .multilineTextAlignment(.center)

@@ -15,17 +15,23 @@ struct TVHomeView: View {
     @ObservedObject var client: TVBridgeClient
     let token: String
 
-    private var recentlyAdded: [UserMusicTrack] {
-        client.library.sorted {
-            ($0.uploadedDate ?? .distantPast) > ($1.uploadedDate ?? .distantPast)
-        }
-    }
+    // Cached, NOT computed properties.
+    //
+    // These were `client.library.sorted { ... }` and a `compactMap` off that
+    // sort. A computed property has no memory, so each of the six places Home
+    // reads them re-ran the whole sort — and every read of the sort key parsed
+    // an ISO 8601 timestamp (see `tvParseISO8601`). SwiftUI re-evaluates `body`
+    // on any `@Published` change on `client`, and the player's own position
+    // publishes twice a second, so this ran continuously rather than once.
+    //
+    // Sorting the library is genuinely O(n log n) work that only changes when
+    // the library does, which is the definition of something that belongs in
+    // state updated by `.task(id:)` rather than in a getter. Same fix, and the
+    // same reason, as `TVAlbumsGridView.cachedAlbums`.
+    @State private var recentlyAdded: [UserMusicTrack] = []
+    @State private var libraryQueue: [TVPlayable] = []
 
     private var heroTrack: UserMusicTrack? { recentlyAdded.first }
-
-    private var libraryQueue: [TVPlayable] {
-        recentlyAdded.compactMap { client.playable(from: $0, token: token) }
-    }
 
     private var discoverQueue: [TVPlayable] {
         client.discoverMix.compactMap { client.playable(from: $0) }
@@ -50,6 +56,27 @@ struct TVHomeView: View {
             if client.smartPlaylists.isEmpty { await client.fetchSmartPlaylists(token: token) }
             if client.onThisDay.isEmpty { await client.fetchOnThisDay(token: token) }
         }
+        .task(id: client.library.count) { await rebuildRecentlyAdded() }
+    }
+
+    /// Re-sorts off the main actor. The sort is the expensive half; building
+    /// playables is cheap but is done in the same hop so the two can never be
+    /// momentarily out of step with each other.
+    private func rebuildRecentlyAdded() async {
+        let library = client.library
+        let started = Date()
+        let sorted = await Task.detached(priority: .userInitiated) {
+            library.sorted {
+                ($0.uploadedDate ?? .distantPast) > ($1.uploadedDate ?? .distantPast)
+            }
+        }.value
+        recentlyAdded = sorted
+        libraryQueue = sorted.compactMap { client.playable(from: $0, token: token) }
+        TVRemoteLogger.log(
+            category: "performance", event: "home_sort_completed",
+            detail: ["trackCount": sorted.count,
+                     "elapsedMs": Int(Date().timeIntervalSince(started) * 1000)]
+        )
     }
 
     // MARK: Hero

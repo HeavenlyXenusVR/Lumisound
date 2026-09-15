@@ -404,16 +404,46 @@ final class TVPlayerModel: ObservableObject {
         isLoadingLyrics = true
         lyricsTask = Task { [weak self] in
             guard let self else { return }
+            // Cleared on EVERY exit. It was only cleared on the success path, so
+            // any of the three early returns below — the user skipping tracks
+            // while the duration probe waited, or while the fetch was in flight,
+            // or the task being cancelled outright — left the flag stuck true
+            // for the rest of the session. The UI then showed "loading lyrics"
+            // forever for a track whose fetch had long since been abandoned,
+            // which is indistinguishable from a hung request.
+            defer { self.isLoadingLyrics = false }
+
             var waited = 0.0
             while self.duration <= 0, waited < 5, !Task.isCancelled, self.current?.id == item.id {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 waited += 0.2
             }
             guard !Task.isCancelled, self.current?.id == item.id else { return }
+            let started = Date()
             let fetched = await TVLyricsService.fetch(title: item.title, artist: item.artist, duration: self.duration)
             guard !Task.isCancelled, self.current?.id == item.id else { return }
             self.lyrics = fetched ?? []
-            self.isLoadingLyrics = false
+
+            // Whether a lookup MATCHED is the only way to tell "this track has
+            // no lyrics published" from "our query never had a chance" — a
+            // title like "How It's Done (from the Netflix film KPop Demon
+            // Hunters)" carries a parenthetical the lyrics database does not
+            // have. Logging the title we actually searched with, and the
+            // outcome, is what makes that difference measurable instead of a
+            // guess about why the panel is empty.
+            TVRemoteLogger.log(
+                category: "lyrics",
+                event: fetched?.isEmpty == false ? "lyrics_matched" : "lyrics_not_found",
+                detail: [
+                    "title": item.title,
+                    "artist": item.artist,
+                    "hasParenthetical": item.title.contains("("),
+                    "titleLength": item.title.count,
+                    "durationKnown": self.duration > 0,
+                    "lineCount": fetched?.count ?? 0,
+                    "elapsedMs": Int(Date().timeIntervalSince(started) * 1000),
+                ]
+            )
         }
     }
 
@@ -627,12 +657,15 @@ struct TVPlayerView: View {
             // figure — just elements scattered over a blurred photo, and the
             // transport was buried in the middle of the text column where it
             // competed with the title for the same vertical space.
-            VStack(spacing: 30) {
+            // Centred as a group rather than pinned to the top, now that the
+            // slab is only as tall as its content.
+            VStack(spacing: 28) {
                 mainSlab
                 transportBar
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .padding(.horizontal, TVMetrics.margin)
-            .padding(.vertical, 54)
+            .padding(.vertical, 40)
             .focusSection()
 
             if sidePanel == .upNext {
@@ -712,8 +745,6 @@ struct TVPlayerView: View {
 
                 progressBar
 
-                Spacer(minLength: 0)
-
                 utilityRow
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -723,13 +754,20 @@ struct TVPlayerView: View {
             // full-screen player that cannot show them without covering itself
             // is the reason the overlay panel existed at all. The overlay stays
             // for reading a whole song; this is for following one.
-            if !model.lyrics.isEmpty {
-                inlineLyrics
-                    .frame(width: 400)
-            }
+            // Always present, so the column keeps a stable width and the
+            // absence of lyrics is STATED rather than shown as a blank half of
+            // the panel. An empty area is ambiguous — still loading, none
+            // published, or broken all look identical.
+            inlineLyrics
+                .frame(width: 400)
         }
         .padding(46)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // Hugs its content vertically. It was `maxHeight: .infinity` with
+        // top-aligned content, which stretched the panel to the full window and
+        // left most of it empty — a large slab of blank colour under the
+        // artwork, with the transport pushed off the bottom edge. A panel should
+        // be the size of what it holds; the empty space belongs to the backdrop.
+        .frame(maxWidth: 1440, alignment: .topLeading)
         .background {
             RoundedRectangle(cornerRadius: 42, style: .continuous)
                 .fill(.ultraThinMaterial)
@@ -754,20 +792,36 @@ struct TVPlayerView: View {
     /// Five lines centred on the current one, the active line lit. Non-focusable
     /// on purpose: it is a readout, and making it focusable would put a stop on
     /// the path between the artwork and the utility row for no action gained.
+    @ViewBuilder
     private var inlineLyrics: some View {
         let idx = currentLyricIndex
-        return VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 14) {
             Text("LYRICS")
                 .font(TVType.eyebrow)
                 .tracking(2.2)
                 .foregroundStyle(.secondary)
-            ForEach(visibleLyricRange(around: idx), id: \.self) { i in
-                Text(model.lyrics[i].text)
-                    .font(.system(size: i == idx ? 27 : 22,
-                                  weight: i == idx ? .semibold : .regular))
-                    .foregroundStyle(i == idx ? Color.white : Color.white.opacity(0.34))
+
+            if model.isLoadingLyrics {
+                HStack(spacing: 12) {
+                    ProgressView().scaleEffect(0.8)
+                    Text("Looking for lyrics…")
+                        .font(TVType.rowDetail)
+                        .foregroundStyle(.white.opacity(0.45))
+                }
+            } else if model.lyrics.isEmpty {
+                Text("No synced lyrics for this track.")
+                    .font(TVType.rowDetail)
+                    .foregroundStyle(.white.opacity(0.35))
                     .lineLimit(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ForEach(visibleLyricRange(around: idx), id: \.self) { i in
+                    Text(model.lyrics[i].text)
+                        .font(.system(size: i == idx ? 27 : 22,
+                                      weight: i == idx ? .semibold : .regular))
+                        .foregroundStyle(i == idx ? Color.white : Color.white.opacity(0.34))
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
             Spacer(minLength: 0)
         }

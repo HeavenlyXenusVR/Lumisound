@@ -116,7 +116,7 @@ struct TVNowPlayingPanel: View {
     @ObservedObject var client: TVBridgeClient
     let token: String
 
-    static let width: CGFloat = 560
+    static let width: CGFloat = 430
 
     private var track: TVPlayable? { model.current }
 
@@ -155,28 +155,46 @@ struct TVNowPlayingPanel: View {
                 transport
             }
         }
-        .padding(.horizontal, 34)
-        .padding(.vertical, 44)
-        // maxHeight as well as width, and the content is top-aligned inside it.
-        // Without this the VStack sized to its content, so the gradient below
-        // covered only the middle band of the column — the floating rectangle
-        // with hard top and bottom edges the column showed on a real display.
+        .padding(.horizontal, 30)
+        .padding(.vertical, 30)
         .frame(width: Self.width)
-        .frame(maxHeight: .infinity, alignment: .top)
+        // A CARD, not a column.
+        //
+        // Two earlier attempts both got this wrong in opposite directions. The
+        // first let the stack size to its content while painting a full-bleed
+        // background, so the gradient stopped wherever the content did and read
+        // as a rectangle accidentally floating at the right edge. The fix for
+        // that — fill the height — was worse: a full-height slab of solid colour
+        // down the whole right side, which buries a sixth of the screen under
+        // chrome on every tab and competes with the content for attention.
+        //
+        // It is a self-contained card pinned to the top right instead: bounded
+        // on every side, obviously deliberate, and leaving the rest of the
+        // column free so the backdrop and the content below both stay visible.
         .background {
-            LinearGradient(
-                colors: [TVPalette.ground.opacity(0.35), TVPalette.surface.opacity(0.9)],
-                startPoint: .leading, endPoint: .trailing
-            )
-            .overlay(alignment: .leading) {
-                LinearGradient(
-                    colors: [TVPalette.neonAlt.opacity(0.35), TVPalette.neon.opacity(0.55)],
-                    startPoint: .top, endPoint: .bottom
-                )
-                .frame(width: 1.5)
-            }
+            RoundedRectangle(cornerRadius: 32, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 32, style: .continuous)
+                        .fill(TVPalette.surface.opacity(0.55))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 32, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [TVPalette.neon.opacity(0.55), TVPalette.neonAlt.opacity(0.30)],
+                                startPoint: .topLeading, endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1.5
+                        )
+                }
+                .shadow(color: .black.opacity(0.5), radius: 34, y: 16)
         }
-        .ignoresSafeArea(edges: .vertical)
+        .padding(.trailing, 40)
+        .padding(.top, 40)
+        // Top-aligned within the full height: the card keeps its own size and
+        // sits at the top right rather than stretching to fill.
+        .frame(maxHeight: .infinity, alignment: .top)
         .focusSection()
     }
 
@@ -305,7 +323,7 @@ private struct TVDeckButtonLabel: View {
     @Environment(\.isFocused) private var isFocused
 
     var body: some View {
-        TVVinylDeck(artworkURL: artworkURL, token: token, isPlaying: isPlaying, diameter: 330)
+        TVVinylDeck(artworkURL: artworkURL, token: token, isPlaying: isPlaying, diameter: 230)
             .scaleEffect(isFocused ? 1.05 : 1)
             .overlay {
                 Circle()

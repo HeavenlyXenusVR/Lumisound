@@ -94,12 +94,36 @@ struct UserMusicTrack: Identifiable, Codable, Hashable {
 /// without fractional seconds depending on the source column/fallback that
 /// produced them — see `tvFormattedTimestamp` in TVAccountExtras.swift for
 /// the same two-formatter dance applied to a display string instead of a `Date`.
+/// Shared, built once.
+///
+/// This function used to allocate BOTH formatters on every call. Constructing an
+/// `ISO8601DateFormatter` costs far more than using one, and this is called from
+/// inside a sort comparator over the whole library (`TVHomeView.recentlyAdded`),
+/// so the cost multiplied out badly: sorting n tracks is ~n·log n comparisons,
+/// each reading `uploadedDate` on two tracks, each of those building two
+/// formatters. At 273 tracks that is on the order of 10,000 formatter
+/// allocations per sort — and Home evaluated that sort several times per render,
+/// including on every half-second playback tick. That is the multi-second freeze
+/// on entering the library while audio kept playing: the audio thread was fine,
+/// the main thread was allocating date formatters.
+///
+/// Both are read-only after setup. `DateFormatter` and `ISO8601DateFormatter`
+/// are documented as thread-safe for parsing once configured, so sharing them is
+/// safe even though callers are not all on the main actor.
+private let tvISO8601WithFraction: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f
+}()
+
+private let tvISO8601WithoutFraction: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime]
+    return f
+}()
+
 func tvParseISO8601(_ iso: String) -> Date? {
-    let withFraction = ISO8601DateFormatter()
-    withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    let withoutFraction = ISO8601DateFormatter()
-    withoutFraction.formatOptions = [.withInternetDateTime]
-    return withFraction.date(from: iso) ?? withoutFraction.date(from: iso)
+    tvISO8601WithFraction.date(from: iso) ?? tvISO8601WithoutFraction.date(from: iso)
 }
 
 // MARK: - TVFavorite (GET /user/favorites row)
@@ -501,6 +525,8 @@ final class TVBridgeClient: ObservableObject {
     @Published var subscriptionFeed: [TVSubscriptionFeedItem] = []
     @Published var isLoadingSubscriptionFeed = false
     @Published var friendsListening: [TVFriendListening] = []
+    /// Shared listening feed — see TVSocial.swift.
+    @Published var socialActivity: [TVSocialActivity] = []
 
     /// In-flight search query, so a stale/slower response can't overwrite a newer one.
     private var activeSearch = ""

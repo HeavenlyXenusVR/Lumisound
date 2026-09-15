@@ -340,7 +340,10 @@ enum TVDestination: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .home:      return "house.fill"
-        case .library:   return "music.note.house.fill"
+        // NOT `music.note.house.fill`: next to Home's `house.fill` in a narrow
+        // vertical rail the two are the same silhouette at a glance, and two
+        // adjacent icons that look identical are worse than either alone.
+        case .library:   return "square.stack.fill"
         case .playlists: return "music.note.list"
         case .discover:  return "sparkles"
         case .search:    return "magnifyingglass"
