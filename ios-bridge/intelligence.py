@@ -384,3 +384,143 @@ async def get_user_taste_profile(user_id: str) -> dict:
 
     _taste_profile_cache[user_id] = (time.monotonic() + _TASTE_PROFILE_TTL, profile)
     return profile
+
+
+# ---------------------------------------------------------------------------
+# Sonic taste fingerprint
+# ---------------------------------------------------------------------------
+#
+# Music Match compared ARTIST AND GENRE NAMES with a Jaccard set overlap. That
+# has a hard failure built into it: two people whose taste is genuinely alike but
+# who happen to own no artist in common score exactly zero, because the measure
+# can only see labels it can string-match. It also cannot say anything about HOW
+# two libraries are alike — only how many names they share.
+#
+# Every track now carries a measured tempo and a ten-band tonal fingerprint (see
+# locked_media). Those describe what a library actually SOUNDS like, which is
+# both a better answer to "do we like the same things" and one that survives
+# having no names in common at all.
+#
+# Name overlap is kept, not replaced. Sharing a specific artist really is strong
+# evidence of shared taste — stronger than sounding similar, since two libraries
+# can share a tonal balance while having nothing to do with one another. The
+# sonic signal is there to rescue the zero-overlap case and to explain the match,
+# not to overrule a real one.
+
+# Below this, a median is describing a handful of tracks rather than a library,
+# and the result would be noise presented as insight.
+_FINGERPRINT_MIN_TRACKS = 20
+
+
+async def get_sonic_fingerprint(user_id: str) -> dict | None:
+    """What a user's library actually sounds like, or None if too little of it
+    has been analysed to say."""
+    import statistics
+    from db import get_pool
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT bpm, spectral_profile FROM ios_user_music_metadata "
+                "WHERE user_id = %s AND (bpm > 0 OR spectral_profile IS NOT NULL)",
+                (user_id,),
+            )
+            rows = await cur.fetchall()
+
+    tempos = [float(r[0]) for r in rows if r[0] and r[0] > 0]
+    spectra = []
+    for _, raw in rows:
+        if not raw:
+            continue
+        try:
+            value = json.loads(raw)
+            if isinstance(value, list) and len(value) == 10:
+                spectra.append([float(v) for v in value])
+        except Exception:
+            continue
+
+    if len(tempos) < _FINGERPRINT_MIN_TRACKS and len(spectra) < _FINGERPRINT_MIN_TRACKS:
+        return None
+
+    out: dict = {"track_count": max(len(tempos), len(spectra))}
+
+    if len(tempos) >= _FINGERPRINT_MIN_TRACKS:
+        out["median_bpm"] = round(statistics.median(tempos), 1)
+        # Spread matters as much as the middle: a library sitting entirely at
+        # 120bpm and one ranging 70-160 can share a median while being nothing
+        # alike to listen to.
+        out["bpm_spread"] = round(statistics.pstdev(tempos), 1)
+
+    if len(spectra) >= _FINGERPRINT_MIN_TRACKS:
+        out["spectrum"] = [round(statistics.median(s[i] for s in spectra), 2) for i in range(10)]
+
+    return out or None
+
+
+def _spectral_similarity(a: list[float], b: list[float]) -> float:
+    """0...1 from two ten-band curves.
+
+    Compares the SHAPE, not the absolute levels: each curve is first centred on
+    its own mean, so a library that is uniformly a few dB hotter does not read as
+    a different taste. What distinguishes taste is the relationship between the
+    bands — bass-forward against bright — not overall level, which is a mastering
+    artefact.
+    """
+    if len(a) != 10 or len(b) != 10:
+        return 0.0
+    mean_a = sum(a) / 10.0
+    mean_b = sum(b) / 10.0
+    ca = [v - mean_a for v in a]
+    cb = [v - mean_b for v in b]
+    # Mean absolute difference, mapped through a scale where ~8dB of average
+    # divergence counts as completely unalike.
+    diff = sum(abs(x - y) for x, y in zip(ca, cb)) / 10.0
+    return max(0.0, 1.0 - diff / 8.0)
+
+
+def _tempo_similarity(a: dict, b: dict) -> float | None:
+    """0...1 from two tempo profiles, or None when either lacks one."""
+    if "median_bpm" not in a or "median_bpm" not in b:
+        return None
+    # 30bpm apart is treated as entirely different, which is roughly the
+    # distance between a ballad and a dance track.
+    gap = abs(a["median_bpm"] - b["median_bpm"])
+    return max(0.0, 1.0 - gap / 30.0)
+
+
+def describe_sonic_match(a: dict, b: dict) -> tuple[float, list[str]]:
+    """A 0...1 sonic similarity and plain-language reasons for it.
+
+    The reasons exist because a bare percentage is not interesting and cannot be
+    checked. "You both lean bright and fast" is something a person can agree or
+    disagree with, which a number never is.
+    """
+    parts: list[float] = []
+    reasons: list[str] = []
+
+    tempo = _tempo_similarity(a, b)
+    if tempo is not None:
+        parts.append(tempo)
+        if tempo > 0.75:
+            pace = "fast" if a["median_bpm"] >= 120 else ("relaxed" if a["median_bpm"] < 95 else "mid-paced")
+            reasons.append(f"you both lean {pace}")
+        elif tempo < 0.35:
+            faster, slower = sorted([a["median_bpm"], b["median_bpm"]], reverse=True)
+            reasons.append(f"very different pace ({slower:.0f} vs {faster:.0f} bpm)")
+
+    if "spectrum" in a and "spectrum" in b:
+        spectral = _spectral_similarity(a["spectrum"], b["spectrum"])
+        parts.append(spectral)
+        if spectral > 0.75:
+            # Bright vs warm read off the top three bands against the bottom three.
+            top = sum(a["spectrum"][7:]) / 3.0
+            bottom = sum(a["spectrum"][:3]) / 3.0
+            tone = "bright" if top - bottom > -18 else "bass-forward"
+            reasons.append(f"similar tone — both {tone}")
+        elif spectral < 0.35:
+            reasons.append("quite different tonal balance")
+
+    if not parts:
+        return 0.0, []
+    return sum(parts) / len(parts), reasons

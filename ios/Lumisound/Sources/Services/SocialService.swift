@@ -408,6 +408,25 @@ final class SocialService: ObservableObject {
         }
     }
 
+    /// What a library actually sounds like — median tempo, its spread, and the
+    /// median tonal balance.
+    ///
+    /// Friends-only server-side, same rule as compatibility: a library's shape
+    /// says what someone genuinely listens to rather than what they chose to
+    /// put on their profile.
+    func fetchSonicFingerprint(userId: String) async -> SonicFingerprint? {
+        guard let account, account.isLoggedIn else { return nil }
+        do {
+            let data = try await account.makeRequest("/api/social/fingerprint/\(userId)")
+            return try JSONDecoder().decode(SonicFingerprint.self, from: data)
+        } catch {
+            // Quietly absent rather than surfaced as an error: a new library
+            // legitimately has no shape yet, and a profile should simply not
+            // show the section instead of reporting a failure.
+            return nil
+        }
+    }
+
     /// A playable mix blending the caller's and `userId`'s top artists —
     /// the "press play" companion to `fetchCompatibility`'s score-only
     /// match. Friends-only server-side, same as compatibility.

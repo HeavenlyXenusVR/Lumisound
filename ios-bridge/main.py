@@ -68,6 +68,8 @@ from intelligence import (
     get_user_taste_profile,
     record_correction,
     record_suggestion,
+    get_sonic_fingerprint,
+    describe_sonic_match,
 )
 from lyrics_ai import transcribe_lyrics
 
@@ -17711,6 +17713,55 @@ class PresenceUpdate(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+@app.get("/api/social/fingerprint/{user_id}")
+async def social_sonic_fingerprint(user_id: str, payload: dict = Depends(get_current_user)):
+    """What a user's library sounds like — median tempo, its spread, and the
+    median tonal balance across the ten EQ bands.
+
+    Derived from measurements the server already makes for Auto EQ and Smart
+    Crossfade, so it costs nothing extra to produce and describes real listening
+    rather than self-reported taste.
+
+    Visible for yourself and for friends only. A library's shape is a
+    surprisingly personal thing — it says what someone actually listens to
+    rather than what they have chosen to display — so it follows the same rule
+    as Music Match rather than the looser one the public profile fields use.
+    """
+    caller_id = payload["sub"]
+    if caller_id != user_id:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                if await _blocked_either_direction(cur, caller_id, user_id):
+                    raise HTTPException(status_code=404, detail="User not found")
+                await cur.execute(
+                    "SELECT 1 FROM ios_social_friends WHERE user_id = %s AND friend_id = %s",
+                    (caller_id, user_id),
+                )
+                if not await cur.fetchone():
+                    raise HTTPException(status_code=403, detail="Only available between friends")
+
+    fingerprint = await get_sonic_fingerprint(user_id)
+    if not fingerprint:
+        # Not an error: a new or barely-analysed library genuinely has no shape
+        # yet, and saying so is more useful than a 404.
+        return {"available": False, "reason": "not enough analysed tracks yet"}
+
+    out = dict(fingerprint)
+    out["available"] = True
+    out["band_hz"] = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+    # A one-line human summary, so a client can show something meaningful
+    # without having to interpret ten dB figures itself.
+    if "median_bpm" in fingerprint:
+        bpm = fingerprint["median_bpm"]
+        pace = "fast" if bpm >= 120 else ("relaxed" if bpm < 95 else "mid-paced")
+        spread = fingerprint.get("bpm_spread", 0)
+        variety = "wide-ranging" if spread > 25 else "consistent"
+        out["summary"] = f"{pace} and {variety} — around {bpm:.0f} bpm"
+    return out
+
+
+
 @app.get("/api/social/profile/me")
 async def get_my_social_profile(payload: dict = Depends(get_current_user)):
     user_id = payload["sub"]
@@ -18989,11 +19040,19 @@ async def social_compatibility(user_id: str, payload: dict = Depends(get_current
     shared_artist_keys = sorted(artists_a & artists_b)[:10]
     shared_genre_keys = sorted(genres_a & genres_b)[:6]
 
+    if shared_artist_keys:
+        sonic_reasons.insert(0, f"{len(shared_artist_keys)} artists in common")
+
     return {
         "score": score,
         "insufficient_data": False,
         "shared_artists": [display_artists_a.get(k, k) for k in shared_artist_keys],
         "shared_genres": [display_genres_a.get(k, k) for k in shared_genre_keys],
+        # How much of the score came from sounding alike rather than sharing
+        # names, and plain-language reasons — a bare percentage cannot be
+        # agreed or disagreed with, and "you both lean fast and bright" can.
+        "sonic_score": round(100 * sonic_score) if sonic_score is not None else None,
+        "reasons": sonic_reasons[:3],
     }
 
 

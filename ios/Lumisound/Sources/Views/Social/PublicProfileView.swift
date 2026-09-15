@@ -40,6 +40,9 @@ struct PublicProfileView: View {
     @State private var draftComment = ""
     @State private var isPostingComment = false
     @State private var compatibility: MusicCompatibility? = nil
+    /// What this library actually sounds like. Friends-only, same as
+    /// compatibility — see SonicFingerprintView for why it is treated that way.
+    @State private var fingerprint: SonicFingerprint? = nil
     @State private var showBlendMix = false
     // MARK: Feature: profile-customization-3
     @State private var recentlyPlayedTogether: [SharedRecentTrack] = []
@@ -228,6 +231,10 @@ struct PublicProfileView: View {
                             ProfileInfoCard(title: "Music Match", icon: "waveform.path.ecg", tint: mainAccentColor) {
                                 VStack(alignment: .leading, spacing: 12) {
                                     MusicCompatibilityRow(compatibility: compatibility, tint: mainAccentColor)
+                                    // Why the score is what it is. A bare
+                                    // percentage cannot be agreed or disagreed
+                                    // with; these can.
+                                    MusicMatchReasons(compatibility: compatibility)
                                     Button {
                                         showBlendMix = true
                                     } label: {
@@ -238,6 +245,22 @@ struct PublicProfileView: View {
                                     .buttonStyle(.bordered)
                                     .tint(mainAccentColor)
                                 }
+                            }
+                        }
+
+                        // MARK: Listening Fingerprint
+                        //
+                        // Deliberately placed with the other music cards rather
+                        // than in the showcase area at the top: unlike a pinned
+                        // track or a featured playlist, this one cannot be
+                        // curated. It is measured from what the library actually
+                        // contains, so it belongs with the factual sections, not
+                        // the presented ones.
+                        if let fingerprint, fingerprint.available {
+                            ProfileInfoCard(title: "Listening Fingerprint",
+                                            icon: "waveform.badge.magnifyingglass",
+                                            tint: subAccentColor) {
+                                SonicFingerprintView(fingerprint: fingerprint)
                             }
                         }
 
@@ -311,6 +334,11 @@ struct PublicProfileView: View {
         .task {
             guard !isSelfPreview else { return }
             compatibility = await social.fetchCompatibility(userId: userId)
+        }
+        .task {
+            // Fetched for a self-preview too: seeing your own fingerprint is
+            // the whole point of having one, and the endpoint allows it.
+            fingerprint = await social.fetchSonicFingerprint(userId: userId)
         }
         // Extra feature #5 — same friends-only/self-preview-skip reasoning
         // as compatibility just above (the endpoint itself 400s on a

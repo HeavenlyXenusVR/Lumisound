@@ -422,12 +422,65 @@ struct MusicCompatibility: Decodable, Equatable {
     let insufficientData: Bool
     let sharedArtists: [String]
     let sharedGenres: [String]
+    /// How much of the match came from the two libraries actually SOUNDING
+    /// alike, rather than sharing artist names. Nil when either side has too
+    /// little analysed music to have a shape yet.
+    ///
+    /// Name overlap alone had a hard failure in it: two people whose taste is
+    /// genuinely alike but who own no artist in common scored exactly zero,
+    /// because a set intersection can only see labels it can string-match.
+    let sonicScore: Int?
+    /// Plain-language reasons for the score. A bare percentage cannot be agreed
+    /// or disagreed with; "you both lean fast and bright" can.
+    let reasons: [String]
 
     enum CodingKeys: String, CodingKey {
         case score
         case insufficientData = "insufficient_data"
         case sharedArtists     = "shared_artists"
         case sharedGenres      = "shared_genres"
+        case sonicScore        = "sonic_score"
+        case reasons
+    }
+
+    // Both new fields tolerate absence so an older bridge still decodes.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        score = try c.decode(Int.self, forKey: .score)
+        insufficientData = (try? c.decode(Bool.self, forKey: .insufficientData)) ?? false
+        sharedArtists = (try? c.decode([String].self, forKey: .sharedArtists)) ?? []
+        sharedGenres = (try? c.decode([String].self, forKey: .sharedGenres)) ?? []
+        sonicScore = try? c.decodeIfPresent(Int.self, forKey: .sonicScore)
+        reasons = (try? c.decode([String].self, forKey: .reasons)) ?? []
+    }
+}
+
+// MARK: - Sonic fingerprint
+
+/// What a library actually sounds like — GET /api/social/fingerprint/{id}.
+///
+/// Derived from the tempo and tonal measurements the server already makes for
+/// Auto EQ and Smart Crossfade, so it describes real listening rather than
+/// self-reported taste. Visible for yourself and for friends only: a library's
+/// shape says what someone actually listens to rather than what they chose to
+/// display, so it follows Music Match's rule rather than the public profile's.
+struct SonicFingerprint: Decodable, Equatable {
+    let available: Bool
+    let trackCount: Int?
+    let medianBPM: Double?
+    let bpmSpread: Double?
+    /// Ten values in `bandHz` order, dB relative to each track's own level.
+    let spectrum: [Double]?
+    let bandHz: [Int]?
+    /// One-line human summary, e.g. "mid-paced and consistent — around 103 bpm".
+    let summary: String?
+
+    enum CodingKeys: String, CodingKey {
+        case available, spectrum, summary
+        case trackCount = "track_count"
+        case medianBPM  = "median_bpm"
+        case bpmSpread  = "bpm_spread"
+        case bandHz     = "band_hz"
     }
 }
 
