@@ -124,7 +124,6 @@ struct TVSearchView: View {
             }
         }
     }
-    }
 
     /// Instead of a bare "search to play" placeholder, an empty query
     /// surfaces something real to browse straight away — the same Discover
