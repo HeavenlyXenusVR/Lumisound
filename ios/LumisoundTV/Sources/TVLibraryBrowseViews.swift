@@ -113,7 +113,7 @@ struct TVAlbumsGridView: View {
                         .buttonStyle(.card)
                     }
                 }
-                .padding(60)
+                .padding(TVMetrics.margin)
             }
         }
         .task(id: library.count) {
@@ -175,31 +175,27 @@ struct TVAlbumDetailView: View {
                     }
                 }
 
-                VStack(spacing: 0) {
+                VStack(spacing: TVMetrics.row) {
                     ForEach(Array(album.tracks.enumerated()), id: \.element.id) { index, track in
                         NavigationLink(value: TVPlayContext(queue: queue, startID: track.id)) {
-                            HStack(spacing: 24) {
-                                Text("\(index + 1)")
-                                    .font(.title3.monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 44, alignment: .trailing)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(track.displayTitle)
-                                        .font(.title3)
-                                    Text(track.durationText).font(.callout).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                            }
-                            .padding(.vertical, 14)
-                            .padding(.horizontal, 20)
-                            .contentShape(Rectangle())
+                            // Numbered rather than showing the album's own
+                            // cover once per track — see TVTrackRow.trackNumber.
+                            TVTrackRow(
+                                artworkURL: nil,
+                                token: token,
+                                title: track.displayTitle,
+                                artist: track.artist,
+                                detail: track.duration.tvDurationText,
+                                isFavorite: client.isFavorite(track.id),
+                                trackNumber: index + 1
+                            )
                         }
-                        .buttonStyle(.card)
+                        .buttonStyle(.plain)
                         .tvTrackActions(client: client, token: token, track: track)
                     }
                 }
             }
-            .padding(60)
+            .padding(TVMetrics.margin)
         }
         .tvAmbientBackground()
     }
@@ -232,7 +228,7 @@ struct TVArtistsGridView: View {
                         .buttonStyle(.card)
                     }
                 }
-                .padding(60)
+                .padding(TVMetrics.margin)
             }
         }
         .task(id: library.count) {
@@ -295,7 +291,7 @@ struct TVArtistDetailView: View {
                         .buttonStyle(.card)
                     }
                 }
-                .padding(60)
+                .padding(TVMetrics.margin)
             }
         }
         .tvAmbientBackground()
@@ -329,7 +325,7 @@ struct TVGenresGridView: View {
                         .buttonStyle(.card)
                     }
                 }
-                .padding(60)
+                .padding(TVMetrics.margin)
             }
         }
         .task(id: library.count) {
@@ -380,28 +376,24 @@ struct TVGenreDetailView: View {
                     }
                 }
 
-                VStack(spacing: 0) {
+                VStack(spacing: TVMetrics.row) {
                     ForEach(genre.tracks) { track in
                         NavigationLink(value: TVPlayContext(queue: queue, startID: track.id)) {
-                            HStack(spacing: 24) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(track.displayTitle).font(.title3)
-                                    Text(track.artist.isEmpty ? "Unknown Artist" : track.artist)
-                                        .font(.callout).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Text(track.durationText).font(.callout).foregroundStyle(.secondary)
-                            }
-                            .padding(.vertical, 14)
-                            .padding(.horizontal, 20)
-                            .contentShape(Rectangle())
+                            TVTrackRow(
+                                artworkURL: client.userMusicArtworkURL(for: track),
+                                token: token,
+                                title: track.displayTitle,
+                                artist: track.artist,
+                                detail: track.duration.tvDurationText,
+                                isFavorite: client.isFavorite(track.id)
+                            )
                         }
-                        .buttonStyle(.card)
+                        .buttonStyle(.plain)
                         .tvTrackActions(client: client, token: token, track: track)
                     }
                 }
             }
-            .padding(60)
+            .padding(TVMetrics.margin)
         }
         .tvAmbientBackground()
     }
@@ -412,8 +404,6 @@ struct TVGenreDetailView: View {
 struct TVFavoritesGridView: View {
     @ObservedObject var client: TVBridgeClient
     let token: String
-
-    private let columns = [GridItem(.adaptive(minimum: 280), spacing: 48)]
 
     /// Favorites resolved against the already-loaded library — a favorite
     /// whose track no longer exists in the cloud library (deleted since) is
@@ -437,28 +427,28 @@ struct TVFavoritesGridView: View {
                 }
                 .padding(.top, 120)
             } else {
-                LazyVGrid(columns: columns, spacing: 48) {
+                // Rows, matching the Songs list — favourites are songs, and the
+                // same reasoning applies (see `TVTrackRow`). Every row here is
+                // a favourite by definition, so the star is left off: a badge
+                // on every item distinguishes nothing.
+                LazyVStack(spacing: TVMetrics.row) {
                     ForEach(favoriteTracks) { track in
                         NavigationLink(value: TVPlayContext(queue: queue, startID: track.id)) {
-                            VStack(alignment: .leading, spacing: 10) {
-                                TVAuthImage(url: client.userMusicArtworkURL(for: track), token: token) {
-                                    TVArtPlaceholder(systemImage: "music.note")
-                                }
-                                .frame(width: 280, height: 280)
-                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                                .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
-                                Text(track.displayTitle)
-                                    .font(.headline).lineLimit(2, reservesSpace: true)
-                                Text(track.artist.isEmpty ? "Unknown Artist" : track.artist)
-                                    .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                            }
-                            .frame(width: 280)
+                            TVTrackRow(
+                                artworkURL: client.userMusicArtworkURL(for: track),
+                                token: token,
+                                title: track.displayTitle,
+                                artist: track.artist,
+                                detail: track.duration.tvDurationText
+                            )
                         }
-                        .buttonStyle(.card)
+                        .buttonStyle(.plain)
                         .tvTrackActions(client: client, token: token, track: track)
                     }
                 }
-                .padding(60)
+                .padding(.horizontal, TVMetrics.margin)
+                .padding(.top, 8)
+                .padding(.bottom, 150)
             }
         }
         .task {

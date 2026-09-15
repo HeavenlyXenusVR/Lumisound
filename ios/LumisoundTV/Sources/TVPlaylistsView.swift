@@ -211,7 +211,7 @@ struct TVPlaylistDetailView: View {
                     }
                 }
             }
-            .padding(60)
+            .padding(TVMetrics.margin)
         }
         .tvAmbientBackground()
     }

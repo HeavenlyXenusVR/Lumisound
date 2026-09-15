@@ -19,14 +19,14 @@ struct TVStatsView: View {
                 ProgressView("Loading your stats…").padding(.top, 100)
             } else {
                 VStack(alignment: .leading, spacing: 50) {
-                    lifetimeSection.padding(.horizontal, 70)
+                    lifetimeSection.padding(.horizontal, TVMetrics.margin)
                     topArtistsShelf
                     topTracksShelf
                     VStack(alignment: .leading, spacing: 50) {
                         weeklySection
                         badgesSection
                     }
-                    .padding(.horizontal, 70)
+                    .padding(.horizontal, TVMetrics.margin)
                 }
                 .padding(.vertical, 60)
             }

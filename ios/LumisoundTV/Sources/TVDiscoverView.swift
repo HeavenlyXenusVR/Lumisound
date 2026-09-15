@@ -122,8 +122,8 @@ struct TVDiscoverView: View {
     private var onThisDaySection: some View {
         VStack(alignment: .leading, spacing: 40) {
             if client.isLoadingOnThisDay {
-                TVSectionHeader(title: "On This Day").padding(.horizontal, 70)
-                ProgressView().padding(.horizontal, 70)
+                TVSectionHeader(title: "On This Day").padding(.horizontal, TVMetrics.margin)
+                ProgressView().padding(.horizontal, TVMetrics.margin)
             } else if client.onThisDay.isEmpty {
                 // Nothing at all: this date genuinely has no history most days,
                 // so a permanent empty band here would be the normal case.
@@ -195,7 +195,7 @@ struct TVDiscoverView: View {
     private func emptyRow(_ text: String) -> some View {
         Text(text)
             .font(.title3).foregroundStyle(.secondary)
-            .padding(.horizontal, 70)
+            .padding(.horizontal, TVMetrics.margin)
     }
 }
 
@@ -261,7 +261,7 @@ struct TVSmartPlaylistDetailView: View {
                     }
                 }
             }
-            .padding(60)
+            .padding(TVMetrics.margin)
         }
         .tvAmbientBackground()
         .task {

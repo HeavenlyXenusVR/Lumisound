@@ -27,8 +27,6 @@ struct TVLibraryView: View {
     @State private var mode: Mode = .songs
     @State private var searchText = ""
 
-    private let columns = [GridItem(.adaptive(minimum: 280), spacing: 48)]
-
     /// Local, in-memory filter over the already-loaded library — cheaper and
     /// far more responsive than re-hitting `/user/music` per keystroke,
     /// which does a full filesystem walk + ffprobe pass on every request.
@@ -68,12 +66,23 @@ struct TVLibraryView: View {
         }
     }
 
+    /// Count line beside the screen title — the only place the library's size
+    /// is stated, and a cheap sanity check that a sync actually happened.
+    private var libraryDetail: String? {
+        guard !client.library.isEmpty else { return nil }
+        let n = client.library.count
+        let shown = filteredSongs.count
+        if shown != n && !searchText.isEmpty { return "\(shown) of \(n) tracks" }
+        return "\(n) track\(n == 1 ? "" : "s")"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if !client.isLoadingLibrary && client.libraryError == nil && !client.library.isEmpty {
+                TVScreenTitle(title: "Library", detail: libraryDetail)
+                    .padding(.bottom, 24)
                 modeChips
-                    .padding(.top, 40)
-                    .padding(.bottom, 30)
+                    .padding(.bottom, 26)
             }
 
             Group {
@@ -92,7 +101,7 @@ struct TVLibraryView: View {
                             systemImage: "music.note.list")
                 } else {
                     switch mode {
-                    case .songs: songsGrid
+                    case .songs: songsList
                     case .albums: TVAlbumsGridView(client: client, token: token, library: client.library)
                     case .artists: TVArtistsGridView(client: client, token: token, library: client.library)
                     case .genres: TVGenresGridView(client: client, token: token, library: client.library)
@@ -127,56 +136,44 @@ struct TVLibraryView: View {
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 70)
+            .padding(.horizontal, TVMetrics.margin)
         }
     }
 
-    private var songsGrid: some View {
+    /// Songs as a dense list rather than a grid of covers — see `TVTrackRow`
+    /// for why. `.buttonStyle(.plain)`, not `.card`: the system card style
+    /// applies its own lift-and-shadow treatment sized for square artwork,
+    /// which on a full-width row reads as the whole screen jumping. The row
+    /// draws its own focus state instead.
+    private var songsList: some View {
         ScrollView {
             if filteredSongs.isEmpty {
                 Text("No songs match “\(searchText)”.")
                     .font(.title3).foregroundStyle(.secondary).padding(.top, 100)
             } else {
-                LazyVGrid(columns: columns, spacing: 48) {
+                LazyVStack(spacing: TVMetrics.row) {
                     ForEach(filteredSongs) { track in
                         NavigationLink(value: TVPlayContext(queue: queue, startID: track.id)) {
-                            libraryCard(track)
+                            TVTrackRow(
+                                artworkURL: client.userMusicArtworkURL(for: track),
+                                token: token,
+                                title: track.displayTitle,
+                                artist: track.artist,
+                                detail: track.duration.tvDurationText,
+                                isFavorite: client.isFavorite(track.id)
+                            )
                         }
-                        .buttonStyle(.card)
+                        .buttonStyle(.plain)
                         .tvTrackActions(client: client, token: token, track: track)
                     }
                 }
-                .padding(60)
+                .padding(.horizontal, TVMetrics.margin)
+                .padding(.top, 8)
+                // Clears the mini-player bar pinned to the bottom of the shell,
+                // so the last row can still be focused and read.
+                .padding(.bottom, 150)
             }
         }
-    }
-
-    private func libraryCard(_ track: UserMusicTrack) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ZStack(alignment: .topTrailing) {
-                TVAuthImage(url: client.userMusicArtworkURL(for: track), token: token) {
-                    TVArtPlaceholder(systemImage: "music.note")
-                }
-                .frame(width: 280, height: 280)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
-
-                if client.isFavorite(track.id) {
-                    Image(systemName: "star.fill")
-                        .font(.system(size: 20))
-                        .foregroundStyle(.yellow)
-                        .padding(10)
-                        .background(.black.opacity(0.45), in: Circle())
-                        .padding(8)
-                }
-            }
-
-            Text(track.displayTitle)
-                .font(.headline).lineLimit(2, reservesSpace: true)
-            Text(track.artist.isEmpty ? "Unknown Artist" : track.artist)
-                .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-        }
-        .frame(width: 280)
     }
 
     private func message(_ text: String, systemImage: String) -> some View {

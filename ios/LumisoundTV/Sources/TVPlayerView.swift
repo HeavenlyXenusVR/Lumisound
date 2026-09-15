@@ -653,7 +653,7 @@ struct TVPlayerView: View {
                 }
                 .frame(maxWidth: 760, alignment: .leading)
             }
-            .padding(.horizontal, 110)
+            .padding(.horizontal, TVMetrics.margin)
             .focusSection()
 
             if sidePanel == .upNext {

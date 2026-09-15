@@ -2,50 +2,140 @@ import SwiftUI
 
 // MARK: - TVDesignSystem
 //
-// Shared visual language for the tvOS port — "Aurora": a slowly drifting,
-// softly colored ambient backdrop behind every screen (echoing the Now
-// Playing screen's artwork-glow concept, but content-agnostic since most
-// screens don't have a single piece of artwork to draw from), a consistent
-// gradient placeholder for art that hasn't loaded (or never had any) instead
-// of a flat gray box, and a shared section-header style with an accent
-// glyph. One place to define the look so every screen reads as part of the
-// same app instead of a loose collection of plain system-styled lists.
+// Shared visual language for the tvOS port.
+//
+// This replaces "Aurora", the previous pass. Aurora's premise was a *content-
+// agnostic* backdrop — three drifting blurred circles — on the reasoning that
+// most screens have no single piece of artwork to draw from. In practice that
+// premise is what made the redesign invisible: a backdrop that never varies by
+// screen, by track, or by time looks the same everywhere by construction, so
+// the app still read as one flat surface no matter how much was layered on it.
+//
+// The current pass is built on three rules instead:
+//
+//   1. **The backdrop comes from the music.** `TVAmbientBackground` renders the
+//      playing track's artwork, blurred and darkened. Every screen inherits the
+//      colour of what's playing and changes when the track does. There IS always
+//      a piece of artwork to draw from — it just isn't the screen's own.
+//   2. **One scale, named.** `TVMetrics` and `TVType` replace the per-call-site
+//      point sizes. Hierarchy you can see requires sizes that actually differ
+//      and repeat; ad-hoc numbers produce neither.
+//   3. **Different things look different.** Songs are rows (`TVTrackRow`),
+//      albums and artists are square cards. A library rendered as one uniform
+//      grid of identical tiles has no hierarchy to read, which is exactly how it
+//      was reported: everything looks the same.
+
+// MARK: Metrics and type scale
+//
+// Every size in this port used to be an ad-hoc `.system(size: N)` chosen per
+// call site, which is the real reason the app read as undesigned: the same kind
+// of thing was 34pt on one screen and 46pt on the next, and margins ranged from
+// 60 to 110 with no rule behind them. Naming the steps is what makes a set of
+// screens read as one app, so these are the only sizes the port should use.
+
+enum TVMetrics {
+    /// Horizontal screen margin. tvOS overscan already eats the outer ~60pt on
+    /// some sets, so content starts well inboard of the frame edge.
+    static let margin: CGFloat = 80
+    /// Gap between major sections down a screen.
+    static let section: CGFloat = 52
+    /// Gap between sibling rows in a list.
+    static let row: CGFloat = 12
+    static let cardCorner: CGFloat = 14
+    static let panelCorner: CGFloat = 22
+}
+
+enum TVType {
+    /// Screen titles ("Library", "Discover") — one per screen, nothing else.
+    static let display = Font.system(size: 58, weight: .heavy)
+    /// Hero/Now Playing track titles.
+    static let hero = Font.system(size: 44, weight: .bold)
+    /// Section headings inside a screen.
+    static let section = Font.system(size: 32, weight: .bold)
+    /// The primary line of a list row or card.
+    static let rowTitle = Font.system(size: 27, weight: .semibold)
+    /// Secondary/supporting text — artists, counts, hints.
+    static let rowDetail = Font.system(size: 22, weight: .regular)
+    /// Numeric/trailing metadata: durations, indices, "3 of 40".
+    static let meta = Font.system(size: 20, weight: .medium).monospacedDigit()
+    /// All-caps kicker above a title.
+    static let eyebrow = Font.system(size: 17, weight: .bold)
+}
 
 // MARK: Ambient background
 
-/// Three soft, oversized blurred color fields drifting on independent slow
-/// loops behind the content — subtle enough to stay out of the way of text
-/// and focus outlines, present enough that the app doesn't read as flat
-/// black everywhere. Intentionally cheap: three blurred circles, no images,
-/// no per-frame work — this runs behind scrolling content on every screen.
+/// The backdrop behind every screen: the **currently playing artwork**, blown
+/// up, heavily blurred and darkened, over a colour floor.
+///
+/// This replaced three drifting blurred circles. The circles were content-
+/// agnostic by design, and that was the mistake — they looked identical on
+/// every screen and at every moment, so no matter what you were doing the app
+/// looked the same. Deriving the backdrop from what's playing means the whole
+/// app takes on the colour of the music, changes when the track changes, and
+/// the thing the user is actually doing is visible in the design.
+///
+/// Performance notes, because this sits behind scrolling content on every
+/// screen:
+///   - The blurred artwork layer is **not animated**. A large `.blur` is cheap
+///     to composite while static and expensive to re-composite every frame;
+///     the earlier version animated its layers continuously for no real gain.
+///   - `.scaleEffect` past the bounds hides the soft transparent edge a blur
+///     leaves behind, which is cheaper than drawing a second bleed layer.
+///   - The colour floor is always drawn, so there is never a flat black frame
+///     while artwork loads, and screens still look intentional with nothing
+///     playing at all.
 struct TVAmbientBackground: View {
     var accent: Color = .accentColor
-    @State private var drift = false
+    /// Same adoption pattern as `TVContentView` — this is the app-wide player,
+    /// observed so the backdrop follows track changes.
+    @StateObject private var player = TVPlayerModel.shared
+
+    private var track: TVPlayable? { player.current }
 
     var body: some View {
         ZStack {
-            Color.black
-            Circle()
-                .fill(accent.opacity(0.35))
-                .frame(width: 900, height: 900)
-                .blur(radius: 220)
-                .offset(x: drift ? -260 : -340, y: drift ? -260 : -180)
-            Circle()
-                .fill(Color.purple.opacity(0.28))
-                .frame(width: 760, height: 760)
-                .blur(radius: 200)
-                .offset(x: drift ? 380 : 300, y: drift ? 120 : 220)
-            Circle()
-                .fill(Color.blue.opacity(0.22))
-                .frame(width: 640, height: 640)
-                .blur(radius: 180)
-                .offset(x: drift ? -120 : -40, y: drift ? 340 : 420)
+            colorFloor
+
+            if let track {
+                TVAuthImage(url: track.artworkURL, token: track.authToken) {
+                    Color.clear
+                }
+                // Overscale to push the blur's feathered edges off-screen.
+                .scaleEffect(1.4)
+                .blur(radius: 110, opaque: false)
+                .saturation(1.3)
+                // Without this the backdrop competes with the foreground and
+                // nothing on top of it is legible. It is a wash, not an image.
+                .overlay(Color.black.opacity(0.66))
+                .id(track.id)
+                .transition(.opacity)
+                .animation(.easeInOut(duration: 0.8), value: track.id)
+            }
+
+            // Bottom scrim so the mini-player bar and any bottom-aligned text
+            // always have something solid to sit against.
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.75)],
+                startPoint: .center, endPoint: .bottom
+            )
         }
         .ignoresSafeArea()
-        .onAppear {
-            withAnimation(.easeInOut(duration: 18).repeatForever(autoreverses: true)) {
-                drift = true
-            }
+    }
+
+    /// Drawn under the artwork and alone when nothing is playing. Two offset
+    /// radial fields rather than a flat fill, so the empty state still has
+    /// some depth to it.
+    private var colorFloor: some View {
+        ZStack {
+            Color.black
+            RadialGradient(
+                colors: [accent.opacity(0.42), .clear],
+                center: .init(x: 0.12, y: 0.05), startRadius: 0, endRadius: 1150
+            )
+            RadialGradient(
+                colors: [Color.purple.opacity(0.34), .clear],
+                center: .init(x: 0.92, y: 0.88), startRadius: 0, endRadius: 1000
+            )
         }
     }
 }
@@ -56,6 +146,29 @@ extension View {
     /// card.
     func tvAmbientBackground(accent: Color = .accentColor) -> some View {
         background(TVAmbientBackground(accent: accent))
+    }
+}
+
+// MARK: Screen title
+
+/// The one large title at the top of a screen, with an optional count/summary
+/// beside it. Gives every tab the same anchor so moving between them feels
+/// like one app rather than six unrelated views.
+struct TVScreenTitle: View {
+    let title: String
+    var detail: String? = nil
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 20) {
+            Text(title).font(TVType.display)
+            if let detail {
+                Text(detail)
+                    .font(TVType.rowDetail)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, TVMetrics.margin)
     }
 }
 
@@ -98,7 +211,7 @@ struct TVSectionHeader: View {
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
                     .fill(Color.accentColor)
                     .frame(width: 6, height: 34)
-                Text(title).font(.system(size: 34, weight: .bold))
+                Text(title).font(TVType.section)
             }
             if let subtitle {
                 // Deliberately well below the title (.title3 renders ~29pt on
@@ -107,7 +220,7 @@ struct TVSectionHeader: View {
                 // as a wall of text). tvOS guidance is to minimise on-screen
                 // text; the subtitle is a hint, not a second heading.
                 Text(subtitle)
-                    .font(.system(size: 21))
+                    .font(TVType.rowDetail)
                     .foregroundStyle(.secondary)
                     .padding(.leading, 20)
             }
@@ -184,7 +297,7 @@ private struct TVNavPillLabel: View {
 
     var body: some View {
         Label(title, systemImage: systemImage)
-            .font(.system(size: 26, weight: isSelected || isFocused ? .bold : .semibold))
+            .font(.system(size: 25, weight: isSelected || isFocused ? .bold : .semibold))
             .foregroundStyle(
                 isFocused ? Color.black
                 : isSelected ? Color.white
@@ -238,7 +351,7 @@ struct TVTopNavBar: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 70)
+        .padding(.horizontal, TVMetrics.margin)
         .padding(.top, 54)
         .padding(.bottom, 26)
     }
@@ -262,7 +375,7 @@ struct TVChip: View {
                 Text(title)
             }
         }
-        .font(.system(size: 22, weight: isSelected || isFocused ? .bold : .medium))
+        .font(.system(size: 21, weight: isSelected || isFocused ? .bold : .medium))
         .foregroundStyle(
             isFocused ? Color.black
             : isSelected ? Color.white
@@ -337,21 +450,21 @@ struct TVHeroBanner<Art: View, PlayButton: View>: View {
 
             VStack(alignment: .leading, spacing: 14) {
                 Text(eyebrow.uppercased())
-                    .font(.system(size: 20, weight: .bold))
+                    .font(TVType.eyebrow)
                     .foregroundStyle(Color.accentColor)
                     .tracking(2)
                 Text(title)
-                    .font(.system(size: 56, weight: .heavy))
+                    .font(TVType.display)
                     .lineLimit(2)
                 Text(subtitle)
-                    .font(.title3)
+                    .font(TVType.rowDetail)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
 
                 playButton()
                     .padding(.top, 8)
             }
-            .padding(.horizontal, 70)
+            .padding(.horizontal, TVMetrics.margin)
             .padding(.bottom, 56)
         }
         .frame(height: 620)
@@ -405,11 +518,11 @@ struct TVShelfSection<Content: View>: View {
                     .buttonStyle(.card)
                 }
             }
-            .padding(.horizontal, 70)
+            .padding(.horizontal, TVMetrics.margin)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 32) { content() }
-                    .padding(.horizontal, 70)
+                    .padding(.horizontal, TVMetrics.margin)
             }
         }
     }

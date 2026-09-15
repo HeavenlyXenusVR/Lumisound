@@ -105,7 +105,7 @@ struct TVSearchView: View {
                         .tvSearchTrackActions(client: client, token: token, track: track)
                     }
                 }
-                .padding(60)
+                .padding(TVMetrics.margin)
             }
         }
         .tvAmbientBackground()
@@ -234,7 +234,7 @@ struct TVAccountView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(70)
+            .padding(TVMetrics.margin)
         }
         .tvAmbientBackground()
         .task {
