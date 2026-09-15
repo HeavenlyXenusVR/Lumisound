@@ -18,6 +18,7 @@ final class TVAudioSettings: ObservableObject {
         static let skipSilentIntros = "tv.audio.skipSilentIntros"
         static let spatialize = "tv.audio.allowSpatialization"
         static let crossfade = "tv.player.crossfadeEnabled"
+        static let autoCrossfade = "tv.audio.autoCrossfade"
         static let djTransitions = "tv.aria.djTransitions"
         static let gridColumns = "tv.library.gridColumns"
     }
@@ -51,6 +52,12 @@ final class TVAudioSettings: ObservableObject {
         didSet { UserDefaults.standard.set(crossfadeEnabled, forKey: Key.crossfade) }
     }
 
+    /// Picks the crossfade length per transition rather than using a fixed six
+    /// seconds — see `TVAutoCrossfade`. Only has an effect while `crossfadeEnabled`.
+    @Published var autoCrossfade: Bool {
+        didSet { UserDefaults.standard.set(autoCrossfade, forKey: Key.autoCrossfade) }
+    }
+
     /// Aria's spoken handover line between tracks. This is a presentation
     /// preference, not an Aria switch — she still picks, still reasons, still
     /// runs. It only controls whether the line is shown.
@@ -71,6 +78,7 @@ final class TVAudioSettings: ObservableObject {
         skipSilentIntros = (d.object(forKey: Key.skipSilentIntros) as? Bool) ?? true
         allowSpatialization = (d.object(forKey: Key.spatialize) as? Bool) ?? false
         crossfadeEnabled = d.bool(forKey: Key.crossfade)
+        autoCrossfade = (d.object(forKey: Key.autoCrossfade) as? Bool) ?? true
         djTransitions = (d.object(forKey: Key.djTransitions) as? Bool) ?? true
         gridColumns = (d.object(forKey: Key.gridColumns) as? Int) ?? 3
     }

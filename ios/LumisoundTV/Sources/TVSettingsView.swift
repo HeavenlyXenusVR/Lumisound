@@ -32,6 +32,14 @@ struct TVSettingsView: View {
                         systemImage: "arrow.triangle.merge",
                         isOn: $settings.crossfadeEnabled
                     )
+                    if settings.crossfadeEnabled {
+                        toggleRow(
+                            title: "Auto Crossfade",
+                            detail: "Sets the overlap per track instead of a fixed six seconds — tighter when a track ends abruptly, longer when it fades out, and snapped to the beat where the tempo is known.",
+                            systemImage: "waveform.path.ecg",
+                            isOn: $settings.autoCrossfade
+                        )
+                    }
                 }
 
                 section("Audio") {

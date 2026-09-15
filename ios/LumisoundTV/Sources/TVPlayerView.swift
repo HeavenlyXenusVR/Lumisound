@@ -86,7 +86,13 @@ final class TVPlayerModel: ObservableObject {
     private var activeIsA = true
     var player: AVPlayer { activeIsA ? playerA : playerB }
     private var inactivePlayer: AVPlayer { activeIsA ? playerB : playerA }
-    private let crossfadeDuration: TimeInterval = 6
+    /// Base overlap. With Auto Crossfade on, `TVAutoCrossfade` picks a length
+    /// per transition from this starting point; with it off this is used as-is.
+    private let crossfadeDuration: TimeInterval = TVAutoCrossfade.baseDuration
+    /// The length chosen for the transition currently in flight. Computed once
+    /// when the crossfade begins, not per step — the fade must run at a constant
+    /// rate, and recomputing mid-fade would make it speed up or stall.
+    private var activeCrossfadeDuration: TimeInterval = TVAutoCrossfade.baseDuration
     private var crossfadeTask: Task<Void, Never>?
     private var hasCrossfadedForCurrentTrack = false
 
@@ -328,6 +334,9 @@ final class TVPlayerModel: ObservableObject {
     }
 
     private func checkCrossfadeTrigger() {
+        // The trigger window uses the BASE duration deliberately: the chosen
+        // length depends on measurements taken at the moment the fade starts,
+        // and a window that moved with it would be chasing its own decision.
         guard !hasCrossfadedForCurrentTrack, duration > crossfadeDuration,
               duration - position <= crossfadeDuration,
               nextIndexForCrossfade() != nil
@@ -344,10 +353,35 @@ final class TVPlayerModel: ObservableObject {
 
         incoming.pause()
         incoming.volume = 0
+
+        // Choose the overlap for THIS transition. Measuring the outgoing track's
+        // tail is what lets the fade tighten on an abrupt ending and stretch on
+        // one already trailing off, rather than applying the same six seconds to
+        // both. Measured, not assumed — see TVAutoCrossfade.
+        if TVAudioSettings.shared.autoCrossfade {
+            let tail = (player.currentItem?.asset as? AVURLAsset).flatMap {
+                TVTailLevel.measure(url: $0.url, duration: duration)
+            }
+            activeCrossfadeDuration = TVAutoCrossfade.duration(
+                outgoingDuration: duration,
+                incomingDuration: 0,
+                bpm: nil,
+                tailLevel: tail
+            )
+        } else {
+            activeCrossfadeDuration = crossfadeDuration
+        }
+
         tvLog("Crossfade started into: \(nextItem.title)", category: "playback")
+        TVRemoteLogger.log(
+            category: "playback", event: "crossfade_started",
+            detail: ["into": nextItem.title,
+                     "seconds": round(activeCrossfadeDuration * 10) / 10,
+                     "auto": TVAudioSettings.shared.autoCrossfade]
+        )
 
         let steps = 30
-        let stepNanoseconds = UInt64(crossfadeDuration / Double(steps) * 1_000_000_000)
+        let stepNanoseconds = UInt64(activeCrossfadeDuration / Double(steps) * 1_000_000_000)
         crossfadeTask = Task { [weak self] in
             guard let self else { return }
             let resolved = await self.resolvedAsset(for: nextItem)
