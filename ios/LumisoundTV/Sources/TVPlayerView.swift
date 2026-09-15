@@ -35,6 +35,13 @@ enum TVRepeatMode {
 final class TVPlayerModel: ObservableObject {
     @Published var isPlaying = false
     @Published var isBuffering = false
+    /// True while the full Now Playing screen is on screen.
+    ///
+    /// The mini-player bar is pinned to the app shell, which the pushed player
+    /// sits inside — so without this it would render over the bottom of the
+    /// full player, duplicating what that screen already shows and stealing a
+    /// focus target from its transport controls.
+    @Published var isShowingFullPlayer = false
     @Published var currentIndex = 0
     @Published var position: Double = 0
     @Published var duration: Double = 0
@@ -601,6 +608,8 @@ struct TVPlayerView: View {
     /// toggled once on appear rather than animating a constant, since a
     /// `repeatForever` animation needs an actual value change to attach to.
     @State private var breathe = false
+    /// Drives default focus onto play/pause when this screen appears.
+    @FocusState private var playPauseFocused: Bool
 
     private var artworkStyle: TVArtworkStyle { TVArtworkStyle(rawValue: artworkStyleRaw) ?? .classic }
 
@@ -637,6 +646,7 @@ struct TVPlayerView: View {
                     HStack(spacing: 44) {
                         controlButton("backward.fill") { model.previous() }
                         controlButton(model.isPlaying ? "pause.fill" : "play.fill", big: true) { model.togglePlayPause() }
+                            .focused($playPauseFocused)
                         controlButton("forward.fill") { model.next() }
                     }
                     utilityRow
@@ -660,11 +670,19 @@ struct TVPlayerView: View {
                 .transition(.opacity)
             }
         }
+        .onDisappear { model.isShowingFullPlayer = false }
         .onAppear {
             // No context = opened from the mini-player; whatever is already
             // playing stays playing.
             if let context { model.start(context: context) }
+            model.isShowingFullPlayer = true
             breathe = true
+            // tvOS doesn't move focus into a newly pushed screen on its own, so
+            // without this the remote's first press lands on whatever the focus
+            // engine happens to pick — usually a utility button rather than
+            // play/pause. Managing default focus explicitly is the documented
+            // expectation for tvOS screens with a clear primary action.
+            playPauseFocused = true
         }
         .onChange(of: sidePanel) { newValue in
             // Forces focus into the panel the instant it opens — see

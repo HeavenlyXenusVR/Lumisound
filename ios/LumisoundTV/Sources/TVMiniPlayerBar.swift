@@ -32,7 +32,11 @@ struct TVMiniPlayerBar: View {
     private var track: TVPlayable? { model.current }
 
     var body: some View {
-        if let track {
+        // Hidden while the full player is up: the bar lives on the app shell,
+        // which the pushed player sits inside, so it would otherwise render
+        // over that screen duplicating what it already shows and stealing a
+        // focus target from its transport controls.
+        if let track, !model.isShowingFullPlayer {
             NavigationLink {
                 // No context: keep playing whatever is playing, just show it.
                 TVPlayerView(client: client, token: token)
