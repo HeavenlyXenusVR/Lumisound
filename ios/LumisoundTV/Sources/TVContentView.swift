@@ -38,6 +38,16 @@ struct TVContentView: View {
                         }
                     }
                 }
+                // Pinned under the whole shell so "what's playing" and the way
+                // back to it are reachable from every tab — see
+                // TVMiniPlayerBar. `.focusSection()` makes the bar a
+                // first-class directional-focus target rather than something
+                // the engine can skip past on the way between rows.
+                .safeAreaInset(edge: .bottom) {
+                    TVMiniPlayerBar(model: player, client: client, token: token)
+                        .focusSection()
+                }
+                .animation(.easeOut(duration: 0.25), value: player.current?.id)
                 .navigationDestination(for: TVPlayContext.self) { ctx in
                     TVPlayerView(context: ctx, client: client, token: token)
                 }

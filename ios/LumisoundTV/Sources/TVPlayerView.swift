@@ -566,7 +566,15 @@ final class TVPlayerModel: ObservableObject {
 private enum TVSidePanel: Equatable { case none, upNext, lyrics }
 
 struct TVPlayerView: View {
-    let context: TVPlayContext
+    /// The queue to START when this screen appears — nil when Now Playing is
+    /// opened from the mini-player bar rather than by picking a track.
+    ///
+    /// Previously required, which meant the full player was reachable ONLY as
+    /// a NavigationLink destination from a list: once you navigated away there
+    /// was no route back to what was playing. `TVPlayerModel.shared` already
+    /// holds the live queue and current track, so with no context this screen
+    /// simply renders that instead of starting anything.
+    var context: TVPlayContext? = nil
     @ObservedObject var client: TVBridgeClient
     let token: String
     // `@StateObject` still (not `@ObservedObject`) even though the instance
@@ -597,7 +605,7 @@ struct TVPlayerView: View {
     private var artworkStyle: TVArtworkStyle { TVArtworkStyle(rawValue: artworkStyleRaw) ?? .classic }
 
     private var displayed: TVPlayable? {
-        model.current ?? context.queue.first(where: { $0.id == context.startID })
+        model.current ?? context.flatMap { ctx in ctx.queue.first(where: { $0.id == ctx.startID }) }
     }
 
     var body: some View {
@@ -653,7 +661,9 @@ struct TVPlayerView: View {
             }
         }
         .onAppear {
-            model.start(context: context)
+            // No context = opened from the mini-player; whatever is already
+            // playing stays playing.
+            if let context { model.start(context: context) }
             breathe = true
         }
         .onChange(of: sidePanel) { newValue in
