@@ -53,19 +53,36 @@ enum TVLrcParser {
 
 // MARK: - TVLyricsService
 //
-// Fetches lyrics directly from lrclib.net (same public API + User-Agent the
-// iOS app uses — see NowPlayingView+LRCLIBFetch.swift) rather than through
-// the Lumisound bridge: the bridge's own /api/lyrics is dead code the iOS
-// client never actually calls (it's just a cache-then-passthrough to the
-// same lrclib API, gated behind the bridge's service API key, not a user
-// token) — going straight to lrclib avoids depending on that key being
-// configured. Falls back to api.lyrics.ovh (plain text, unsynced) if lrclib
-// has nothing.
+// Looks for lyrics in three places, in this order:
+//
+//   1. **The Lumisound bridge** (`/user/lyrics`) — the account's own stored
+//      lyrics: Aria's transcriptions, and corrections submitted from a phone.
+//   2. **lrclib.net**, the public synced-lyrics database.
+//   3. **api.lyrics.ovh**, plain text and unsynced, when lrclib has nothing.
+//
+// Step 1 was missing, and its absence is exactly why lyrics Aria had generated
+// never appeared here. Aria's result was written to a file on the iPhone that
+// asked for it and sent nowhere else, so no other device could see it — and
+// this port only ever queried public databases, which by definition do not have
+// those lyrics, because not being in a database is the whole reason Aria was
+// asked to transcribe the track in the first place.
+//
+// The bridge's pre-existing `/api/lyrics` could not be used for this: it is
+// gated on the SERVICE api key rather than a user token, so a tvOS request
+// carrying an account JWT is rejected outright. `/user/lyrics` serves the same
+// cache under user auth.
 
 enum TVLyricsService {
     private static let headers = ["User-Agent": "Lumisound-tvOS/1.0 (https://github.com/HeavenlyXenusVR/Lumisound)"]
 
     static func fetch(title: String, artist: String, duration: TimeInterval) async -> [TVLyricLine]? {
+        // Account-stored lyrics first — these are the ones the public databases
+        // cannot supply, and a correction the user made should beat whatever
+        // lrclib happens to hold.
+        if let lines = await fetchFromBridge(title: title, artist: artist, duration: duration) {
+            return lines
+        }
+
         if duration > 0, var comps = URLComponents(string: "https://lrclib.net/api/get") {
             comps.queryItems = [
                 URLQueryItem(name: "track_name", value: title),
@@ -110,6 +127,56 @@ enum TVLyricsService {
 
         if let lines = lines(from: best) { return lines }
         return await fetchPlainFallback(title: title, artist: artist)
+    }
+
+    /// Account-stored lyrics from the bridge, or nil when it has none.
+    ///
+    /// Silent on every failure: this is the first of three sources, so a
+    /// signed-out session, an offline bridge or an empty cache must all simply
+    /// fall through to the public databases rather than being treated as "this
+    /// track has no lyrics".
+    private static func fetchFromBridge(title: String, artist: String,
+                                        duration: TimeInterval) async -> [TVLyricLine]? {
+        guard let token = TVAccount.shared.token,
+              var comps = URLComponents(string: TVBridgeClient.shared.baseURL + "/user/lyrics")
+        else { return nil }
+
+        comps.queryItems = [
+            URLQueryItem(name: "title", value: title),
+            URLQueryItem(name: "artist", value: artist),
+        ]
+        if duration > 0 {
+            comps.queryItems?.append(URLQueryItem(name: "duration", value: String(Int(duration.rounded()))))
+        }
+        guard let url = comps.url else { return nil }
+
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.timeoutInterval = 12
+
+        struct Response: Decodable {
+            let synced_lyrics: String?
+            let plain_lyrics: String?
+            let source: String?
+        }
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+              let decoded = try? JSONDecoder().decode(Response.self, from: data)
+        else { return nil }
+
+        // Synced only. Plain text has no timestamps, and this screen highlights
+        // the current line — an unsynced block here would sit frozen while the
+        // song played, which reads as broken rather than as "unsynced". The
+        // plain-text fallback below is a separate, deliberate last resort.
+        guard let lrc = decoded.synced_lyrics, !lrc.isEmpty else { return nil }
+        let lines = TVLrcParser.parse(lrc)
+        guard !lines.isEmpty else { return nil }
+
+        TVRemoteLogger.log(category: "lyrics", event: "lyrics_from_account",
+                           detail: ["title": title,
+                                    "source": decoded.source ?? "cache",
+                                    "lineCount": lines.count])
+        return lines
     }
 
     private static func fetchGetResult(url: URL, expectedDuration: TimeInterval) async -> [TVLyricLine]? {

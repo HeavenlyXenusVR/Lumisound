@@ -6563,10 +6563,46 @@ async def _run_lyrics_transcription_job(
             minutes, seconds = divmod(t, 60.0)
             lrc_out.append(f"[{int(minutes):02d}:{seconds:05.2f}]{text}")
 
+        lrc = "\n".join(lrc_out)
         job["status"] = "done"
-        job["lrc"] = "\n".join(lrc_out)
+        job["lrc"] = lrc
         job["instrumental"] = False
         job["confidence"] = result.get("confidence", "medium")
+
+        # Persist what Aria produced, instead of only handing it back to the
+        # device that asked.
+        #
+        # The result used to exist ONLY as a file written on the requesting
+        # iPhone, so it could not reach any other device — which is why lyrics
+        # Aria had generated never appeared on tvOS. tvOS looks them up in
+        # public lyrics databases, and those by definition do not have these:
+        # not being in a database is the whole reason Aria was asked. The same
+        # gap also lost them on uninstall and kept them off a second phone.
+        #
+        # Stored as user-submitted so an automatic LRCLIB fetch can never
+        # overwrite it later — see the ON CONFLICT guards on the cache writes.
+        if lrc:
+            try:
+                cache_id = _lyrics_cache_id(title, artist)
+                pool = await get_pool()
+                async with pool.acquire() as conn:
+                    async with conn.cursor() as cur:
+                        await cur.execute(
+                            """
+                            INSERT INTO ios_lyrics_cache
+                                (id, title, artist, synced_lyrics, plain_lyrics, found, is_user_submitted)
+                            VALUES (%s, %s, %s, %s, NULL, TRUE, TRUE)
+                            ON CONFLICT (id) DO UPDATE SET
+                                synced_lyrics = EXCLUDED.synced_lyrics,
+                                found = TRUE,
+                                is_user_submitted = TRUE
+                            """,
+                            (cache_id, title, artist, lrc),
+                        )
+                logger.info("lyrics-transcribe: cached Aria's lyrics for %r by %r", title, artist)
+            except Exception as exc:
+                # The job still succeeded; the caller has its result either way.
+                logger.warning("lyrics-transcribe: could not cache result for %r: %s", title, exc)
     except Exception as exc:
         logger.exception("lyrics-transcribe job %s failed", job_id)
         job["status"] = "error"
@@ -11742,6 +11778,80 @@ class LyricsPrefetchRequest(BaseModel):
 # repeatedly in batches (e.g. from a background task), same pattern as
 # /api/download/batch's job-based chunking.
 _LYRICS_PREFETCH_MAX_PER_REQUEST = 25
+
+
+@app.get("/user/lyrics")
+async def get_user_lyrics(
+    title: str = Query(..., min_length=1, max_length=200),
+    artist: str = Query("", max_length=200),
+    duration: Optional[int] = Query(None, description="Track duration in seconds, improves matching"),
+    user: dict = Depends(get_current_user),
+):
+    """Lyrics for a signed-in user, from the shared cache first.
+
+    Exists because `/api/lyrics` is gated on the SERVICE api key, not a user
+    token. A client holding only a user JWT — tvOS — gets 403 from it, which is
+    why the tvOS port went straight to LRCLIB instead and therefore never saw
+    anything stored here: not Aria's transcriptions, and not a correction
+    submitted from a phone. Those are precisely the lyrics no public database
+    has, since their absence is what caused them to be generated.
+
+    Same data and same shape as `/api/lyrics`; only the auth differs.
+    """
+    cache_id = _lyrics_cache_id(title, artist)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT synced_lyrics, plain_lyrics, found FROM ios_lyrics_cache WHERE id = %s",
+                (cache_id,),
+            )
+            row = await cur.fetchone()
+
+    if row is not None:
+        synced_lyrics, plain_lyrics, found = row
+        if found and (synced_lyrics or plain_lyrics):
+            return {
+                "title": title,
+                "artist": artist,
+                "synced_lyrics": synced_lyrics,
+                "plain_lyrics": plain_lyrics,
+                "instrumental": False,
+                "source": "cache",
+            }
+
+    # Nothing stored. Warm the cache from the public source using the same
+    # helper the service-key endpoint uses, so both paths populate one cache
+    # rather than two.
+    # Returns whether it found anything, not the lyrics themselves, so the cache
+    # is re-read rather than assuming the shape of its return value.
+    try:
+        warmed = await _fetch_and_cache_lyrics(title, artist, duration)
+    except Exception as exc:
+        logger.warning("get_user_lyrics: warm failed for %r: %s", title, exc)
+        warmed = False
+
+    synced_lyrics = plain_lyrics = None
+    if warmed:
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT synced_lyrics, plain_lyrics FROM ios_lyrics_cache WHERE id = %s",
+                    (cache_id,),
+                )
+                row = await cur.fetchone()
+        if row:
+            synced_lyrics, plain_lyrics = row
+
+    return {
+        "title": title,
+        "artist": artist,
+        "synced_lyrics": synced_lyrics,
+        "plain_lyrics": plain_lyrics,
+        "instrumental": False,
+        "source": "lrclib" if (synced_lyrics or plain_lyrics) else "none",
+    }
+
 
 
 @app.post("/user/lyrics/prefetch")
