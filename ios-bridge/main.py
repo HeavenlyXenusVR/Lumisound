@@ -1,5 +1,6 @@
 import array
 import asyncio
+import contextlib
 import base64
 import hashlib
 import html
@@ -407,7 +408,79 @@ _FFPROBE_CACHE = _FfprobeCache(_ffprobe_cache_path)
 # without a code change once/if the host's actual memory headroom is known
 # to be different from what's documented above; unset defaults to the safe,
 # already-proven-necessary value rather than silently reverting to 4.
-_YTDLP_SEMAPHORE = asyncio.Semaphore(int(os.getenv("YTDLP_MAX_CONCURRENT", "2")))
+def _available_memory_mb() -> float | None:
+    """Memory actually available right now, or None where it cannot be read.
+
+    `MemAvailable` rather than `MemFree`: free memory on a healthy Linux box is
+    near zero because the page cache uses the rest, and treating that as
+    exhaustion would throttle permanently. MemAvailable is the kernel's own
+    estimate of what a new process could get without forcing swap.
+    """
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return float(line.split()[1]) / 1024.0
+    except Exception:
+        return None
+    return None
+
+
+class _AdaptiveLimiter:
+    """A concurrency cap that shrinks when the host runs low on memory.
+
+    The download and transcode caps were cut from 4 to 2 because extra
+    concurrent processes pushed a shared host into swap. Simply raising them
+    again re-creates that, and leaving them at 2 wastes an idle machine — the
+    number was only ever a guess at the worst case, applied at all times.
+
+    This grants slots up to `max_slots` while memory is comfortable and falls
+    back to `safe_slots` when it is not, so the ceiling is available when there
+    is room for it and the cut is automatic when there is not. Measured on this
+    host: 8 cores with load under 3, but 5.5GB of swap already in use and zram
+    at 95%, which is exactly the state the original cut was protecting against.
+    """
+
+    def __init__(self, max_slots: int, safe_slots: int, floor_mb: float = 900.0):
+        self._semaphore = asyncio.Semaphore(max_slots)
+        self._max = max_slots
+        self._safe = max(1, min(safe_slots, max_slots))
+        self._floor_mb = floor_mb
+        self._in_use = 0
+
+    @contextlib.asynccontextmanager
+    async def slot(self):
+        await self._semaphore.acquire()
+        try:
+            # Checked AFTER acquiring so the wait itself is bounded by the
+            # semaphore rather than by a spin on memory, and re-checked rather
+            # than sampled once at startup — pressure on a shared host comes and
+            # goes with whatever else is running on it.
+            while self._in_use >= self._safe:
+                available = _available_memory_mb()
+                if available is None or available >= self._floor_mb:
+                    break
+                logger.info(
+                    "concurrency held back: %.0fMB available (floor %.0fMB), %d in use",
+                    available, self._floor_mb, self._in_use,
+                )
+                await asyncio.sleep(2.0)
+            self._in_use += 1
+            yield
+        finally:
+            self._in_use -= 1
+            self._semaphore.release()
+
+
+# Raised from 2. The cap bounds concurrent PROCESSES (memory pressure on a
+# shared host), not per-download bandwidth — see `concurrent_fragments` below
+# for the lever that actually spends more bandwidth within one download. Still
+# overridable via YTDLP_MAX_CONCURRENT, and now backed by the adaptive limiter
+# above so the higher ceiling cannot push the host into swap.
+_YTDLP_MAX = int(os.getenv("YTDLP_MAX_CONCURRENT", "4"))
+_YTDLP_SAFE = int(os.getenv("YTDLP_SAFE_CONCURRENT", "2"))
+_YTDLP_LIMITER = _AdaptiveLimiter(_YTDLP_MAX, _YTDLP_SAFE)
+_YTDLP_SEMAPHORE = asyncio.Semaphore(_YTDLP_MAX)
 
 # Formats other than m4a/best require yt-dlp to transcode after downloading
 # (`-x --audio-format ...`), which is CPU-bound ffmpeg work rather than the
@@ -417,7 +490,15 @@ _YTDLP_SEMAPHORE = asyncio.Semaphore(int(os.getenv("YTDLP_MAX_CONCURRENT", "2"))
 # tracks. Cap transcoding jobs to a smaller pool, acquired in addition to
 # _YTDLP_SEMAPHORE. CPU-bound like the download semaphore's RAM concern, so
 # it gets the same env-configurable treatment rather than a network-speed one.
-_TRANSCODE_SEMAPHORE = asyncio.Semaphore(int(os.getenv("YTDLP_MAX_TRANSCODE_CONCURRENT", "2")))
+# Raised from 2. Transcoding is CPU-bound rather than memory-bound, and this
+# host measures 8 cores at a load under 3 — real headroom. Kept below the
+# download cap because these run IN ADDITION to it (a transcoding job holds both
+# semaphores), and because the media backfill loop and the Discord music bots
+# sharing this box also want CPU.
+_TRANSCODE_MAX = int(os.getenv("YTDLP_MAX_TRANSCODE_CONCURRENT", "3"))
+_TRANSCODE_SAFE = int(os.getenv("YTDLP_SAFE_TRANSCODE_CONCURRENT", "2"))
+_TRANSCODE_LIMITER = _AdaptiveLimiter(_TRANSCODE_MAX, _TRANSCODE_SAFE)
+_TRANSCODE_SEMAPHORE = asyncio.Semaphore(_TRANSCODE_MAX)
 
 # aria2c is enforced as yt-dlp's external downloader for every /api/download
 # (and the per-track segments yt-dlp fetches): -x/-s/-j open many parallel
@@ -1455,11 +1536,12 @@ async def _run_ytdlp(*args: str, timeout: float = 30.0) -> list[dict]:
     Run yt-dlp with the given arguments.
     Returns a list of parsed JSON objects (one per stdout line).
     Raises asyncio.TimeoutError if the process exceeds *timeout* seconds.
-    Concurrency capped by _YTDLP_SEMAPHORE (YTDLP_MAX_CONCURRENT env, default 2).
+    Concurrency capped by _YTDLP_LIMITER (YTDLP_MAX_CONCURRENT env, default 4,
+    falling back to YTDLP_SAFE_CONCURRENT when the host is low on memory).
     """
     cmd = ["yt-dlp", *_YTDLP_NETWORK_ARGS, *args]
     logger.info("Running: %s", " ".join(cmd))
-    async with _YTDLP_SEMAPHORE:
+    async with _YTDLP_LIMITER.slot():
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -2561,7 +2643,10 @@ async def admin_overview():
         "download_jobs_24h": {status: count for status, count in job_rows},
         "recent_error_count_24h": recent_error_count,
         "concurrency": {
-            "ytdlp_max": int(os.getenv("YTDLP_MAX_CONCURRENT", "2")),
+            "ytdlp_max": _YTDLP_MAX,
+            "ytdlp_safe": _YTDLP_SAFE,
+            "transcode_max": _TRANSCODE_MAX,
+            "available_mb": round(_available_memory_mb() or 0),
             "ytdlp_available": _YTDLP_SEMAPHORE._value,
             "transcode_max": int(os.getenv("YTDLP_MAX_TRANSCODE_CONCURRENT", "2")),
             "transcode_available": _TRANSCODE_SEMAPHORE._value,
@@ -3723,7 +3808,7 @@ async def _get_raw_url(
         ]
         logger.info("Running (raw): %s", " ".join(cmd))
         attempt_start = time.monotonic()
-        async with _YTDLP_SEMAPHORE:
+        async with _YTDLP_LIMITER.slot():
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -4100,9 +4185,9 @@ async def _do_download_job(
         proc_start = time.monotonic()
 
         async with AsyncExitStack() as stack:
-            await stack.enter_async_context(_YTDLP_SEMAPHORE)
+            await stack.enter_async_context(_YTDLP_LIMITER.slot())
             if is_transcode:
-                await stack.enter_async_context(_TRANSCODE_SEMAPHORE)
+                await stack.enter_async_context(_TRANSCODE_LIMITER.slot())
 
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -5252,7 +5337,7 @@ async def _run_batch_download(job_id: str, links_path: pathlib.Path, music_dir: 
     ]
     logger.info("batch_download %s: %s", job_id, " ".join(cmd))
     try:
-        async with _YTDLP_SEMAPHORE:
+        async with _YTDLP_LIMITER.slot():
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
