@@ -7506,10 +7506,10 @@ async def _media_backfill_tick() -> None:
             await cur.execute(
                 """
                 SELECT id, user_id, COALESCE(relative_path, filename), has_artwork, bpm,
-                       transition_profiled_at
+                       transition_profiled_at, spectral_profiled_at
                 FROM ios_user_music_metadata
                 WHERE bpm IS NULL OR bpm <= 0 OR has_artwork IS NOT TRUE
-                   OR transition_profiled_at IS NULL
+                   OR transition_profiled_at IS NULL OR spectral_profiled_at IS NULL
                 ORDER BY uploaded_at DESC NULLS LAST
                 LIMIT %s
                 """,
@@ -7521,7 +7521,7 @@ async def _media_backfill_tick() -> None:
     if not candidates:
         return
 
-    art_done = bpm_done = profile_done = 0
+    art_done = bpm_done = profile_done = spectral_done = 0
     deadline = time.monotonic() + _MEDIA_BACKFILL_SECONDS_PER_TICK
 
     # Artwork and tempo are bottlenecked on completely different things, so they
@@ -7540,7 +7540,8 @@ async def _media_backfill_tick() -> None:
     art_targets = []
     bpm_targets = []
     profile_targets = []
-    for metadata_id, user_id, rel_path, has_artwork, bpm, profiled_at in candidates:
+    spectral_targets = []
+    for metadata_id, user_id, rel_path, has_artwork, bpm, profiled_at, spectral_at in candidates:
         music_dir = _user_music_dir(user_id)
         if music_dir is None:
             continue
@@ -7556,6 +7557,8 @@ async def _media_backfill_tick() -> None:
             bpm_targets.append((metadata_id, user_id, rel_path, path))
         if profiled_at is None:
             profile_targets.append((metadata_id, user_id, rel_path, path))
+        if spectral_at is None:
+            spectral_targets.append((metadata_id, user_id, rel_path, path))
 
     semaphore = asyncio.Semaphore(_MEDIA_BACKFILL_ARTWORK_CONCURRENCY)
 
@@ -7618,6 +7621,19 @@ async def _media_backfill_tick() -> None:
         if profile:
             profile_done += 1
 
+    spectral_outcome: dict[str, bool] = {}
+    for metadata_id, user_id, rel_path, path in spectral_targets:
+        if time.monotonic() >= deadline:
+            break
+        bands = await locked_media.spectral_profile_async(path)
+        spectral_outcome[metadata_id] = bands is not None
+        # Stamped either way, for the same reason the transition profile is: a
+        # track that cannot be analysed is a permanent answer, not a transient
+        # failure, and must not come back as a candidate forever.
+        await _store_spectral_profile(metadata_id, user_id, bands)
+        if bands:
+            spectral_done += 1
+
     # Blacklist only tracks that were actually TRIED for everything they needed
     # and gained nothing. A track skipped because the tick ran out of budget must
     # stay eligible — otherwise a long backlog would permanently exclude whatever
@@ -7626,6 +7642,7 @@ async def _media_backfill_tick() -> None:
         needed_art = metadata_id in art_outcome
         needed_bpm = metadata_id in {t[0] for t in bpm_targets}
         needed_profile = metadata_id in {t[0] for t in profile_targets}
+        needed_spectral = metadata_id in {t[0] for t in spectral_targets}
         art_result = art_outcome.get(metadata_id)
         bpm_result = bpm_outcome.get(metadata_id)
         profile_result = profile_outcome.get(metadata_id)
@@ -7635,17 +7652,32 @@ async def _media_backfill_tick() -> None:
         # Profiling stamps the row either way, so once attempted it never needs
         # revisiting and cannot hold a track in the candidate set.
         profile_settled = (not needed_profile) or (profile_result is not None)
-        gained = (art_result is True) or (bpm_result is True) or (profile_result is True)
+        spectral_result = spectral_outcome.get(metadata_id)
+        spectral_settled = (not needed_spectral) or (spectral_result is not None)
+        gained = ((art_result is True) or (bpm_result is True)
+                  or (profile_result is True) or (spectral_result is True))
 
-        if art_settled and bpm_settled and profile_settled and not gained:
+        if art_settled and bpm_settled and profile_settled and spectral_settled and not gained:
             _media_backfill_failed.add(metadata_id)
 
     processed = len([k for k, v in art_outcome.items() if v is not None]) + len(bpm_outcome) + len(profile_outcome)
 
-    if art_done or bpm_done or profile_done:
-        logger.info("media backfill: %d artwork, %d bpm, %d profiles (%d of %d candidates in %.0fs)",
-                    art_done, bpm_done, profile_done, processed, len(candidates),
+    if art_done or bpm_done or profile_done or spectral_done:
+        logger.info("media backfill: %d artwork, %d bpm, %d profiles, %d spectra (%d of %d candidates in %.0fs)",
+                    art_done, bpm_done, profile_done, spectral_done, processed, len(candidates),
                     _MEDIA_BACKFILL_SECONDS_PER_TICK - max(0.0, deadline - time.monotonic()))
+
+
+async def _store_spectral_profile(metadata_id: str, user_id: str, bands: list | None) -> None:
+    """Stores the ten-band tonal fingerprint, stamping the row either way."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE ios_user_music_metadata SET spectral_profile = %s, "
+                "spectral_profiled_at = NOW() WHERE user_id = %s AND id = %s",
+                (json.dumps(bands) if bands else None, user_id, metadata_id),
+            )
 
 
 async def _store_transition_profile(metadata_id: str, user_id: str, profile: dict | None) -> None:
@@ -10045,6 +10077,41 @@ async def get_download_history(
     return {"tracks": tracks, "total": len(tracks)}
 
 
+def _decode_spectral(raw):
+    """Stored as JSON text; returned as a list. Bad rows are dropped rather than
+    failing the whole library response."""
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+        return value if isinstance(value, list) and len(value) == 10 else None
+    except Exception:
+        return None
+
+
+def _library_eq_target(tracks: list[dict]) -> list[float] | None:
+    """The MEDIAN tonal shape of this user's own library.
+
+    Auto EQ corrects toward this rather than toward a fixed reference curve, so
+    it means "make this track sit like the typical track you own" instead of
+    imposing an outside idea of correct on a collection that is mostly game and
+    anime scores. It is also self-calibrating: a library of loud remixes and one
+    of quiet piano get different targets without anyone choosing.
+
+    Median, not mean, so a handful of badly-mastered outliers cannot drag the
+    target — which is exactly what they would do, since they are the tracks
+    furthest from everything else.
+    """
+    profiles = [t["spectral_profile"] for t in tracks if t.get("spectral_profile")]
+    # Too small a sample is not a library shape, it is whatever happened to be
+    # analysed first — better to send nothing and let the client hold off.
+    if len(profiles) < 25:
+        return None
+    import statistics
+    return [round(statistics.median(p[i] for p in profiles), 2) for i in range(10)]
+
+
+
 @app.get("/user/music")
 async def get_user_music(
     search: str = Query("", description="Filter by title/artist/album"),
@@ -10095,19 +10162,20 @@ async def get_user_music(
             async with conn.cursor() as cur:
                 await cur.execute(
                     "SELECT relative_path, title, artist, album, genre, duration_seconds, has_artwork, uploaded_at, bpm, "
-                    "trailing_silence_s, outro_slope_db, outro_cold_stop, intro_lead_in_s, intro_onset_hardness "
+                    "trailing_silence_s, outro_slope_db, outro_cold_stop, intro_lead_in_s, intro_onset_hardness, "
+                    "spectral_profile "
                     "FROM ios_user_music_metadata WHERE user_id = %s AND relative_path IS NOT NULL",
                     (user_id,),
                 )
                 rows = await cur.fetchall()
         for (rp, m_title, m_artist, m_album, m_genre, m_duration, m_has_artwork, m_uploaded_at, m_bpm,
-             m_trailing, m_slope, m_cold, m_lead, m_hardness) in rows:
+             m_trailing, m_slope, m_cold, m_lead, m_hardness, m_spectral) in rows:
             stored_meta[rp] = {
                 "title": m_title, "artist": m_artist, "album": m_album,
                 "genre": m_genre, "duration": m_duration, "has_artwork": m_has_artwork, "bpm": m_bpm,
                 "trailing_silence_s": m_trailing, "outro_slope_db": m_slope,
                 "outro_cold_stop": m_cold, "intro_lead_in_s": m_lead,
-                "intro_onset_hardness": m_hardness,
+                "intro_onset_hardness": m_hardness, "spectral_profile": m_spectral,
             }
             if m_uploaded_at is not None:
                 uploaded_at_by_path[rp] = m_uploaded_at.isoformat()
@@ -10187,6 +10255,9 @@ async def get_user_music(
             "outro_cold_stop": meta.get("outro_cold_stop"),
             "intro_lead_in_s": meta.get("intro_lead_in_s"),
             "intro_onset_hardness": meta.get("intro_onset_hardness"),
+            # Ten-band tonal fingerprint driving Auto EQ — see
+            # locked_media.spectral_profile.
+            "spectral_profile": _decode_spectral(meta.get("spectral_profile")),
             "server_path": rel_path,
             "filename": fpath.name,
             "ext": ext,
@@ -10196,7 +10267,16 @@ async def get_user_music(
 
     tracks.sort(key=lambda t: (t["album"].lower(), t["title"].lower()))
     total = len(tracks)
-    return {"tracks": tracks[:limit], "total": total, "configured": True}
+    shown = tracks[:limit]
+    return {
+        "tracks": shown,
+        "total": total,
+        "configured": True,
+        # The tonal shape Auto EQ corrects toward — computed from the WHOLE
+        # library, not just the page being returned, so paging cannot change
+        # what "typical" means. See _library_eq_target.
+        "eq_target": _library_eq_target(tracks),
+    }
 
 
 @app.get("/user/music/search")

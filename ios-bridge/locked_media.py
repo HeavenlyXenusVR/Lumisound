@@ -586,3 +586,105 @@ def transition_profile(path: pathlib.Path) -> dict | None:
 
 async def transition_profile_async(path: pathlib.Path) -> dict | None:
     return await asyncio.to_thread(transition_profile, path)
+
+
+# ---------------------------------------------------------------------------
+# Spectral profile — what a track's tonal balance actually IS.
+# ---------------------------------------------------------------------------
+#
+# Auto EQ picked a preset from the genre TAG, falling back to a tempo band. Both
+# are metadata, and neither describes how a track sounds. A genre string is
+# frequently absent or wrong on a downloaded track, and two songs sharing one are
+# routinely mastered nothing alike; tempo says even less — it is a rate, not a
+# tonal balance. So the chosen curve had no relationship to whether a track was
+# already bass-heavy (where a bass boost makes it muddy) or genuinely thin.
+#
+# This measures the thing the decision needs: average energy in the same ten
+# bands the equaliser has, expressed in dB RELATIVE to the track's own broadband
+# level. Relative rather than absolute so the figure describes tonal balance
+# rather than how loud the track was mastered — two masters of the same song at
+# different levels should read as the same shape, because for EQ purposes they
+# are.
+
+# Matches EQPreset.bands on iOS exactly.
+EQ_BANDS_HZ = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+_SPECTRAL_SR = 32000          # Nyquist 16kHz — enough for the top band
+_SPECTRAL_SECONDS = 60
+_SPECTRAL_FFT = 4096
+
+
+def spectral_profile(path: pathlib.Path) -> list[float] | None:
+    """Per-band level in dB relative to the track's overall level, or None.
+
+    Ten values, in `EQ_BANDS_HZ` order. Positive means that band sits above the
+    track's own average; negative means below.
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+
+    suffix = inner_suffix(path)
+    try:
+        with readable_copy(path, suffix=suffix) as readable:
+            # The middle again, for the same reason tempo uses it: an intro is
+            # frequently unrepresentative of the body of the track.
+            duration = _duration_of(readable)
+            start = max(0.0, (duration - _SPECTRAL_SECONDS) / 2) if duration > _SPECTRAL_SECONDS else 0.0
+            proc = subprocess.run(
+                ["ffmpeg", "-v", "quiet", "-ss", str(start), "-i", str(readable),
+                 "-t", str(_SPECTRAL_SECONDS), "-ac", "1", "-ar", str(_SPECTRAL_SR),
+                 "-f", "s16le", "-"],
+                capture_output=True, timeout=180,
+            )
+            raw = proc.stdout if proc.returncode == 0 else None
+    except Exception as exc:
+        logger.warning("spectral_profile failed for %s: %s", path.name, exc)
+        return None
+    if not raw or len(raw) < _SPECTRAL_FFT * 4:
+        return None
+
+    samples = np.frombuffer(raw[: len(raw) // 2 * 2], dtype="<i2").astype(np.float64) / 32768.0
+    hop = _SPECTRAL_FFT // 2
+    frames = (samples.size - _SPECTRAL_FFT) // hop
+    if frames < 4:
+        return None
+
+    window = np.hanning(_SPECTRAL_FFT)
+    freqs = np.fft.rfftfreq(_SPECTRAL_FFT, 1.0 / _SPECTRAL_SR)
+
+    # Averaged over the whole excerpt rather than taken from one frame: a single
+    # window catches whatever happened to be playing at that instant, which for
+    # a track with a sparse arrangement is not its tonal balance at all.
+    power = np.zeros(freqs.size)
+    for i in range(frames):
+        seg = samples[i * hop: i * hop + _SPECTRAL_FFT] * window
+        spectrum = np.abs(np.fft.rfft(seg)) ** 2
+        power += spectrum
+    power /= frames
+
+    total = float(power.sum())
+    if total <= 0:
+        return None
+
+    out: list[float] = []
+    for centre in EQ_BANDS_HZ:
+        # One octave wide, which is roughly what a ten-band graphic EQ's filters
+        # actually cover, so the measurement matches what the control can change.
+        lo, hi = centre / math.sqrt(2), centre * math.sqrt(2)
+        mask = (freqs >= lo) & (freqs < hi)
+        if not mask.any():
+            out.append(0.0)
+            continue
+        band = float(power[mask].sum())
+        # Per-Hz density, so a wide top band is not credited simply for being
+        # wide — otherwise every track would read as bright.
+        width = float(freqs[mask].size)
+        density = band / max(1.0, width)
+        ref = total / max(1.0, float(freqs.size))
+        out.append(round(10.0 * math.log10(max(density, 1e-12) / max(ref, 1e-12)), 2))
+    return out
+
+
+async def spectral_profile_async(path: pathlib.Path) -> list[float] | None:
+    return await asyncio.to_thread(spectral_profile, path)

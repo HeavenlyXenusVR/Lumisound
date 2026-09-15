@@ -327,6 +327,28 @@ extension AudioPlayerManager {
             appLog("applyAutoEQIfNeeded: Auto EQ disabled, skipping", category: "audio")
             return
         }
+        // Measurement first, tags only as a fallback.
+        //
+        // The old path chose from the genre STRING, falling back to a tempo
+        // band. Neither describes how a track sounds: a genre tag is frequently
+        // missing or wrong on a downloaded track, two songs sharing one are
+        // routinely mastered nothing alike, and tempo is a rate rather than a
+        // tonal balance. So the curve had no relationship to whether the track
+        // was already bass-heavy — where a bass boost only makes it muddy — or
+        // genuinely thin. See SpectralEQMatcher.
+        if let spectrum = currentSong?.spectralProfile,
+           let target = AudioSettings.libraryEQTarget {
+            let matched = SpectralEQMatcher.preset(for: spectrum, target: target)
+            let gain = SpectralEQMatcher.improvement(for: spectrum, preset: matched, target: target)
+            appLog(String(format: "applyAutoEQIfNeeded: measured -> %@ (%.0f%% closer to library target) for \"%@\"",
+                          matched.rawValue, gain * 100, currentSong?.title ?? "?"),
+                   category: "audio")
+            if audioSettings.eqPreset != matched {
+                applyEQPreset(matched)
+            }
+            return
+        }
+
         let genre = currentSong?.genre
         guard let preset = EQPreset.auto(forBPM: bpm, genre: genre) else {
             appLog("applyAutoEQIfNeeded: no usable genre/BPM for \"\(currentSong?.title ?? "?")\" (genre=\(genre ?? "nil"), bpm=\(bpm.map { String($0) } ?? "nil")) — skipping", category: "audio")

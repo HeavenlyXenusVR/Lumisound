@@ -72,6 +72,8 @@ struct UserMusicTrack: Identifiable, Codable, Hashable {
     var outroColdStop: Bool? = nil
     var introLeadInS: Double? = nil
     var introOnsetHardness: Double? = nil
+    /// Ten-band tonal fingerprint driving Auto EQ — see SpectralEQMatcher.
+    var spectralProfile: [Double]? = nil
 
     var durationText: String {
         let s = Int(duration)
@@ -104,6 +106,7 @@ struct UserMusicTrack: Identifiable, Codable, Hashable {
         case outroColdStop      = "outro_cold_stop"
         case introLeadInS       = "intro_lead_in_s"
         case introOnsetHardness = "intro_onset_hardness"
+        case spectralProfile    = "spectral_profile"
     }
 }
 

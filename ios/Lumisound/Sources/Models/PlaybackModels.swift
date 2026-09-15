@@ -63,6 +63,25 @@ struct PlaybackSnapshot: Codable, Equatable {
 }
 
 struct AudioSettings: Codable, Equatable {
+    /// Median tonal shape of the user's library, supplied by the server — what
+    /// Auto EQ corrects toward. See SpectralEQMatcher.
+    ///
+    /// Static rather than an instance field: it describes the LIBRARY, not this
+    /// playback session's settings, and storing it per-settings-object would
+    /// mean every copy carried a stale snapshot of it. Persisted so the first
+    /// track after launch can be matched before the library has been refetched.
+    static var libraryEQTarget: [Double]? {
+        get {
+            guard let raw = UserDefaults.standard.array(forKey: "audio.libraryEQTarget") as? [Double],
+                  raw.count == 10 else { return nil }
+            return raw
+        }
+        set {
+            guard let newValue, newValue.count == 10 else { return }
+            UserDefaults.standard.set(newValue, forKey: "audio.libraryEQTarget")
+        }
+    }
+
     /// Upper bound for `volume`. Values above 1.0 (100%) drive the signal
     /// chain's gain stages hotter than unity — the output limiter in
     /// `AudioPlayerManager` prevents this from clipping.

@@ -55,7 +55,8 @@ extension StreamingService {
             sampleRate: 0,
             httpHeaders: ["Authorization": "Bearer \(token)"],
             bpm: userMusicTrack.bpm,
-            transitionProfile: userMusicTrack.transitionProfile
+            transitionProfile: userMusicTrack.transitionProfile,
+            spectralProfile: userMusicTrack.spectralProfile
         )
     }
 
@@ -91,7 +92,8 @@ extension StreamingService {
             sampleRate: 0,
             httpHeaders: [:],   // local file — no auth header needed
             bpm: userMusicTrack.bpm,
-            transitionProfile: userMusicTrack.transitionProfile
+            transitionProfile: userMusicTrack.transitionProfile,
+            spectralProfile: userMusicTrack.spectralProfile
         )
     }
 
@@ -281,6 +283,10 @@ extension StreamingService {
                 let tracks: [UserMusicTrack]
                 let total: Int
                 let configured: Bool
+                /// Median tonal shape of the whole library — what Auto EQ
+                /// corrects toward. Nil until enough tracks are analysed for a
+                /// median to mean anything.
+                let eq_target: [Double]?
             }
             let decoded = try JSONDecoder().decode(Response.self, from: data)
             if !decoded.configured {
@@ -288,6 +294,9 @@ extension StreamingService {
                 userMusicTracks = []
             } else {
                 userMusicTracks = decoded.tracks
+                if let target = decoded.eq_target, target.count == 10 {
+                    AudioSettings.libraryEQTarget = target
+                }
                 appLog("fetchUserMusic: \(decoded.tracks.count) tracks", category: "network")
             }
         } catch {

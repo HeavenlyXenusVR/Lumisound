@@ -35,6 +35,10 @@ struct Song: Identifiable, Hashable, Codable {
     /// not profiled (or one that only exists on this device), in which case
     /// Smart Crossfade falls back to its live level reading.
     var transitionProfile: TransitionProfile?
+    /// Ten-band tonal fingerprint, measured server-side — see SpectralEQMatcher.
+    /// Nil for a track the server has not analysed, in which case Auto EQ falls
+    /// back to the old genre/tempo guess.
+    var spectralProfile: [Double]?
     /// When this track was added — `MPMediaItemPropertyDateAdded` for Apple
     /// Music library items, the file's creation date for imported/downloaded
     /// files. `nil` if neither was available. Used for the "Recently Added"
@@ -90,6 +94,7 @@ struct Song: Identifiable, Hashable, Codable {
         httpHeaders: [String: String]? = nil,
         bpm: Double? = nil,
         transitionProfile: TransitionProfile? = nil,
+        spectralProfile: [Double]? = nil,
         dateAdded: Date? = nil,
         queueSource: QueueSource? = nil
     ) {
@@ -110,6 +115,7 @@ struct Song: Identifiable, Hashable, Codable {
         self.httpHeaders = httpHeaders
         self.bpm = bpm
         self.transitionProfile = transitionProfile
+        self.spectralProfile = spectralProfile
         self.dateAdded = dateAdded
         self.queueSource = queueSource
     }
