@@ -57,6 +57,27 @@ final class TVAria: ObservableObject {
 
     private var blurbTask: Task<Void, Never>?
     private var lastBlurbTrackID: String?
+    /// When Aria last actually spoke, so she does not speak over every track.
+    private var lastBlurbAt: Date?
+    private var tracksSinceBlurb = 0
+
+    /// Aria introduces roughly one track in four, and never twice inside two
+    /// minutes.
+    ///
+    /// She was asked for a line on EVERY track change. Two problems with that.
+    /// The obvious one is quota: measured over twelve hours, 11 requests
+    /// completed, 11 failed on upstream 503s and 8 were rate-limited outright —
+    /// a 63% failure rate, with the rate-limit cooldown then returning nothing
+    /// instantly for minutes afterwards. It also crowded out the uses of Aria
+    /// that are worth more, since the daily pick and lyrics transcription draw
+    /// on the same quota.
+    ///
+    /// The less obvious one is that it was the wrong behaviour anyway. A radio
+    /// DJ does not announce every song; talking over all of them is what makes
+    /// the feature tiresome rather than characterful. Rationing her makes each
+    /// line mean something.
+    private static let tracksBetweenBlurbs = 4
+    private static let minimumInterval: TimeInterval = 120
 
     private var baseURL: String { TVBridgeClient.shared.baseURL }
 
@@ -102,6 +123,17 @@ final class TVAria: ObservableObject {
     func requestTransition(from previous: TVPlayable?, to next: TVPlayable, token: String) {
         guard lastBlurbTrackID != next.id else { return }
         lastBlurbTrackID = next.id
+
+        // Counted for every track, but only acted on occasionally — see
+        // `tracksBetweenBlurbs`.
+        tracksSinceBlurb += 1
+        let longEnough = lastBlurbAt.map { Date().timeIntervalSince($0) >= Self.minimumInterval } ?? true
+        guard tracksSinceBlurb >= Self.tracksBetweenBlurbs, longEnough else {
+            currentBlurb = nil
+            return
+        }
+        tracksSinceBlurb = 0
+        lastBlurbAt = Date()
         blurbTask?.cancel()
         currentBlurb = nil
 

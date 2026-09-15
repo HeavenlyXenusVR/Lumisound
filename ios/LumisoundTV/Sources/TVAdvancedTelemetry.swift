@@ -54,6 +54,11 @@ enum TVAdvancedTelemetry {
         /// How late a 0.1s timer must be before it counts as a hitch. Two frames
         /// at 60Hz is normal jitter; a quarter second is visible as a stutter.
         private let hitchThreshold: Double = 0.25
+        /// Past this, the gap is suspension rather than a stall — the tvOS
+        /// watchdog terminates an app whose main thread blocks for anything
+        /// approaching it, so a larger figure can only mean the process was not
+        /// running.
+        private let suspensionThreshold: Double = 10.0
         /// How often to summarise. Long enough that a sustained stall reports
         /// once with a total rather than hundreds of times.
         private let reportWindow: Double = 30
@@ -76,6 +81,21 @@ enum TVAdvancedTelemetry {
             let now = CACurrentMediaTime()
             let late = (now - lastFire) - 0.1
             lastFire = now
+
+            // A gap this large is not a stalled main thread — it is the app
+            // having been suspended, during which the run loop is not serviced
+            // at all and this timer simply does not fire. Reported as a hitch it
+            // produced an 8.4-MINUTE figure on the Search screen, which would
+            // send anyone investigating it hunting a freeze that never happened.
+            //
+            // The measurement cannot tell suspension from a stall directly, so
+            // it is bounded by plausibility instead: nothing the main thread can
+            // do synchronously survives this long without the watchdog killing
+            // the app first, so anything past it is definitionally not what this
+            // is measuring.
+            if late >= suspensionThreshold {
+                return
+            }
 
             if late >= hitchThreshold {
                 hitchCountThisWindow += 1
