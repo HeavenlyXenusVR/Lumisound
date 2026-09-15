@@ -84,7 +84,7 @@ struct TVAlbumsGridView: View {
     let token: String
     let library: [UserMusicTrack]
 
-    private let columns = [GridItem(.adaptive(minimum: 280), spacing: 48)]
+    private var columns: [GridItem] { TVGridLayout.columns() }
 
     // `tvAlbumGroups` is a `Dictionary(grouping:)` + sort over the WHOLE
     // library — with a several-thousand-track cloud library, recomputing it
@@ -127,14 +127,15 @@ struct TVAlbumsGridView: View {
             TVAuthImage(url: client.userMusicArtworkURL(for: album.representativeTrack), token: token) {
                 TVArtPlaceholder(systemImage: "square.stack")
             }
-            .frame(width: 280, height: 280)
+            .frame(maxWidth: .infinity)
+                .aspectRatio(1, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
 
             Text(album.name).font(.headline).lineLimit(2, reservesSpace: true)
             Text(album.artistName).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
         }
-        .frame(width: 280)
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -209,7 +210,7 @@ struct TVArtistsGridView: View {
     let token: String
     let library: [UserMusicTrack]
 
-    private let columns = [GridItem(.adaptive(minimum: 280), spacing: 48)]
+    private var columns: [GridItem] { TVGridLayout.columns() }
 
     /// See `TVAlbumsGridView.cachedAlbums` — same fix, same reason.
     @State private var cachedArtists: [TVArtistGroup] = []
@@ -238,18 +239,33 @@ struct TVArtistsGridView: View {
         }
     }
 
+    /// First track with stored artwork, or nil when none of them have any.
+    private func artistArtworkURL(_ artist: TVArtistGroup) -> URL? {
+        guard let track = artist.tracks.first(where: { $0.hasArtwork }) else { return nil }
+        return client.userMusicArtworkURL(for: track)
+    }
+
     private func artistCard(_ artist: TVArtistGroup) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            TVArtPlaceholder(systemImage: "music.mic", iconScale: 1.35)
-                .frame(width: 280, height: 280)
+            // An artist has no artwork of its own server-side, so the first of
+            // its tracks that HAS a cover stands in — the same substitution
+            // every music app makes. Before this the card always drew the
+            // placeholder, so every artist was the same grey mic glyph and the
+            // grid told you nothing but the names.
+            TVAuthImage(url: artistArtworkURL(artist), token: token) {
+                TVArtPlaceholder(systemImage: "music.mic", iconScale: 1.35)
+            }
+                .frame(maxWidth: .infinity)
+                .aspectRatio(1, contentMode: .fit)
                 .clipShape(Circle())
+                .overlay { Circle().strokeBorder(.white.opacity(0.12), lineWidth: 1) }
                 .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
 
             Text(artist.name).font(.headline).lineLimit(2, reservesSpace: true)
             Text("\(artist.albumCount) \(artist.albumCount == 1 ? "album" : "albums") · \(artist.tracks.count) \(artist.tracks.count == 1 ? "song" : "songs")")
                 .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
         }
-        .frame(width: 280)
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -260,7 +276,7 @@ struct TVArtistDetailView: View {
     let token: String
     let artist: TVArtistGroup
 
-    private let columns = [GridItem(.adaptive(minimum: 280), spacing: 48)]
+    private var columns: [GridItem] { TVGridLayout.columns() }
 
     var body: some View {
         let albums = tvAlbumGroups(from: artist.tracks)
@@ -280,14 +296,15 @@ struct TVArtistDetailView: View {
                                 TVAuthImage(url: client.userMusicArtworkURL(for: album.representativeTrack), token: token) {
                                     TVArtPlaceholder(systemImage: "square.stack")
                                 }
-                                .frame(width: 280, height: 280)
+                                .frame(maxWidth: .infinity)
+                .aspectRatio(1, contentMode: .fit)
                                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                                 .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
                                 Text(album.name).font(.headline).lineLimit(2, reservesSpace: true)
                                 Text("\(album.tracks.count) \(album.tracks.count == 1 ? "song" : "songs")")
                                     .font(.subheadline).foregroundStyle(.secondary)
                             }
-                            .frame(width: 280)
+                            .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.card)
                     }
@@ -306,7 +323,7 @@ struct TVGenresGridView: View {
     let token: String
     let library: [UserMusicTrack]
 
-    private let columns = [GridItem(.adaptive(minimum: 280), spacing: 48)]
+    private var columns: [GridItem] { TVGridLayout.columns() }
 
     /// See `TVAlbumsGridView.cachedAlbums` — same fix, same reason.
     @State private var cachedGenres: [TVGenreGroup] = []
@@ -338,7 +355,8 @@ struct TVGenresGridView: View {
     private func genreCard(_ genre: TVGenreGroup) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             TVArtPlaceholder(systemImage: "guitars", iconScale: 1.15)
-                .frame(width: 280, height: 280)
+                .frame(maxWidth: .infinity)
+                .aspectRatio(1, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
 
@@ -346,7 +364,7 @@ struct TVGenresGridView: View {
             Text("\(genre.tracks.count) \(genre.tracks.count == 1 ? "song" : "songs")")
                 .font(.subheadline).foregroundStyle(.secondary)
         }
-        .frame(width: 280)
+        .frame(maxWidth: .infinity)
     }
 }
 

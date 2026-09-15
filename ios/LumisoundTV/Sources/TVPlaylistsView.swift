@@ -18,7 +18,7 @@ struct TVPlaylistsView: View {
     @ObservedObject var client: TVBridgeClient
     let token: String
 
-    private let columns = [GridItem(.adaptive(minimum: 280), spacing: 48)]
+    private var columns: [GridItem] { TVGridLayout.columns() }
     @State private var showNewPlaylist = false
     @State private var renamingPlaylist: TVPlaylist?
 
@@ -113,10 +113,11 @@ struct TVPlaylistsView: View {
                         .strokeBorder(Color.accentColor.opacity(0.6), style: StrokeStyle(lineWidth: 2, dash: [10, 8]))
                     Image(systemName: "plus").font(.system(size: 50)).foregroundStyle(Color.accentColor)
                 }
-                .frame(width: 280, height: 280)
+                .frame(maxWidth: .infinity)
+                    .aspectRatio(1, contentMode: .fit)
                 Text("New Playlist").font(.headline)
             }
-            .frame(width: 280)
+            .frame(maxWidth: .infinity)
         }
         .buttonStyle(.card)
     }
@@ -151,7 +152,8 @@ struct TVPlaylistsView: View {
     private func playlistCard(_ playlist: TVPlaylist) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             TVArtPlaceholder(systemImage: "music.note.list", iconScale: 1.15)
-                .frame(width: 280, height: 280)
+                .frame(maxWidth: .infinity)
+                    .aspectRatio(1, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
 

@@ -114,6 +114,8 @@ struct TVVinylDeck: View {
 struct TVNowPlayingPanel: View {
     @ObservedObject var model: TVPlayerModel
     @ObservedObject var client: TVBridgeClient
+    @ObservedObject private var aria = TVAria.shared
+    @ObservedObject private var settings = TVAudioSettings.shared
     let token: String
 
     static let width: CGFloat = 430
@@ -149,6 +151,13 @@ struct TVNowPlayingPanel: View {
                         .font(TVType.rowDetail)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                }
+
+                // Aria's handover, above the lyrics — it is about the track
+                // that just started, so it belongs next to its title rather
+                // than buried under the transport.
+                if settings.djTransitions, let blurb = aria.currentBlurb {
+                    TVAriaBlurbView(text: blurb)
                 }
 
                 lyrics

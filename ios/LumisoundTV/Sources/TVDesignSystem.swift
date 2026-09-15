@@ -224,6 +224,22 @@ extension View {
     }
 }
 
+// MARK: Grid layout
+
+/// Card grids sized by COLUMN COUNT rather than by a minimum card width.
+///
+/// Every grid used `GridItem(.adaptive(minimum: 280))`, which pins the card size
+/// and lets the number of columns fall out of the available width — so the user
+/// had no say in it and the answer was always the same. Fixing the count and
+/// letting the cards take whatever space is left is what makes "show me two
+/// bigger covers" or "show me four smaller ones" possible at all.
+enum TVGridLayout {
+    static func columns(spacing: CGFloat = 44) -> [GridItem] {
+        let count = max(2, min(4, TVAudioSettings.shared.gridColumns))
+        return Array(repeating: GridItem(.flexible(), spacing: spacing), count: count)
+    }
+}
+
 // MARK: Screen title
 
 /// The one large title at the top of a screen, with an optional count/summary

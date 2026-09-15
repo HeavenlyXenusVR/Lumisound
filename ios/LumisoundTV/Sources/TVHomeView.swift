@@ -13,6 +13,7 @@ import SwiftUI
 
 struct TVHomeView: View {
     @ObservedObject var client: TVBridgeClient
+    @ObservedObject private var aria = TVAria.shared
     let token: String
 
     // Cached, NOT computed properties.
@@ -41,6 +42,7 @@ struct TVHomeView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 56) {
                 hero
+                ariaShelf
                 recentlyAddedShelf
                 yourPlaylistsShelf
                 discoverMixShelf
@@ -57,6 +59,9 @@ struct TVHomeView: View {
             if client.onThisDay.isEmpty { await client.fetchOnThisDay(token: token) }
         }
         .task(id: client.library.count) { await rebuildRecentlyAdded() }
+        .task {
+            if aria.dailyPick == nil { await aria.loadDailyPick(token: token) }
+        }
     }
 
     /// Re-sorts off the main actor. The sort is the expensive half; building
@@ -77,6 +82,21 @@ struct TVHomeView: View {
             detail: ["trackCount": sorted.count,
                      "elapsedMs": Int(Date().timeIntervalSince(started) * 1000)]
         )
+    }
+
+    /// Aria's pick for today. Absent entirely when she has none rather than
+    /// showing an empty shelf — a section that is usually blank teaches people
+    /// to skip past where it lives.
+    @ViewBuilder
+    private var ariaShelf: some View {
+        if let pick = aria.dailyPick, pick.isPresent {
+            VStack(alignment: .leading, spacing: 20) {
+                TVSectionHeader(title: "From Aria")
+                    .padding(.horizontal, TVMetrics.margin)
+                TVAriaDailyPickCard(pick: pick)
+                    .padding(.horizontal, TVMetrics.margin)
+            }
+        }
     }
 
     // MARK: Hero

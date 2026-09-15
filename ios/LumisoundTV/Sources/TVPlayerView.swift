@@ -98,6 +98,8 @@ final class TVPlayerModel: ObservableObject {
     private var statusObservations: [NSKeyValueObservation] = []
     private var sleepTimerTask: Task<Void, Never>?
     private var lyricsTask: Task<Void, Never>?
+    /// The track Aria is handing over FROM — see TVAria.requestTransition.
+    private var previousTrack: TVPlayable?
     var audioSessionObservers: [NSObjectProtocol] = []
 
     var current: TVPlayable? { queue.indices.contains(currentIndex) ? queue[currentIndex] : nil }
@@ -262,14 +264,42 @@ final class TVPlayerModel: ObservableObject {
                             detail: ["title": item.title, "artist": item.artist])
         updateNowPlayingInfo()
         updateNowPlayingArtwork()
+        // Aria's handover into this track. Fire-and-forget: it never gates
+        // playback, so a slow or absent answer costs nothing but a missing line.
+        if let token = TVAccount.shared.token {
+            TVAria.shared.requestTransition(from: previousTrack, to: item, token: token)
+        }
+        previousTrack = item
+
         Task { [weak self] in
             guard let self else { return }
             let resolved = await self.resolvedAsset(for: item)
             // The user may have skipped again while a locked track was
             // downloading — don't stomp over whatever's playing now.
             guard self.current?.id == item.id else { return }
-            self.player.replaceCurrentItem(with: AVPlayerItem(asset: resolved))
+            let playerItem = AVPlayerItem(asset: resolved)
+
+            // Stop the system widening stereo music into a virtual surround
+            // field. On by default on an Apple TV, and it smears the stereo
+            // image — the most likely reason the same file sounds less direct
+            // here than on a phone, which never takes this path at all.
+            playerItem.allowedAudioSpatializationFormats =
+                TVAudioSettings.shared.allowSpatialization ? .monoStereoAndMultichannel : .monoAndStereo
+
+            self.player.replaceCurrentItem(with: playerItem)
             self.player.play()
+
+            // Leading-silence trim, AFTER the item is attached so the seek
+            // lands on a real asset. Analysis decodes the head of the file, so
+            // it runs off the main actor and only applies if this is still the
+            // track playing when it finishes.
+            guard TVAudioSettings.shared.skipSilentIntros,
+                  let assetURL = (resolved as? AVURLAsset)?.url else { return }
+            let trim = await TVSilenceTrim.analyze(url: assetURL, trackID: item.id)
+            guard trim > 0, self.current?.id == item.id else { return }
+            self.player.seek(to: CMTime(seconds: trim, preferredTimescale: 600))
+            TVRemoteLogger.log(category: "audio", event: "silent_intro_skipped",
+                               detail: ["title": item.title, "seconds": round(trim * 100) / 100])
         }
     }
 

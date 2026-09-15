@@ -98,7 +98,7 @@ struct TVSearchView: View {
     let token: String
     @State private var query = ""
 
-    private let columns = [GridItem(.adaptive(minimum: 280), spacing: 48)]
+    private var columns: [GridItem] { TVGridLayout.columns() }
     private var queue: [TVPlayable] { client.results.compactMap { client.playable(from: $0) } }
 
     var body: some View {
@@ -193,7 +193,8 @@ struct TVTrackCard: View {
             TVAuthImage(url: URL(string: track.thumbnailURL), token: nil) {
                 TVArtPlaceholder(systemImage: "music.note")
             }
-            .frame(width: 280, height: 158)
+            .frame(maxWidth: .infinity)
+                .aspectRatio(16.0/9.0, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
 
@@ -201,7 +202,7 @@ struct TVTrackCard: View {
             Text(track.artist.isEmpty ? "Unknown Artist" : track.artist)
                 .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
         }
-        .frame(width: 280)
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -247,6 +248,9 @@ struct TVAccountView: View {
                         }
                         accountLink("Active Sessions", systemImage: "list.bullet.rectangle") {
                             TVSessionsView(client: client, account: account, token: token)
+                        }
+                        accountLink("Settings", systemImage: "gearshape.fill") {
+                            TVSettingsView()
                         }
                     }
 
