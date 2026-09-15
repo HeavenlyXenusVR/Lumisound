@@ -53,7 +53,9 @@ extension StreamingService {
             genre: userMusicTrack.genre,
             bitrate: 0,
             sampleRate: 0,
-            httpHeaders: ["Authorization": "Bearer \(token)"]
+            httpHeaders: ["Authorization": "Bearer \(token)"],
+            bpm: userMusicTrack.bpm,
+            transitionProfile: userMusicTrack.transitionProfile
         )
     }
 
@@ -87,7 +89,9 @@ extension StreamingService {
             genre: userMusicTrack.genre,
             bitrate: 0,
             sampleRate: 0,
-            httpHeaders: [:]   // local file — no auth header needed
+            httpHeaders: [:],   // local file — no auth header needed
+            bpm: userMusicTrack.bpm,
+            transitionProfile: userMusicTrack.transitionProfile
         )
     }
 

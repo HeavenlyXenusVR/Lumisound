@@ -61,10 +61,34 @@ struct UserMusicTrack: Identifiable, Codable, Hashable {
     /// `toSong(userMusicTrack:token:)` downloads+unlocks these before
     /// playback instead of streaming the raw URL.
     let isLocked: Bool
+    /// Server-measured tempo — including for locked tracks, which this device
+    /// cannot analyse without downloading and unlocking them first.
+    let bpm: Double?
+    /// How the track ends and begins — see TransitionProfile. All optional:
+    /// they are nil until the server's backfill has reached the track, and an
+    /// older bridge does not send them at all.
+    let trailingSilenceS: Double?
+    let outroSlopeDB: Double?
+    let outroColdStop: Bool?
+    let introLeadInS: Double?
+    let introOnsetHardness: Double?
 
     var durationText: String {
         let s = Int(duration)
         return "\(s / 60):\(String(format: "%02d", s % 60))"
+    }
+
+    /// Nil until the server has profiled this track, in which case Smart
+    /// Crossfade falls back to its own live level reading.
+    var transitionProfile: TransitionProfile? {
+        guard trailingSilenceS != nil || outroSlopeDB != nil || introLeadInS != nil else { return nil }
+        return TransitionProfile(
+            trailingSilence: trailingSilenceS ?? 0,
+            outroSlopeDB: outroSlopeDB ?? 0,
+            outroColdStop: outroColdStop ?? false,
+            introLeadIn: introLeadInS ?? 0,
+            introOnsetHardness: introOnsetHardness ?? 0
+        )
     }
 
     enum CodingKeys: String, CodingKey {
@@ -74,6 +98,12 @@ struct UserMusicTrack: Identifiable, Codable, Hashable {
         case serverPath  = "server_path"
         case filename, ext
         case isLocked    = "is_locked"
+        case bpm
+        case trailingSilenceS   = "trailing_silence_s"
+        case outroSlopeDB       = "outro_slope_db"
+        case outroColdStop      = "outro_cold_stop"
+        case introLeadInS       = "intro_lead_in_s"
+        case introOnsetHardness = "intro_onset_hardness"
     }
 }
 

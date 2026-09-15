@@ -30,6 +30,11 @@ struct Song: Identifiable, Hashable, Codable {
     /// features don't need to re-decode the file on every access. `nil` until
     /// analysis has run for this track.
     var bpm: Double?
+    /// How this track ends and begins, measured server-side and delivered with
+    /// the cloud library — see TransitionProfile. Nil for a track the server has
+    /// not profiled (or one that only exists on this device), in which case
+    /// Smart Crossfade falls back to its live level reading.
+    var transitionProfile: TransitionProfile?
     /// When this track was added — `MPMediaItemPropertyDateAdded` for Apple
     /// Music library items, the file's creation date for imported/downloaded
     /// files. `nil` if neither was available. Used for the "Recently Added"

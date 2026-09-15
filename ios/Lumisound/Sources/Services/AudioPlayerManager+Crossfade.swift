@@ -8,6 +8,39 @@ extension AudioPlayerManager {
 
     // MARK: - Crossfade
 
+    /// The plan for the transition out of the current track.
+    ///
+    /// Computed from the same inputs wherever it is needed — the scheduling
+    /// timer and the fade itself — so when the fade starts and how long it runs
+    /// cannot disagree.
+    func transitionPlan(into nextSong: Song?) -> SmartCrossfade.Plan {
+        let base = audioSettings.crossfadeDuration
+        guard audioSettings.smartCrossfadeEnabled else {
+            return SmartCrossfade.Plan(duration: base, startBefore: base, reason: "smart-off")
+        }
+        // Only consulted when the server has not profiled the outgoing track —
+        // the profile supersedes it, since a level cannot separate a cold stop
+        // from a sustained ending.
+        let level: Double? = currentSong?.transitionProfile == nil
+            ? Double(AudioVisualizerService.shared.overallLevel)
+            : nil
+        return SmartCrossfade.plan(
+            base: base,
+            outgoingDuration: currentSong?.duration ?? 0,
+            incomingDuration: nextSong?.duration ?? 0,
+            outgoing: currentSong?.transitionProfile,
+            incoming: nextSong?.transitionProfile,
+            outgoingBPM: currentSong.flatMap { bpmCache[$0.id] ?? $0.bpm },
+            incomingBPM: nextSong.flatMap { bpmCache[$0.id] ?? $0.bpm },
+            measuredLevel: level
+        )
+    }
+
+    /// How far before the end of the file the fade should begin.
+    func transitionLead() -> TimeInterval {
+        transitionPlan(into: peekNextSong()).startBefore
+    }
+
     func beginCrossfade() {
         guard let nextSong = peekNextSong(), let nextURL = nextSong.url else {
             skipToNext(); return
@@ -27,7 +60,7 @@ extension AudioPlayerManager {
         // Crossfade off, use the fixed user-set duration verbatim.
         let smartCrossfade = audioSettings.smartCrossfadeEnabled
         let fadeDuration = smartCrossfade
-            ? smartFadeDuration(base: audioSettings.crossfadeDuration, bpm: currentSong.flatMap { bpmCache[$0.id] })
+            ? transitionPlan(into: nextSong).duration
             : audioSettings.crossfadeDuration
 
         // The outgoing node is the one currently playing; incoming is the opposite.

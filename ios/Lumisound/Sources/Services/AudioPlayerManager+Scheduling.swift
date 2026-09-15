@@ -216,7 +216,14 @@ extension AudioPlayerManager {
             // so the incoming track fades in while the current track is still playing.
             if audioSettings.crossfadeActive && audioSettings.crossfadeDuration > 0 {
                 let trackLength = Double(framesLeft) / file.processingFormat.sampleRate
-                let crossfadeOffset = max(0, trackLength - audioSettings.crossfadeDuration)
+                // Measured from the end of the MUSIC, not the end of the file.
+                //
+                // Trailing dead air is common — 8 tracks in 25 across a real
+                // cloud library carry over 1.5s of it, one had thirty-eight —
+                // so a fade starting `crossfadeDuration` from the file's end was
+                // often partly, sometimes entirely, the next track fading up
+                // over nothing. See SmartCrossfade.
+                let crossfadeOffset = max(0, trackLength - transitionLead())
                 if crossfadeOffset > 0 {
                     crossfadeStartTimer?.invalidate()
                     crossfadeStartTimer = Timer.scheduledTimer(
@@ -385,7 +392,9 @@ extension AudioPlayerManager {
             // Crossfade timer — same logic as scheduleCurrent.
             if audioSettings.crossfadeActive && audioSettings.crossfadeDuration > 0 {
                 let trackLength     = Double(framesLeft) / sampleRate
-                let crossfadeOffset = max(0, trackLength - audioSettings.crossfadeDuration)
+                // See scheduleCurrent — measured from the end of the music
+                // rather than the end of the file.
+                let crossfadeOffset = max(0, trackLength - transitionLead())
                 if crossfadeOffset > 0 {
                     crossfadeStartTimer?.invalidate()
                     crossfadeStartTimer = Timer.scheduledTimer(
