@@ -110,8 +110,17 @@ struct TVLibraryView: View {
                 }
             }
         }
-        .tvAmbientBackground()
-        .searchable(text: $searchText, prompt: "Search your library")
+        // NO `.searchable` here. On tvOS that modifier does not render a compact
+        // field — it lays out a full search surface, prompt plus a letter picker
+        // spanning the whole width, as a sibling of this view's own content. In
+        // the old single-column shell it had the screen to itself and looked
+        // fine. Inside the three-column shell it drew across the content column
+        // AND over the player column beside it, which is the alphabet strip
+        // running over everything in the 1.9.0 screenshot.
+        //
+        // Search now lives behind the pill in `modeChips` and is presented as
+        // its own pushed screen (`librarySearchScreen`), which is the platform's
+        // actual pattern for tvOS search and gets dictation for free.
         .task {
             if client.library.isEmpty { await client.fetchLibrary(token: token) }
             if client.favoriteSongIDs.isEmpty { await client.fetchFavorites(token: token) }
@@ -127,6 +136,21 @@ struct TVLibraryView: View {
     private var modeChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 16) {
+                // Leads the row: searching is a different KIND of action from
+                // switching browse dimension, so it keeps the search glyph and
+                // shows the live query when one is set, rather than pretending
+                // to be a sixth mode.
+                NavigationLink {
+                    librarySearchScreen
+                } label: {
+                    TVChip(
+                        title: searchText.isEmpty ? "Search" : searchText,
+                        isSelected: !searchText.isEmpty,
+                        systemImage: "magnifyingglass"
+                    )
+                }
+                .buttonStyle(.plain)
+
                 ForEach(Mode.allCases) { m in
                     Button {
                         mode = m
@@ -153,27 +177,74 @@ struct TVLibraryView: View {
             } else {
                 LazyVStack(spacing: TVMetrics.row) {
                     ForEach(filteredSongs) { track in
-                        NavigationLink(value: TVPlayContext(queue: queue, startID: track.id)) {
-                            TVTrackRow(
-                                artworkURL: client.userMusicArtworkURL(for: track),
-                                token: token,
-                                title: track.displayTitle,
-                                artist: track.artist,
-                                detail: track.duration.tvDurationText,
-                                isFavorite: client.isFavorite(track.id)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .tvTrackActions(client: client, token: token, track: track)
+                        trackRow(track)
                     }
                 }
                 .padding(.horizontal, TVMetrics.margin)
                 .padding(.top, 8)
-                // Clears the mini-player bar pinned to the bottom of the shell,
-                // so the last row can still be focused and read.
-                .padding(.bottom, 150)
+                .padding(.bottom, 60)
             }
         }
+    }
+
+    /// One library row. Shared by the browse list and the search screen so the
+    /// two cannot drift apart in styling or in what a select actually does.
+    private func trackRow(_ track: UserMusicTrack) -> some View {
+        NavigationLink(value: TVPlayContext(queue: queue, startID: track.id)) {
+            TVTrackRow(
+                artworkURL: client.userMusicArtworkURL(for: track),
+                token: token,
+                title: track.displayTitle,
+                artist: track.artist,
+                detail: track.duration.tvDurationText,
+                isFavorite: client.isFavorite(track.id)
+            )
+        }
+        .buttonStyle(.plain)
+        .tvTrackActions(client: client, token: token, track: track)
+    }
+
+    /// Library search as its own pushed screen, built on the same
+    /// `UISearchController` wrapper the Search tab uses — so it gets the system
+    /// tvOS keyboard, and with it dictation, which `.searchable` has no
+    /// supported way to offer.
+    ///
+    /// Pushed rather than inline: a search surface on tvOS wants the whole
+    /// screen for its keyboard, and giving it one is what stops it drawing over
+    /// the neighbouring columns.
+    private var librarySearchScreen: some View {
+        TVDictationSearch(
+            text: $searchText,
+            placeholder: "Search your library",
+            onChange: { _ in scheduleFilterRecompute() }
+        ) {
+            ScrollView {
+                if filteredSongs.isEmpty {
+                    VStack(spacing: 16) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 70)).foregroundStyle(.secondary)
+                        Text(searchText.isEmpty
+                             ? "Search your library by title, artist or album."
+                             : "No songs match “\(searchText)”.")
+                            .font(.title3).foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(.top, 100)
+                } else {
+                    LazyVStack(spacing: TVMetrics.row) {
+                        ForEach(filteredSongs) { track in
+                            trackRow(track)
+                        }
+                    }
+                    .padding(.horizontal, TVMetrics.margin)
+                    .padding(.vertical, 30)
+                }
+            }
+            // A pushed destination replaces the shell, so it draws its own
+            // backdrop — unlike the root tab screens, which sit inside it.
+            .tvAmbientBackground()
+        }
+        .ignoresSafeArea()
     }
 
     private func message(_ text: String, systemImage: String) -> some View {

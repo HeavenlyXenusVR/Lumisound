@@ -79,7 +79,6 @@ struct TVPlaylistsView: View {
                 .padding(.vertical, 50)
             }
         }
-        .tvAmbientBackground()
         .task {
             if client.playlists.isEmpty { await client.fetchPlaylists(token: token) }
         }

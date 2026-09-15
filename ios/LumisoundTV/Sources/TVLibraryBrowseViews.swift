@@ -448,7 +448,7 @@ struct TVFavoritesGridView: View {
                 }
                 .padding(.horizontal, TVMetrics.margin)
                 .padding(.top, 8)
-                .padding(.bottom, 150)
+                .padding(.bottom, 60)
             }
         }
         .task {

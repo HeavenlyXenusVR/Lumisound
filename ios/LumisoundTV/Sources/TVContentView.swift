@@ -125,7 +125,6 @@ struct TVSearchView: View {
                 .padding(TVMetrics.margin)
             }
         }
-        .tvAmbientBackground()
     }
 
     /// Debounced search-as-you-type. tvOS search keyboards don't reliably fire
@@ -253,7 +252,6 @@ struct TVAccountView: View {
             }
             .padding(TVMetrics.margin)
         }
-        .tvAmbientBackground()
         .task {
             if client.notifications.isEmpty { await client.fetchNotifications(token: token) }
             await client.fetchFriendsListening(token: token)

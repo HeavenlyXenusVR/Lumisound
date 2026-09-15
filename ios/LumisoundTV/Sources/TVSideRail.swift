@@ -53,7 +53,12 @@ struct TVSideRail: View {
 
             Spacer(minLength: 0)
         }
-        .frame(width: Self.width)
+        // maxHeight as well as width: the VStack otherwise sizes to its content,
+        // so the background gradient below stopped where the last icon did and
+        // painted a hard-edged block partway down the screen instead of a full
+        // column. `ignoresSafeArea` extends a view past the safe area; it does
+        // not make one fill its parent.
+        .frame(width: Self.width, maxHeight: .infinity)
         .padding(.vertical, 44)
         .background {
             // Reads as a lit edge rather than a panel with a border on it.

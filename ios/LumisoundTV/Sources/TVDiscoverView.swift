@@ -29,7 +29,6 @@ struct TVDiscoverView: View {
             }
             .padding(.vertical, 50)
         }
-        .tvAmbientBackground()
         .task {
             if client.discoverMix.isEmpty { await client.fetchDiscoverMix(token: token) }
             if client.onThisDay.isEmpty { await client.fetchOnThisDay(token: token) }
