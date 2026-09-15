@@ -137,8 +137,14 @@ enum TVLyricsService {
     /// track has no lyrics".
     private static func fetchFromBridge(title: String, artist: String,
                                         duration: TimeInterval) async -> [TVLyricLine]? {
-        guard let token = TVAccount.shared.token,
-              var comps = URLComponents(string: TVBridgeClient.shared.baseURL + "/user/lyrics")
+        // Both are main-actor state, so they are read there and then released —
+        // the request itself has no business holding the main actor while it
+        // waits on the network.
+        let (token, baseURL) = await MainActor.run {
+            (TVAccount.shared.token, TVBridgeClient.shared.baseURL)
+        }
+        guard let token,
+              var comps = URLComponents(string: baseURL + "/user/lyrics")
         else { return nil }
 
         comps.queryItems = [
