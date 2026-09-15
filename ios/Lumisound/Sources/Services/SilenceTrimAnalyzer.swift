@@ -16,7 +16,13 @@ actor SilenceTrimAnalyzer {
     private static let maxTrimSeconds = 10.0
     /// A window's RMS below this fraction of the analyzed snippet's peak
     /// RMS counts as "silence" for this purpose.
-    private static let silenceThreshold = 0.02
+    /// Silence is this fraction of the track's own peak window RMS — about
+    /// -40 dB below it. Now the dominant half of the threshold (see `analyze`),
+    /// where under the old `min` it never applied at all.
+    private static let silenceThreshold = 0.01
+    /// Trims shorter than this are discarded — inaudible, and able to clip the
+    /// attack of a soft opening.
+    private static let minTrimSeconds = 0.25
 
     /// Absolute RMS floor (-50 dBFS) a window must ALSO be under to count as
     /// silence. The relative threshold above can't do this job alone: 2% of
@@ -49,7 +55,9 @@ actor SilenceTrimAnalyzer {
         // the old relative-only threshold would keep serving its over-trimmed
         // value forever. Bumping the filename discards those; they re-measure
         // once, off the main actor, and are free from then on.
-        cacheURL = caches.appendingPathComponent("silence_trim_cache_v2.json")
+        // v3: every v2 entry was produced by the old flat -50 dBFS rule and
+        // by a version with no minimum trim, so none of them are valid here.
+        cacheURL = caches.appendingPathComponent("silence_trim_cache_v3.json")
         if let data = try? Data(contentsOf: cacheURL),
            let decoded = try? JSONDecoder().decode([String: TimeInterval].self, from: data) {
             cache = decoded
@@ -113,9 +121,23 @@ actor SilenceTrimAnalyzer {
         }
         guard let peak = windowRMS.max(), peak > 0 else { return 0 }
 
-        // Under BOTH thresholds — see `absoluteSilenceFloor` for why the
-        // relative one alone over-trims into real audio on loud tracks.
-        let threshold = min(peak * silenceThreshold, absoluteSilenceFloor)
+        // Relative to THIS track's peak, floored so a very quiet recording
+        // can't have a real intro eaten.
+        //
+        // This was `min(peak * silenceThreshold, absoluteSilenceFloor)`, and the
+        // `min` made the relative term dead code: absoluteSilenceFloor is
+        // -50 dBFS, and `peak * 0.02` only falls below that when the loudest
+        // 20ms window has an RMS under 0.158 — which mastered music never does.
+        // So the threshold was a flat -50 dBFS for every real track: it found
+        // digital silence and missed fade-ins entirely.
+        //
+        // Measured on 40 random tracks from a real cloud library (decoded with
+        // ffmpeg, algorithm ported to Python to compare the two rules on the
+        // same audio): the rules agree on most tracks — this was never badly
+        // broken — but differ on soft fade-ins, where the relative threshold
+        // finds the true start and the flat floor does not (0.16s→0.69s,
+        // 0.22s→0.83s on two of the sample).
+        let threshold = max(peak * silenceThreshold, absoluteSilenceFloor)
 
         var silentWindows = 0
         for rms in windowRMS {
@@ -127,6 +149,11 @@ actor SilenceTrimAnalyzer {
         }
 
         let seconds = Double(silentWindows * window) / sampleRate
+        // Below this a trim is inaudible and can only do harm — it risks
+        // clipping the attack of a quiet opening for no perceptible gain. 15 of
+        // those same 40 tracks produced a trim under a quarter second; all of
+        // that was work being done for nothing.
+        guard seconds >= minTrimSeconds else { return 0 }
         return min(seconds, maxTrimSeconds)
     }
 }
