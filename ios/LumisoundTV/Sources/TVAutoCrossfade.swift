@@ -9,7 +9,7 @@ import Foundation
 // a client cannot analyse a track it has not downloaded yet — and because one
 // implementation feeding both apps is the only way iOS and tvOS make the same
 // decision about the same pair of tracks.
-struct TVTransitionProfile: Equatable {
+struct TVTransitionProfile: Equatable, Hashable {
     /// Dead air on the end of the file, in seconds.
     var trailingSilence: Double = 0
     /// dB change per second across the last of the real music. Negative is
