@@ -75,6 +75,16 @@ struct TVSearchView: View {
     private var queue: [TVPlayable] { client.results.compactMap { client.playable(from: $0) } }
 
     var body: some View {
+        // UISearchController-backed so the system tvOS keyboard (and its
+        // dictation microphone) is available — SwiftUI's `.searchable` has no
+        // supported way to offer voice input. See TVDictationSearch.
+        TVDictationSearch(text: $query, placeholder: "Search YouTube", onChange: runSearch) {
+            resultsBody
+        }
+        .ignoresSafeArea()
+    }
+
+    private var resultsBody: some View {
         ScrollView {
             if client.isSearching {
                 ProgressView("Searching… this can take a moment")
@@ -97,24 +107,23 @@ struct TVSearchView: View {
             }
         }
         .tvAmbientBackground()
-        .searchable(text: $query, prompt: "Search YouTube")
-        .onSubmit(of: .search) { Task { await client.search(query) } }
-        // tvOS search keyboards don't reliably fire `.onSubmit(of: .search)`, so
-        // also search as you type (debounced) — otherwise typing appears to do
-        // nothing.
-        .onChange(of: query) { newValue in
-            let v = newValue
-            Task {
-                try? await Task.sleep(nanoseconds: 600_000_000)
-                guard query == v else { return }  // user kept typing
-                if v.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    client.results = []
-                    client.searchError = nil
-                } else {
-                    await client.search(v)
-                }
+    }
+
+    /// Debounced search-as-you-type. tvOS search keyboards don't reliably fire
+    /// a submit action, so the query runs as the text changes — including text
+    /// arriving from dictation, which produces no submit event at all.
+    private func runSearch(_ value: String) {
+        Task {
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            guard query == value else { return }  // user kept typing/speaking
+            if value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                client.results = []
+                client.searchError = nil
+            } else {
+                await client.search(value)
             }
         }
+    }
     }
 
     /// Instead of a bare "search to play" placeholder, an empty query
