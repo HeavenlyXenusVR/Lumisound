@@ -87,6 +87,31 @@ final class StreamingService: ObservableObject {
     /// it works anywhere without home WiFi. Users can override in Settings.
     static let defaultBridgeURL = "https://lumisound-bridge.xenusanimations.studio"
 
+    /// Whether `url` points at the official bridge, ignoring differences that
+    /// do not change which server is reached.
+    ///
+    /// Scheme and host are compared case-insensitively (both are
+    /// case-insensitive per RFC 3986) and any trailing slash is dropped. The
+    /// path is deliberately included in the comparison: a URL on the right host
+    /// but under someone's own prefix is a different deployment, and the shared
+    /// key should not be sent there.
+    static func isOfficialBridge(_ url: String) -> Bool {
+        func normalise(_ value: String) -> String {
+            var text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            while text.hasSuffix("/") { text.removeLast() }
+            guard let components = URLComponents(string: text),
+                  let host = components.host else {
+                return text.lowercased()
+            }
+            let scheme = (components.scheme ?? "https").lowercased()
+            var path = components.path
+            while path.hasSuffix("/") { path.removeLast() }
+            let port = components.port.map { ":\($0)" } ?? ""
+            return "\(scheme)://\(host.lowercased())\(port)\(path)"
+        }
+        return normalise(url) == normalise(defaultBridgeURL)
+    }
+
     /// Dedicated `URLSession` for actual audio-file bytes — track uploads and
     /// downloaded-file transfers — kept separate from `URLSession.shared`
     /// (which every lightweight interactive call in the app uses: Profile,
@@ -246,7 +271,23 @@ final class StreamingService: ObservableObject {
             // when still pointed at the official bridge. A self-hosted
             // operator who hasn't set their own key should get "" (open, or
             // rejected by their own server), never our official secret.
-            return bridgeURL == Self.defaultBridgeURL ? Self.officialBridgeAPIKey : ""
+            //
+            // Compared NORMALISED, not as raw strings. This was an exact `==`,
+            // which meant a stored bridge URL differing from the default in any
+            // cosmetically irrelevant way — a trailing slash, a capitalised
+            // host, http:// typed instead of https:// — silently returned "" and
+            // the app then sent no Authorization header at all. Every
+            // check_auth-gated route (search, stream, download, resolve) answers
+            // 401 to that, so playback simply failed with nothing on screen
+            // explaining why. Observed live as stream_proxy_auth_rejected events
+            // carrying had_auth_header=false while the key was present, correct,
+            // and byte-identical to the server's.
+            //
+            // `makeRequest` already trims trailing slashes off this same value
+            // when building a URL, so the app was happily TALKING to a host it
+            // simultaneously judged to be someone else's — that inconsistency is
+            // the actual defect, not the stored value.
+            return Self.isOfficialBridge(bridgeURL) ? Self.officialBridgeAPIKey : ""
         }
         set {
             if newValue.isEmpty {

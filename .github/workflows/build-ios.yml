@@ -41,6 +41,19 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      # Mirrors release-ios.yml. Without it Config/Secrets.xcconfig does not
+      # exist in a CI checkout (it is gitignored), Base.xcconfig's
+      # `#include? "Secrets.xcconfig"` silently no-ops, and this job compiles a
+      # binary whose bridge API key is empty — a different configuration from
+      # the one that actually ships. A check that builds something other than
+      # the artifact cannot vouch for it.
+      - name: Write bridge API key config
+        env:
+          LUMISOUND_BRIDGE_API_KEY: ${{ secrets.LUMISOUND_BRIDGE_API_KEY }}
+        run: |
+          mkdir -p ios/Config
+          echo "LUMISOUND_BRIDGE_API_KEY = ${LUMISOUND_BRIDGE_API_KEY}" > ios/Config/Secrets.xcconfig
+
       - name: Generate Xcode project
         working-directory: ios
         run: xcodegen generate
