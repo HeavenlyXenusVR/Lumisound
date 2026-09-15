@@ -7596,43 +7596,90 @@ async def _media_backfill_tick() -> None:
     }
     art_done = sum(1 for v in art_outcome.values() if v is True)
 
+    # The three CPU-bound phases each get an equal slice of what remains, and
+    # which one goes FIRST rotates per tick.
+    #
+    # They previously shared one deadline in a fixed order, so artwork and tempo
+    # routinely consumed the whole 60 seconds and transition profiles and
+    # spectra never started — literally zero of each, tick after tick, while the
+    # first two phases worked through a growing library. A phase that can be
+    # starved indefinitely by the one in front of it is not a lower priority, it
+    # is disabled.
+    #
+    # The first attempt at this rotated the DEADLINES but left the loops running
+    # in their original order, which changed nothing: whichever phase happened to
+    # be given the latest deadline still ran first and used all of it. The phases
+    # are therefore dispatched through this table, so the rotation moves the work
+    # rather than just the clock.
     bpm_outcome: dict[str, bool] = {}
-    for metadata_id, user_id, rel_path, path in bpm_targets:
-        # Checked between tracks, never mid-track: abandoning a decode halfway
-        # wastes the work already done and leaves the row exactly as it was.
-        if time.monotonic() >= deadline:
-            break
-        value = await locked_media.estimate_bpm_async(path)
-        bpm_outcome[metadata_id] = value is not None
-        if value:
-            await _set_media_field(metadata_id, user_id, "bpm", value)
-            bpm_done += 1
-
     profile_outcome: dict[str, bool] = {}
-    for metadata_id, user_id, rel_path, path in profile_targets:
-        if time.monotonic() >= deadline:
-            break
-        profile = await locked_media.transition_profile_async(path)
-        profile_outcome[metadata_id] = profile is not None
-        # Stamped even when analysis declined, so a track that cannot be
-        # profiled is not re-decoded on every pass forever. A short or
-        # undecodable track is a permanent answer, not a transient failure.
-        await _store_transition_profile(metadata_id, user_id, profile)
-        if profile:
-            profile_done += 1
-
     spectral_outcome: dict[str, bool] = {}
-    for metadata_id, user_id, rel_path, path in spectral_targets:
-        if time.monotonic() >= deadline:
-            break
-        bands = await locked_media.spectral_profile_async(path)
-        spectral_outcome[metadata_id] = bands is not None
-        # Stamped either way, for the same reason the transition profile is: a
-        # track that cannot be analysed is a permanent answer, not a transient
-        # failure, and must not come back as a candidate forever.
-        await _store_spectral_profile(metadata_id, user_id, bands)
-        if bands:
-            spectral_done += 1
+
+    async def _run_bpm(stop_at: float) -> int:
+        done = 0
+        for metadata_id, user_id, rel_path, path in bpm_targets:
+            # Checked between tracks, never mid-track: abandoning a decode
+            # halfway wastes the work already done and leaves the row unchanged.
+            if time.monotonic() >= stop_at:
+                break
+            value = await locked_media.estimate_bpm_async(path)
+            bpm_outcome[metadata_id] = value is not None
+            if value:
+                await _set_media_field(metadata_id, user_id, "bpm", value)
+                done += 1
+        return done
+
+    async def _run_profile(stop_at: float) -> int:
+        done = 0
+        for metadata_id, user_id, rel_path, path in profile_targets:
+            if time.monotonic() >= stop_at:
+                break
+            profile = await locked_media.transition_profile_async(path)
+            profile_outcome[metadata_id] = profile is not None
+            # Stamped even when analysis declined, so a track that cannot be
+            # profiled is not re-decoded on every pass forever.
+            await _store_transition_profile(metadata_id, user_id, profile)
+            if profile:
+                done += 1
+        return done
+
+    async def _run_spectral(stop_at: float) -> int:
+        done = 0
+        for metadata_id, user_id, rel_path, path in spectral_targets:
+            if time.monotonic() >= stop_at:
+                break
+            bands = await locked_media.spectral_profile_async(path)
+            spectral_outcome[metadata_id] = bands is not None
+            await _store_spectral_profile(metadata_id, user_id, bands)
+            if bands:
+                done += 1
+        return done
+
+    phases = [("bpm", bpm_targets, _run_bpm),
+              ("profile", profile_targets, _run_profile),
+              ("spectral", spectral_targets, _run_spectral)]
+    rotation = int(time.time() // _MEDIA_BACKFILL_INTERVAL_SECONDS) % len(phases)
+    phases = phases[rotation:] + phases[:rotation]
+    pending = [ph for ph in phases if ph[1]]
+
+    if pending:
+        remaining = max(0.0, deadline - time.monotonic())
+        slice_seconds = remaining / float(len(pending))
+        logger.info("media backfill: phase targets art=%d bpm=%d profile=%d spectral=%d, order=%s, slice=%.0fs",
+                    len(art_targets), len(bpm_targets), len(profile_targets), len(spectral_targets),
+                    ",".join(name for name, _, _ in pending), slice_seconds)
+        for name, _, run in pending:
+            # Each phase may overrun into the next one's slice only by the single
+            # track it is already working on; the ceiling is the tick's own
+            # deadline either way.
+            stop_at = min(deadline, time.monotonic() + slice_seconds)
+            count = await run(stop_at)
+            if name == "bpm":
+                bpm_done = count
+            elif name == "profile":
+                profile_done = count
+            else:
+                spectral_done = count
 
     # Blacklist only tracks that were actually TRIED for everything they needed
     # and gained nothing. A track skipped because the tick ran out of budget must
