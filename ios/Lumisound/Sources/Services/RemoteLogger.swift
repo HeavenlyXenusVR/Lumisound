@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 // MARK: - RemoteLogger
 
@@ -101,9 +102,22 @@ enum RemoteLogger {
             "level": level,
             "message": message,
         ]
-        if let detail {
-            payload["detail"] = detail
-        }
+        // Every event carries the build and device that produced it.
+        //
+        // iOS events had neither, so the log could not answer the one question
+        // that matters after shipping a fix: is this report coming from a build
+        // that contains it? That made "is it fixed?" unanswerable and left
+        // stale reports from an old build looking identical to new failures.
+        // tvOS has stamped these since its telemetry was written; this brings
+        // iOS to the same footing.
+        var enriched = detail ?? [:]
+        enriched["platform"] = "ios"
+        enriched["appVersion"] = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        enriched["build"] = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        enriched["osVersion"] = UIDevice.current.systemVersion
+        payload["detail"] = enriched
 
         guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return }
 

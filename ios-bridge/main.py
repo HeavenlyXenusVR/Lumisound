@@ -3333,6 +3333,20 @@ async def stream_proxy(
                 # Distinguishes "sent nothing" from "sent the wrong shape" —
                 # the two have completely different fixes.
                 "had_auth_header": bool(request.headers.get("Authorization")),
+                # Recording WHICH credentials arrived, not just whether the
+                # Authorization one did. Without this the log said only "no
+                # Authorization header" — true, but it could not distinguish a
+                # client that sent nothing from one sending an account token
+                # the endpoint had not yet been taught to accept, which is
+                # exactly the question that mattered. The user agent comes along
+                # because AVFoundation identifies itself distinctly, separating
+                # the player's own fetches from the app's.
+                "had_account_token": bool(request.headers.get("X-Account-Token")),
+                "account_token_valid": _valid_account_token(
+                    request.headers.get("X-Account-Token", "")
+                ),
+                "user_agent": (request.headers.get("User-Agent") or "")[:80],
+                "has_range": bool(request.headers.get("Range")),
                 # The scheme word ONLY, and only when it's a recognised one.
                 # The whole point of this field is spotting a client that sent
                 # its credential where the scheme belongs — which means the
