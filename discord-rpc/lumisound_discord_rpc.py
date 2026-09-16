@@ -421,7 +421,39 @@ def main() -> None:
 
     if not client_id:
         log("No discord_client_id in local config — fetching registration from bridge")
-        rpc_config = bridge.get_rpc_config()
+        # Waits for a usable token rather than exiting.
+        #
+        # An RPC token's session is revoked whenever the account password
+        # changes (the bridge deletes every OTHER session on a password change,
+        # which is correct). The daemon then 401s, and because this used to
+        # raise straight out of main(), systemd restarted it into the same
+        # failure every few seconds — a crash loop that produced no working
+        # presence and no clear statement of why. It stayed that way silently
+        # for days.
+        #
+        # The IPC-socket path below already waits patiently for Discord to
+        # start; a missing credential deserves the same treatment, so that
+        # dropping a fresh token into config.json is picked up without anyone
+        # having to notice the service is dead and restart it by hand.
+        rpc_config = None
+        while rpc_config is None:
+            try:
+                rpc_config = bridge.get_rpc_config()
+                break
+            except DiscordIPCError as exc:
+                log(f"Cannot authenticate with the bridge: {exc}")
+                log("Generate a new token in Lumisound -> Account -> Discord Rich Presence "
+                    "and set it as access_token in config.json. Retrying in 60s.")
+                time.sleep(60)
+            except urllib.error.HTTPError as exc:
+                if exc.code in (401, 403):
+                    log(f"Bridge rejected the RPC token (HTTP {exc.code}) — it has most likely "
+                        "been revoked by a password change.")
+                    log("Generate a new token in Lumisound -> Account -> Discord Rich Presence "
+                        "and set it as access_token in config.json. Retrying in 60s.")
+                    time.sleep(60)
+                else:
+                    raise
         if not rpc_config:
             log("No Discord Rich Presence config registered for this account.")
             log("Open Lumisound -> Account -> Discord Rich Presence to register a Discord Application Client ID, or set discord_client_id in config.json.")

@@ -107,6 +107,10 @@ final class TVAria: ObservableObject {
                 authToken: token
             )
         } catch {
+            // A cancelled fetch is the screen going away mid-request, not a
+            // failure — logging it as one buries genuine errors, exactly as it
+            // did on the generic network path before 1.17.1.
+            guard (error as NSError).code != NSURLErrorCancelled else { return }
             TVRemoteLogger.logError(category: "aria", event: "daily_pick_failed",
                                     message: error.localizedDescription, authToken: token)
         }
@@ -160,8 +164,26 @@ final class TVAria: ObservableObject {
             struct Response: Decodable { let blurb: String? }
             let started = Date()
             do {
-                let (data, _) = try await URLSession.shared.data(for: req)
+                let (data, response) = try await URLSession.shared.data(for: req)
                 guard !Task.isCancelled, self.lastBlurbTrackID == next.id else { return }
+
+                // The status is checked BEFORE decoding. It was ignored, so an
+                // overloaded or rate-limited reply — which carries {"detail": …}
+                // rather than {"blurb": …} — was fed to the success decoder and
+                // surfaced as "the data couldn't be read because it isn't in the
+                // correct format". That reads like a parsing bug in our own
+                // code, when it is simply Aria being busy, and it buried the
+                // real reason under a misleading message.
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                guard (200..<300).contains(status) else {
+                    TVRemoteLogger.log(
+                        category: "aria", event: "dj_blurb_unavailable",
+                        detail: ["status": status, "title": next.title],
+                        authToken: token
+                    )
+                    return
+                }
+
                 let decoded = try JSONDecoder().decode(Response.self, from: data)
                 let text = decoded.blurb?.trimmingCharacters(in: .whitespacesAndNewlines)
                 self.currentBlurb = (text?.isEmpty == false) ? text : nil
@@ -173,6 +195,7 @@ final class TVAria: ObservableObject {
                     authToken: token
                 )
             } catch {
+                guard (error as NSError).code != NSURLErrorCancelled else { return }
                 // Silent by design — see the doc comment. Logged, not surfaced.
                 TVRemoteLogger.logError(category: "aria", event: "dj_blurb_failed",
                                         message: error.localizedDescription, authToken: token)
