@@ -150,6 +150,12 @@ struct LumisoundApp: App {
                     // between BGAppRefreshTask runs. Cheap when there's
                     // nothing pending (a single GET request).
                     Task { await streaming.reconcilePendingDownloads() }
+                    // An announcement's window can open while the app is simply
+                    // sitting suspended, which for a music app can be days — so
+                    // relying on a cold launch alone would let a three-day
+                    // announcement expire unseen by exactly the people who use
+                    // the app most. Costs one GET that normally returns [].
+                    Task { await account.showPendingAnnouncements() }
                 }
             }
             .task {
@@ -291,6 +297,14 @@ struct LumisoundApp: App {
                     if account.isLoggedIn {
                         let unread = await account.fetchNotifications(unreadOnly: true)
                         NotificationService.shared.syncServerNotifications(unread)
+                        // Broadcast in-app toasts (see
+                        // AccountService+Announcements). Placed after the
+                        // notification sync rather than earlier in this task so
+                        // an announcement toast can't appear over a still-loading
+                        // first screen, and unstructured so a quick
+                        // open-and-close cancelling this `.task` doesn't consume
+                        // the announcement without showing it.
+                        Task { await account.showPendingAnnouncements() }
                     }
 
                     // Start periodic bridge health checks.

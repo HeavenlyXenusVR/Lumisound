@@ -1537,3 +1537,50 @@ CREATE TABLE IF NOT EXISTS ios_user_profile_bio (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES ios_users(id) ON DELETE CASCADE
 );
+
+-- Feature: Aria announcements — a short in-app toast, spoken in Aria's voice,
+-- broadcast to a time-boxed audience.
+--
+-- Deliberately NOT ios_notifications rows. That table is per-user and
+-- pre-inserted, which cannot express "everyone, for the next three days":
+-- an account that registers on day two would never get a row, and an account
+-- that never opens the app would keep one forever. A broadcast is a window in
+-- time that clients ask about, so the window is what's stored, and membership
+-- is evaluated at read time. It's also a different delivery surface —
+-- ios_notifications feeds the inbox and an APNs push, whereas this is an
+-- in-app toast that needs no notification permission and no inbox entry.
+--
+-- `exclude_user_ids` is a comma-separated id list rather than a join table
+-- because the only real use for it is holding back the operator from their own
+-- announcement, which is one id.
+CREATE TABLE IF NOT EXISTS ios_announcements (
+    id VARCHAR(36) PRIMARY KEY,
+    message VARCHAR(280) NOT NULL,
+    -- Rendered as Aria speaking (her mark + italic voice) rather than as app
+    -- chrome. False is an ordinary system toast.
+    from_aria BOOLEAN NOT NULL DEFAULT TRUE,
+    -- Maps to the client's ToastCategory: success/error/warning/info/download.
+    category VARCHAR(20) NOT NULL DEFAULT 'info',
+    starts_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ends_at TIMESTAMP NOT NULL,
+    exclude_user_ids TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS ios_announcements_idx_window ON ios_announcements (ends_at, starts_at);
+
+-- One row per (user, announcement) once that user has actually been shown it.
+-- This is what stops a three-day announcement becoming a toast on every single
+-- launch for three days — the window governs who is still eligible to see it,
+-- this governs who already has.
+--
+-- No FK to ios_announcements: a row here outliving a deleted announcement is
+-- harmless (it can only suppress something that no longer exists), whereas ON
+-- DELETE CASCADE would silently re-show an announcement to everyone if one were
+-- ever deleted and re-created with the same id.
+CREATE TABLE IF NOT EXISTS ios_announcement_views (
+    announcement_id VARCHAR(36) NOT NULL,
+    user_id VARCHAR(36) NOT NULL,
+    seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (announcement_id, user_id),
+    FOREIGN KEY (user_id) REFERENCES ios_users(id) ON DELETE CASCADE
+);

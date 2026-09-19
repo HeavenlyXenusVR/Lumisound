@@ -467,10 +467,32 @@ extension StreamingService {
 
         struct StatusPayload: Decodable { let status: String; let code: Int?; let detail: String? }
 
-        // Poll every 3s for up to 5 minutes — matches the previous client-side
-        // timeout, but each poll is a trivial dict lookup (<1s), so this never
-        // approaches the tunnel's ~100s edge timeout regardless of how long
-        // yt-dlp itself takes on the bridge.
+        // Poll for up to 5 minutes — matches the previous client-side timeout,
+        // and each poll is a trivial dict lookup (<1s), so this never approaches
+        // the tunnel's ~100s edge timeout regardless of how long yt-dlp itself
+        // takes on the bridge.
+        //
+        // The interval RAMPS rather than sitting flat at 3s. The first poll is
+        // immediate either way, so what a flat interval cost was the tail: a job
+        // that finished just after a poll went unnoticed for the remainder of the
+        // interval, averaging 1.5s of pure dead time per download and up to 3s.
+        // With the bridge's own per-download time now around 9s rather than 17s
+        // (the anti-bot sleep moved out of the download — see _LaunchPacer
+        // there), that stopped being noise: it is a sixth of the remaining wall
+        // time, charged once per track across a several-hundred-track playlist.
+        //
+        // Ramping keeps that responsiveness for the fast case without making a
+        // genuinely slow job expensive to wait on: a download that really takes
+        // minutes settles at the same 3s cadence it always used, so the poll
+        // count for slow jobs is unchanged.
+        let pollIntervals: [TimeInterval] = [0.4, 0.6, 1.0, 1.5, 2.0, 2.5]
+        let maxPollInterval: TimeInterval = 3.0
+        var pollAttempt = 0
+        func nextPollDelay() -> TimeInterval {
+            defer { pollAttempt += 1 }
+            return pollAttempt < pollIntervals.count ? pollIntervals[pollAttempt] : maxPollInterval
+        }
+
         let deadline = Date().addingTimeInterval(300)
         var lastLoggedStatus: String?
         pollLoop: while true {
@@ -487,7 +509,10 @@ extension StreamingService {
                 // CPU-busy under load) shouldn't abort the whole job — wait and
                 // poll again rather than letting a raw URLError escape uncaught.
                 appWarn("downloadToLibrary: network error polling status for \"\(track.title)\": \(error.localizedDescription) — retrying poll", category: "network")
-                try await Task.sleep(nanoseconds: 3_000_000_000)
+                // A failed poll deliberately waits the full cap rather than a
+                // ramp step: the bridge being briefly unreachable is the one case
+                // where polling harder is actively unhelpful.
+                try await Task.sleep(nanoseconds: UInt64(maxPollInterval * 1_000_000_000))
                 continue pollLoop
             }
             guard let http = resp as? HTTPURLResponse, http.statusCode == 200,
@@ -500,7 +525,7 @@ extension StreamingService {
                     appLog("downloadToLibrary: yt-dlp job=\(start.job_id) status=pending", category: "network")
                     lastLoggedStatus = "pending"
                 }
-                try await Task.sleep(nanoseconds: 3_000_000_000)
+                try await Task.sleep(nanoseconds: UInt64(nextPollDelay() * 1_000_000_000))
                 continue pollLoop
             case "done":
                 appLog("downloadToLibrary: yt-dlp job=\(start.job_id) status=done after \(String(format: "%.2f", 300 - deadline.timeIntervalSinceNow))s", category: "network")

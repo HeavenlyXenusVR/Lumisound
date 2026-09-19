@@ -155,7 +155,20 @@ final class TrackedPlaylistStore: ObservableObject {
     /// host runs many other memory-capped containers on one small box, and
     /// 4-way concurrency was enough to push it into swapping/timing out
     /// under a burst of several playlists downloading at once.
-    private static let autoDownloadConcurrency = 2
+    ///
+    /// Back to 4 (2026-09), because the reason it was cut no longer holds. That
+    /// cut predates the bridge's `_AdaptiveLimiter`, which samples MemAvailable
+    /// and holds concurrency down to `_YTDLP_SAFE` (2) on its own whenever the
+    /// host is actually under pressure — so the swapping this number was
+    /// protecting against is now handled by the side that can actually measure
+    /// it, instead of by a client guessing conservatively on the host's behalf.
+    /// `_YTDLP_MAX` is 4 and this was the binding constraint: the client was
+    /// leaving half the bridge's capacity idle even when the host was perfectly
+    /// healthy, which is the failure mode this number was originally raised to
+    /// fix. Anything beyond the bridge's own cap simply queues there harmlessly,
+    /// so being wrong in this direction costs a little queueing, not a swap
+    /// storm.
+    private static let autoDownloadConcurrency = 4
 
     /// Guards against concurrent `runAutoDownloads` calls — it's triggered
     /// from two independent, uncoordinated sites (app launch/foreground in

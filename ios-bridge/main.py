@@ -500,6 +500,110 @@ _TRANSCODE_SAFE = int(os.getenv("YTDLP_SAFE_TRANSCODE_CONCURRENT", "2"))
 _TRANSCODE_LIMITER = _AdaptiveLimiter(_TRANSCODE_MAX, _TRANSCODE_SAFE)
 _TRANSCODE_SEMAPHORE = asyncio.Semaphore(_TRANSCODE_MAX)
 
+
+class _LaunchPacer:
+    """Spaces out yt-dlp launches, OUTSIDE the concurrency slot.
+
+    This replaces `--sleep-interval`/`--max-sleep-interval` on downloads, which
+    paced YouTube requests by having each yt-dlp process sit idle for 5-15s
+    before fetching anything. Measured on this host over three real videos, that
+    sleep was 8.6s of the 17.3s average download — half of every download was a
+    process doing nothing.
+
+    Sleeping inside the process is the expensive way to buy pacing, because the
+    process holds a `_YTDLP_LIMITER` slot while it sleeps, and that limiter
+    exists to bound concurrent PROCESSES (memory on a shared host). So the
+    scarce resource was being spent on idling: of 4 slots, roughly 2 were asleep
+    at any moment. Pacing the LAUNCHES instead buys the same request spacing
+    while slots only ever cover real work — at an identical request rate it
+    halves the number of resident yt-dlp processes, which is what makes it safe
+    to space launches more tightly than before rather than a straight trade of
+    safety for speed.
+
+    It is also strictly better pacing. A per-process sleep sets the request rate
+    only implicitly, as slots/(work+sleep), so it drifts with how fast downloads
+    happen to be and cannot be reasoned about. This sets the interval directly.
+
+    And unlike a fixed sleep, it reacts. A fixed 5-15s is an insurance premium
+    paid on every download forever, whether or not YouTube is actually pushing
+    back; `penalise()` multiplies the interval when a throttle or bot wall is
+    actually observed, and it decays back once things are quiet.
+    """
+
+    # Chosen against the old scheme's effective rate rather than out of the air:
+    # 4 slots at 17.3s per download paced launches at ~4.3s apart. 1.5s is
+    # faster than that, but because sleeps no longer occupy slots the process
+    # count at 1.5s (~4) is the same as the old scheme's, so the host sees no
+    # more concurrent yt-dlp than it already did.
+    _BASE = float(os.getenv("YTDLP_LAUNCH_SPACING_SECONDS", "1.5"))
+    _MAX = float(os.getenv("YTDLP_LAUNCH_SPACING_MAX_SECONDS", "30"))
+    _PENALTY_FACTOR = 4.0
+    # How long without a throttle signal before the interval starts easing back.
+    _DECAY_AFTER = 300.0
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._next_at = 0.0
+        self._interval = self._BASE
+        self._penalised_at: float | None = None
+
+    async def wait(self, floor: float = 0.0) -> None:
+        """Blocks until this launch is allowed. `floor` lets a caller ask for
+        more conservative spacing than the adaptive interval (see
+        `throttle_seconds`); it never asks for less.
+        """
+        async with self._lock:
+            now = time.monotonic()
+            if (self._penalised_at is not None
+                    and now - self._penalised_at > self._DECAY_AFTER):
+                self._interval = max(self._BASE, self._interval / 2)
+                self._penalised_at = None if self._interval <= self._BASE else now
+            interval = max(self._interval, floor)
+            # A launch arriving after a quiet spell finds `_next_at` already in
+            # the past and goes immediately, rather than being charged for idle
+            # time. Deliberately NOT clamped to a single interval: under a burst
+            # each waiter must queue behind the one before it, and capping the
+            # wait would let the third and fourth arrivals launch simultaneously.
+            delay = max(0.0, self._next_at - now)
+            self._next_at = now + delay + interval
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+    def penalise(self, reason: str) -> None:
+        self._interval = min(self._MAX, max(self._BASE, self._interval) * self._PENALTY_FACTOR)
+        self._penalised_at = time.monotonic()
+        logger.warning("yt-dlp launch spacing raised to %.1fs after %s",
+                       self._interval, reason)
+
+    @property
+    def interval(self) -> float:
+        return self._interval
+
+
+_YTDLP_LAUNCH_PACER = _LaunchPacer()
+
+# stderr fragments that mean YouTube is pushing back on request VOLUME, as
+# opposed to the cookie-rotation case _flag_cookies_stale_if_needed handles (a
+# stale session, which no amount of slowing down fixes). Only these should widen
+# the launch spacing — treating a genuinely unavailable video as a rate-limit
+# signal would throttle every other user's downloads over one bad link.
+_RATE_LIMIT_MARKERS = (
+    "sign in to confirm you're not a bot",
+    "sign in to confirm that you're not a bot",
+    "http error 429",
+    "too many requests",
+    "this content isn't available, try again later",
+)
+
+
+def _penalise_pacer_if_rate_limited(stderr: bytes) -> bool:
+    text = stderr.decode(errors="replace").lower()
+    for marker in _RATE_LIMIT_MARKERS:
+        if marker in text:
+            _YTDLP_LAUNCH_PACER.penalise(f"yt-dlp reported: {marker!r}")
+            return True
+    return False
+
 # aria2c is enforced as yt-dlp's external downloader for every /api/download
 # (and the per-track segments yt-dlp fetches): -x/-s/-j open many parallel
 # connections, --min-split-size keeps each worthwhile, and --file-allocation
@@ -4248,14 +4352,19 @@ async def _do_download_job(
             ["--extractor-args", f"youtube:player_client={_YTDLP_FALLBACK_CLIENT}"]
             if attempt == max_attempts else []
         )
-        # Client-configurable throttle (Settings → yt-dlp). throttle_seconds=0
-        # disables the inter-request sleep for maximum speed (higher ban risk);
-        # the default 5 keeps the previous 5–15s anti-bot pacing. concurrent_frags
-        # > 1 fetches DASH fragments in parallel (-N) for faster large downloads.
-        sleep_args: list[str] = []
-        if throttle_seconds > 0:
-            sleep_args = ["--sleep-interval", str(throttle_seconds),
-                          "--max-sleep-interval", str(throttle_seconds * 3)]
+        # Client-configurable throttle (Settings → yt-dlp), now spent BEFORE the
+        # process starts rather than inside it — see `_LaunchPacer` for why an
+        # in-process `--sleep-interval` was the expensive way to buy pacing (it
+        # idled while holding a memory-bounding concurrency slot, and measured at
+        # half of every download's wall time on this host).
+        #
+        # throttle_seconds keeps its meaning of "how conservative to be", mapped
+        # to a spacing FLOOR: divided by the slot count because the old flag's
+        # real effect was a global launch rate of slots/(work+sleep), so
+        # `throttle_seconds / _YTDLP_MAX` is the spacing that reproduces it. 0
+        # still means "off" — the user explicitly asked for no throttling, and
+        # the adaptive interval reasserts itself the moment YouTube pushes back.
+        pacing_floor = 0.0 if throttle_seconds <= 0 else throttle_seconds / _YTDLP_MAX
         concurrency_args: list[str] = []
         if concurrent_fragments > 1:
             concurrency_args = ["-N", str(concurrent_fragments)]
@@ -4275,7 +4384,6 @@ async def _do_download_job(
             "--no-playlist",
             "--embed-metadata",
             "--embed-thumbnail",
-            *sleep_args,
             *concurrency_args,
             *(_ARIA2_DOWNLOADER_ARGS if aria2_this_attempt else []),
             "-o", output_template,
@@ -4291,6 +4399,15 @@ async def _do_download_job(
         # stream copy, so it gets its own concurrency cap and a longer timeout.
         is_transcode = "-x" in extra_args or "--extract-audio" in extra_args
         ytdlp_timeout = 240.0 if is_transcode else 140.0
+
+        # Anti-bot pacing, deliberately awaited BEFORE the slot is acquired: a
+        # launch waiting its turn must not be holding capacity that a launch
+        # ready to do real work could be using. This is the whole point of
+        # replacing --sleep-interval; see _LaunchPacer.
+        pacer_start = time.monotonic()
+        await _YTDLP_LAUNCH_PACER.wait(floor=pacing_floor)
+        pacer_waited = time.monotonic() - pacer_start
+
         proc_start = time.monotonic()
 
         async with AsyncExitStack() as stack:
@@ -4325,6 +4442,11 @@ async def _do_download_job(
         if proc.returncode != 0:
             last_stderr = stderr_bytes
             _flag_cookies_stale_if_needed(stderr_bytes)
+            # Widens launch spacing for everyone if this looks like YouTube
+            # pushing back on request volume — the feedback that makes the
+            # adaptive interval adaptive rather than just lower than the old
+            # fixed sleep.
+            _penalise_pacer_if_rate_limited(stderr_bytes)
             err_text = stderr_bytes.decode(errors="replace")[-500:]
             logger.error(
                 "yt-dlp download failed (attempt %d/%d, downloader=%s, elapsed=%.1fs, exit=%d): %s",
@@ -4349,9 +4471,16 @@ async def _do_download_job(
                 detail = _ytdlp_auth_failure_reason(last_stderr) or _ytdlp_generic_failure_summary(last_stderr)
                 raise HTTPException(status_code=404, detail=detail)
             continue
+        # `paced` is logged separately from `elapsed` on purpose: the two used to
+        # be indistinguishable, because the anti-bot sleep happened inside the
+        # process and so counted as download time. Keeping them apart is what
+        # makes it visible whether a slow batch is YouTube being slow or the
+        # pacer holding launches back.
         logger.info(
-            "yt-dlp download succeeded (attempt %d/%d, downloader=%s, elapsed=%.1fs): %s",
-            attempt, max_attempts, downloader_name, proc_elapsed, safe_title,
+            "yt-dlp download succeeded (attempt %d/%d, downloader=%s, elapsed=%.1fs, "
+            "paced=%.1fs, spacing=%.1fs): %s",
+            attempt, max_attempts, downloader_name, proc_elapsed, pacer_waited,
+            _YTDLP_LAUNCH_PACER.interval, safe_title,
         )
 
         # yt-dlp may choose a slightly different extension than requested — scan the dir.
@@ -16688,6 +16817,176 @@ async def mark_all_notifications_read(payload: dict = Depends(get_current_user))
                 "UPDATE ios_notifications SET read_at = NOW() WHERE user_id = %s AND read_at IS NULL",
                 (user_id,),
             )
+
+
+# ---------------------------------------------------------------------------
+# Aria Announcements (Feature: aria-announcements)
+# ---------------------------------------------------------------------------
+#
+# A short in-app toast, spoken in Aria's voice, broadcast to everyone (minus an
+# explicit exclusion list) for a bounded window of time. See the
+# ios_announcements comment in schema.sql for why this is a window clients ask
+# about rather than pre-inserted ios_notifications rows.
+#
+# Eligibility is evaluated entirely here rather than on the client: an app build
+# from before this feature existed simply never asks, and a client cannot show
+# itself an announcement it was excluded from.
+
+
+class AnnouncementCreate(BaseModel):
+    message: str
+    # Days rather than an absolute timestamp: every real use of this is "for the
+    # next N days", and an operator typing a date by hand is how an announcement
+    # ends up live for a year.
+    days: float = 3.0
+    from_aria: bool = True
+    category: str = "info"
+    # Defaults to holding back the operator, which is the normal case — an
+    # announcement about a fix is for the people who were affected by it, not
+    # for the person who shipped it. Pass [] to include everyone.
+    exclude_user_ids: Optional[list[str]] = None
+
+
+_ANNOUNCEMENT_CATEGORIES = {"success", "error", "warning", "info", "download"}
+
+
+@app.get("/user/announcements")
+async def get_announcements(payload: dict = Depends(get_current_user)):
+    """Announcements this user is currently eligible for and has not yet been
+    shown. Normally empty, so this is cheap to call on every launch/foreground.
+
+    Returning nothing is the overwhelmingly common case, and the client treats
+    any failure here as "nothing to show" — an announcement is never important
+    enough to interrupt a launch over.
+    """
+    user_id = payload["sub"]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT a.id, a.message, a.from_aria, a.category, a.ends_at "
+                "FROM ios_announcements a "
+                "LEFT JOIN ios_announcement_views v "
+                "  ON v.announcement_id = a.id AND v.user_id = %s "
+                "WHERE v.user_id IS NULL "
+                "  AND NOW() >= a.starts_at AND NOW() < a.ends_at "
+                # Exclusion is a substring test against a comma-delimited list
+                # with sentinel commas on both ends, so 'abc' cannot match
+                # inside 'abcdef' — ids are fixed-length UUIDs in practice, but
+                # a prefix match here would silently suppress the wrong user.
+                "  AND POSITION(%s IN ',' || a.exclude_user_ids || ',') = 0 "
+                "ORDER BY a.created_at",
+                (user_id, f",{user_id},"),
+            )
+            rows = await cur.fetchall()
+
+    return [
+        {
+            "id": r[0],
+            "message": r[1],
+            "from_aria": bool(r[2]),
+            "category": r[3],
+            "ends_at": r[4].isoformat() if r[4] else None,
+        }
+        for r in rows
+    ]
+
+
+@app.post("/user/announcements/{announcement_id}/seen", status_code=204)
+async def mark_announcement_seen(announcement_id: str, payload: dict = Depends(get_current_user)):
+    """Records that this user has been shown the announcement, so it is not
+    shown again for the rest of its window.
+
+    The client calls this when it actually displays the toast, not when it
+    fetches one — a fetch that is followed by the app being killed before the
+    toast appears should leave the announcement pending, not swallow it.
+    """
+    user_id = payload["sub"]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO ios_announcement_views (announcement_id, user_id) "
+                "VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                (announcement_id, user_id),
+            )
+
+
+@app.get("/admin/api/announcements", dependencies=[Depends(check_admin_or_operator)])
+async def admin_list_announcements():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT a.id, a.message, a.from_aria, a.category, a.starts_at, a.ends_at, "
+                "       a.exclude_user_ids, NOW() < a.ends_at AND NOW() >= a.starts_at, "
+                "       (SELECT COUNT(*) FROM ios_announcement_views v WHERE v.announcement_id = a.id) "
+                "FROM ios_announcements a ORDER BY a.created_at DESC LIMIT 100"
+            )
+            rows = await cur.fetchall()
+    return [
+        {
+            "id": r[0], "message": r[1], "from_aria": bool(r[2]), "category": r[3],
+            "starts_at": r[4].isoformat() if r[4] else None,
+            "ends_at": r[5].isoformat() if r[5] else None,
+            "excluded": [s for s in (r[6] or "").split(",") if s],
+            "active": bool(r[7]), "seen_by": r[8],
+        }
+        for r in rows
+    ]
+
+
+@app.post("/admin/api/announcements", status_code=201,
+          dependencies=[Depends(check_admin_or_operator)])
+async def admin_create_announcement(body: AnnouncementCreate):
+    message = body.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message must not be empty")
+    if len(message) > 280:
+        raise HTTPException(status_code=400, detail="message must be 280 characters or fewer")
+    if not 0 < body.days <= 90:
+        raise HTTPException(status_code=400, detail="days must be > 0 and <= 90")
+    category = body.category.lower()
+    if category not in _ANNOUNCEMENT_CATEGORIES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"category must be one of: {', '.join(sorted(_ANNOUNCEMENT_CATEGORIES))}",
+        )
+    excluded = body.exclude_user_ids
+    if excluded is None:
+        excluded = [OPERATOR_USER_ID]
+    # A stray comma in an id would split one exclusion into two that match
+    # nobody, quietly announcing to someone who was meant to be held back.
+    cleaned = [s.strip() for s in excluded if s and "," not in s]
+
+    announcement_id = uuid.uuid4().hex
+    ends_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=body.days)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO ios_announcements "
+                "(id, message, from_aria, category, ends_at, exclude_user_ids) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (announcement_id, message, body.from_aria, category,
+                 ends_at, ",".join(cleaned)),
+            )
+    logger.info("announcement created id=%s days=%.1f excluded=%d message=%r",
+                announcement_id, body.days, len(cleaned), message[:80])
+    return {"id": announcement_id, "ends_at": ends_at.isoformat(), "excluded": cleaned}
+
+
+@app.delete("/admin/api/announcements/{announcement_id}", status_code=204,
+            dependencies=[Depends(check_admin_or_operator)])
+async def admin_delete_announcement(announcement_id: str):
+    """Ends an announcement early. Its view rows are deliberately left behind —
+    see the ios_announcement_views comment in schema.sql."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("DELETE FROM ios_announcements WHERE id = %s", (announcement_id,))
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Announcement not found")
 
 
 # ---------------------------------------------------------------------------

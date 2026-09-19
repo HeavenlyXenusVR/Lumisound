@@ -41,6 +41,13 @@ struct ToastItem: Identifiable, Equatable {
     let message: String
     let category: ToastCategory
     let icon: String?
+    /// How long this toast stays up. The default suits the short confirmations
+    /// most toasts are ("Added to playlist"), which the user already knows the
+    /// meaning of because they just acted. A message they did NOT ask for and
+    /// have never seen before — an Aria announcement — has to be read from
+    /// scratch, and 2.5s is not enough time to do that and look up from
+    /// whatever they were doing.
+    let duration: TimeInterval
 
     static func == (lhs: ToastItem, rhs: ToastItem) -> Bool {
         lhs.id == rhs.id
@@ -64,9 +71,14 @@ final class ToastCenter: ObservableObject {
 
     private init() {}
 
+    static let defaultDuration: TimeInterval = 2.5
+
     /// Enqueues a toast. If one is already showing, this one waits its turn.
-    func show(_ message: String, category: ToastCategory = .info, icon: String? = nil) {
-        let item = ToastItem(message: message, category: category, icon: icon)
+    func show(_ message: String,
+              category: ToastCategory = .info,
+              icon: String? = nil,
+              duration: TimeInterval = ToastCenter.defaultDuration) {
+        let item = ToastItem(message: message, category: category, icon: icon, duration: duration)
         queue.append(item)
         if current == nil {
             advance()
@@ -79,9 +91,10 @@ final class ToastCenter: ObservableObject {
             current = nil
             return
         }
-        current = queue.removeFirst()
+        let item = queue.removeFirst()
+        current = item
         dismissTask = Task {
-            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(item.duration * 1_000_000_000))
             guard !Task.isCancelled else { return }
             advance()
         }
