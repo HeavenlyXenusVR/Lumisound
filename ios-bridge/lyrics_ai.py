@@ -112,10 +112,10 @@ _FALLBACK_MODEL = os.getenv("LUMISOUND_GEMINI_LYRICS_FALLBACK_MODEL", "gemini-3.
 #
 # Asking for timestamps across a whole track is what made them inaccurate. The
 # model transcribes the WORDS well; what it cannot do reliably is say where a
-# line sits in absolute time four minutes into a recording. Measured against
-# human-made LRCLIB timings on real tracks, whole-track output drifted badly and
-# sometimes ran off the end of the song entirely (a 208s track answered with its
-# last line at 313s).
+# line sits in absolute time four minutes into a recording. Checked against
+# human-made LRCLIB timings, whole-track output drifts badly and can run off the
+# end of the song entirely — answering a three-and-a-half minute track with a
+# final line past the five minute mark.
 #
 # So the long range is removed rather than argued with. The track is cut into
 # short windows, each transcribed on its own with timestamps RELATIVE to that
@@ -135,14 +135,12 @@ _CHUNK_OVERLAP_SECONDS = 6.0
 # and better (it hears the whole song at once).
 _CHUNK_MIN_TRACK_SECONDS = 90.0
 _CHUNK_CONCURRENCY = int(os.getenv("LUMISOUND_LYRICS_CHUNK_CONCURRENCY", "3"))
-# Hard ceiling on model calls for one track, because this trades quota for
-# accuracy and quota is the scarcer resource here by a wide margin: this
-# deployment is on Gemini's free tier, which allows TWENTY generate_content
-# requests per day per model — measured, not assumed, from the 429 body. One
-# window per minute would spend a quarter of a day's allowance on a single
-# five-minute track. Windows are widened to fit under this cap rather than the
-# track being left partly uncovered, so a long track gets coarser windows instead
-# of no windows.
+# Hard ceiling on model calls for one track. Daily request allowances are per
+# model and shared by every user of a deployment, so a per-track call count that
+# scales with track length is the wrong shape: one long track should not be able
+# to consume a meaningful share of what everyone else needs. Windows are WIDENED
+# to fit under this cap rather than the track being left partly uncovered, so a
+# long track gets coarser windows instead of no windows.
 _CHUNK_MAX_WINDOWS = int(os.getenv("LUMISOUND_LYRICS_MAX_WINDOWS", "4"))
 
 _CHUNK_SYSTEM_PROMPT = """\
@@ -193,12 +191,10 @@ def _run_transcription(
     caller, same pattern intelligence.py's _run_gemini_request uses."""
     # The track's real length, measured from the audio (see
     # _probe_audio_duration in main.py). Without it the model has no anchor for
-    # what "the end of the track" means and its timestamps drift off the end:
-    # measured on two real tracks from this deployment, a 208s track came back
-    # with its last line at 313s and a 243s track with its last line at 414s —
-    # 70% past the end. Every line after the real end is unreachable, and the
-    # ones before it are stretched, which is what made Aria's lyrics scroll out
-    # of step with the music.
+    # what "the end of the track" means and its timestamps drift off the end —
+    # observed running as much as 70% past a track's real duration. Every line
+    # after the real end is unreachable, and the ones before it are stretched,
+    # which is what makes lyrics scroll out of step with the music.
     user_text = {
         "title": title,
         "artist": artist,
@@ -337,9 +333,9 @@ async def _transcribe_one_chunk(
     Takes the whole model CHAIN, not a single model. Hardcoding the primary here
     made the entire windowed path collapse the moment that model was rate-limited:
     every window 429'd, the run produced nothing, and it silently fell back to
-    whole-track. Which is exactly what happened on first measurement — the primary
-    model's free-tier allowance (20 requests/day) was already spent, so the
-    windowed path had never once actually executed.
+    whole-track without saying so. Rate limits are exactly when a fallback model
+    is most needed, so the one path that ignored the chain was the one that needed
+    it most.
     """
     user_text = {
         "title": title,
@@ -510,12 +506,11 @@ async def transcribe_lyrics(
     #
     # It is the better way to get accurate timestamps (see the "Windowed
     # transcription" block above), but it costs one model call per window where a
-    # whole-track pass costs one in total — and on this deployment the binding
-    # constraint is not accuracy, it is quota: Gemini's free tier allows twenty
-    # generate_content requests per day PER MODEL, measured from the 429 body.
-    # Making windowing the default would burn a day's allowance roughly four
-    # times faster, so lyrics generation would simply stop working sooner, which
-    # is a worse outcome for the user than timing that is sometimes off.
+    # whole-track pass costs one in total. Request allowances are finite and
+    # shared across everyone using a deployment, so making windowing the default
+    # would exhaust them several times faster and lyrics generation would simply
+    # stop working sooner — a worse outcome for a listener than timing that is
+    # sometimes off.
     #
     # So the cheap pass runs first, and windowing is spent only when that pass
     # produces timings that are provably wrong (they fall outside the track).
