@@ -69,6 +69,29 @@ extension NowPlayingView {
         }
     }
 
+    /// Records what was actually loaded, so a "lyrics aren't syncing" report is
+    /// diagnosable from the field.
+    ///
+    /// This pipeline had no logging at all, which is why the two real defects
+    /// behind that report survived so long: untimed lyrics pinning the highlight
+    /// to the last line (see `LyricsView.isSynced`) and Aria returning
+    /// timestamps that ran past the end of the track (see
+    /// `lyrics_ai.timings_are_plausible` on the bridge) both present identically
+    /// on screen — lyrics that ignore the music — and neither left a trace.
+    /// `lastTime` against `duration` is the specific signal that separates them:
+    /// a last timestamp beyond the track's length is provably bad timing, and
+    /// all-zero timestamps mean there is no timing at all.
+    func logLyricsLoaded(source: String, song: Song) {
+        let timed = lyricsLines.filter { $0.time > 0 }.count
+        appLog(
+            "loadLyrics: \(lyricsLines.count) line(s) from \(source) for \"\(song.displayName)\" — "
+            + "timed: \(timed)/\(lyricsLines.count), "
+            + "lastTime: \(String(format: "%.1f", lyricsLines.last?.time ?? 0))s, "
+            + "duration: \(String(format: "%.1f", song.duration))s",
+            category: "lyrics"
+        )
+    }
+
     func loadLyrics() {
         guard let song = player.currentSong else { lyricsLines = []; return }
 
@@ -77,6 +100,7 @@ extension NowPlayingView {
         //    priority over a generic sidecar file or a remote guess.
         if let content = try? String(contentsOf: syncedLyricsURL(for: song), encoding: .utf8) {
             lyricsLines = LrcParser.parse(content)
+            logLyricsLoaded(source: "user-synced/aria", song: song)
             return
         }
 
@@ -85,6 +109,7 @@ extension NowPlayingView {
             let lrcURL = url.deletingPathExtension().appendingPathExtension("lrc")
             if let content = try? String(contentsOf: lrcURL, encoding: .utf8) {
                 lyricsLines = LrcParser.parse(content)
+                logLyricsLoaded(source: "sidecar .lrc", song: song)
                 return
             }
         }
@@ -95,12 +120,17 @@ extension NowPlayingView {
         // produce anything useful from untimed text (every line requires
         // at least one [mm:ss] tag to survive parsing), so this is read
         // as raw lines directly instead, same shape fetchLyricsOVH already
-        // uses for its own untimed results (time: 0 — rendered as a
-        // static, non-highlighted block by NowPlayingLyricsBody).
+        // uses for its own untimed results (time: 0). `LyricsView` treats an
+        // all-zero set as unsynced and renders it as a static, non-highlighted
+        // block — see its `isSynced`. That was what this comment always claimed
+        // happened, but until that check existed it did not: every line counted
+        // as "already reached", so the highlight pinned itself to the last line
+        // and auto-scrolled to the bottom for the whole track.
         if let content = try? String(contentsOf: importedPlainLyricsURL(for: song), encoding: .utf8) {
             lyricsLines = content.components(separatedBy: .newlines)
                 .map { LrcLine(time: 0, text: $0) }
                 .filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }
+            logLyricsLoaded(source: "imported plain .txt", song: song)
             return
         }
 
@@ -127,14 +157,24 @@ extension NowPlayingView {
 
             // LRCLIB: returns synced LRC if available
             if let lines = await fetchLRCLIB(title: title, artist: artist, duration: song.duration), !lines.isEmpty {
-                await MainActor.run { if player.currentSong?.id == songID { lyricsLines = lines } }
+                await MainActor.run {
+                    if player.currentSong?.id == songID {
+                        lyricsLines = lines
+                        logLyricsLoaded(source: "LRCLIB", song: song)
+                    }
+                }
                 return
             }
             guard await MainActor.run(body: { player.currentSong?.id == songID }) else { return }
 
             // LyricsOVH: plain text fallback (no timestamps — shown as static block)
             if let lines = await fetchLyricsOVH(title: title, artist: artist), !lines.isEmpty {
-                await MainActor.run { if player.currentSong?.id == songID { lyricsLines = lines } }
+                await MainActor.run {
+                    if player.currentSong?.id == songID {
+                        lyricsLines = lines
+                        logLyricsLoaded(source: "lyrics.ovh (untimed)", song: song)
+                    }
+                }
             }
         }
     }
@@ -255,7 +295,7 @@ extension NowPlayingView {
                 // don't clobber whatever's now showing with a stale result.
                 guard player.currentSong?.id == songID else { return }
 
-                if result.instrumental || result.lrc.isEmpty {
+                if result.instrumental || (result.lrc.isEmpty && result.plain.isEmpty) {
                     ToastCenter.shared.show(
                         result.instrumental ? "Aria didn't find any lyrics — looks instrumental" : "Aria couldn't make out clear lyrics for this track",
                         category: .info, icon: "waveform"
@@ -267,6 +307,30 @@ extension NowPlayingView {
                 if !FileManager.default.fileExists(atPath: lyricsDir.path) {
                     try FileManager.default.createDirectory(at: lyricsDir, withIntermediateDirectories: true)
                 }
+
+                // Aria heard the words but couldn't time them to the track (her
+                // timestamps landed outside its real length — see
+                // `lyrics_ai.timings_are_plausible` on the bridge). Written as
+                // PLAIN lyrics, deliberately not to `syncedLyricsURL`.
+                //
+                // That distinction is the whole point. `loadLyrics()` reads
+                // `syncedLyricsURL` FIRST, as the user's own deliberate timing
+                // work, ahead of any database — so storing untrustworthy timings
+                // there made them permanently authoritative for the track and
+                // locked out a genuinely-synced version from LRCLIB. Bad timing
+                // is worse than none: untimed words display honestly as a static
+                // block (see `LyricsView.isSynced`), whereas wrong ones scroll
+                // confidently out of step with the music.
+                if !result.synced || result.lrc.isEmpty {
+                    try result.plain.write(to: importedPlainLyricsURL(for: song), atomically: true, encoding: .utf8)
+                    loadLyrics()
+                    ToastCenter.shared.show(
+                        "Aria transcribed the words, but couldn't time them to this track",
+                        category: .warning, icon: "sparkles"
+                    )
+                    return
+                }
+
                 try result.lrc.write(to: syncedLyricsURL(for: song), atomically: true, encoding: .utf8)
                 try? FileManager.default.removeItem(at: importedPlainLyricsURL(for: song))
                 loadLyrics()

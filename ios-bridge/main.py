@@ -6896,12 +6896,49 @@ async def aria_transcribe_lyrics(
     return JSONResponse({"job_id": job_id}, status_code=202)
 
 
+async def _probe_audio_duration(body: bytes, mime_type: str) -> Optional[float]:
+    """The real length of the uploaded audio, in seconds, via ffprobe.
+
+    Measured here rather than taken from the client, because this number's whole
+    job is to be the authority the model's timestamps are checked against — a
+    duration supplied by the same metadata that might be wrong is no check at
+    all. Returns None if it can't be determined, in which case the caller simply
+    has no anchor and behaves as before.
+    """
+    # No meaningful suffix: ffprobe identifies the container from the bytes, not
+    # the filename, and guessing an extension from the client's Content-Type
+    # would only risk mislabelling it.
+    tmp_path: Optional[str] = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".audio", delete=False) as tmp:
+            tmp.write(body)
+            tmp_path = tmp.name
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", tmp_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=20.0)
+        duration = float(json.loads(stdout_bytes)["format"]["duration"])
+        return duration if duration > 0 else None
+    except Exception as exc:
+        logger.warning("lyrics transcription: could not probe audio duration: %s", exc)
+        return None
+    finally:
+        if tmp_path:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+
+
 async def _run_lyrics_transcription_job(
     job_id: str, body: bytes, mime_type: str, title: str, artist: str, hint_lyrics: Optional[str]
 ) -> None:
     job = _LYRICS_JOBS.setdefault(job_id, {})
     try:
-        result = await transcribe_lyrics(body, mime_type, title, artist, hint_lyrics)
+        duration_seconds = await _probe_audio_duration(body, mime_type)
+        result = await transcribe_lyrics(
+            body, mime_type, title, artist, hint_lyrics, duration_seconds=duration_seconds
+        )
         if result is None:
             job["status"] = "error"
             job["detail"] = "Lyrics transcription isn't available right now"
@@ -6913,6 +6950,55 @@ async def _run_lyrics_transcription_job(
             job["lrc"] = ""
             job["instrumental"] = bool(result.get("instrumental"))
             job["confidence"] = result.get("confidence", "low")
+            return
+
+        # Timings the model could not keep inside the track (see
+        # lyrics_ai.timings_are_plausible). The words are still worth having, so
+        # they come back as PLAIN text with no timestamps rather than as synced
+        # lyrics that would scroll confidently out of step with the music — and,
+        # because the client stores Aria's synced output as the user's own hand-
+        # synced lyrics, would outrank a genuinely-synced version from LRCLIB.
+        timings_ok = bool(result.get("timings_ok", True))
+        if not timings_ok:
+            logger.warning(
+                "lyrics transcription: returning %d line(s) UNSYNCED for %r — timings "
+                "fell outside the %.1fs track",
+                len(lines), title, duration_seconds or 0,
+            )
+            job["status"] = "done"
+            job["lrc"] = ""
+            job["plain"] = "\n".join(
+                text for text in (str(line.get("text", "")).strip() for line in lines) if text
+            )
+            job["synced"] = False
+            job["instrumental"] = False
+            job["confidence"] = "low"
+            # Kept as PLAIN lyrics only, and deliberately NOT flagged
+            # is_user_submitted. The synced path below sets that flag so an
+            # automatic LRCLIB fetch can never overwrite Aria's work — which is
+            # right for trustworthy output and precisely wrong here: it is how a
+            # set of bad timings became permanently authoritative for a track
+            # and locked out a genuinely-synced version. Writing only
+            # `plain_lyrics` leaves `synced_lyrics` free for a real one later.
+            if job["plain"]:
+                try:
+                    cache_id = _lyrics_cache_id(title, artist)
+                    pool = await get_pool()
+                    async with pool.acquire() as conn:
+                        async with conn.cursor() as cur:
+                            await cur.execute(
+                                """
+                                INSERT INTO ios_lyrics_cache
+                                    (id, title, artist, synced_lyrics, plain_lyrics, found)
+                                VALUES (%s, %s, %s, NULL, %s, TRUE)
+                                ON CONFLICT (id) DO UPDATE SET
+                                    plain_lyrics = EXCLUDED.plain_lyrics,
+                                    found = TRUE
+                                """,
+                                (cache_id, title, artist, job["plain"]),
+                            )
+                except Exception as exc:
+                    logger.warning("lyrics-transcribe: could not cache plain result for %r: %s", title, exc)
             return
 
         lrc_out: list[str] = []
@@ -6927,6 +7013,7 @@ async def _run_lyrics_transcription_job(
         lrc = "\n".join(lrc_out)
         job["status"] = "done"
         job["lrc"] = lrc
+        job["synced"] = True
         job["instrumental"] = False
         job["confidence"] = result.get("confidence", "medium")
 
@@ -6983,6 +7070,12 @@ async def aria_transcribe_lyrics_status(job_id: str = Query(...), user: dict = D
         "status": job.get("status"),
         "detail": job.get("detail"),
         "lrc": job.get("lrc"),
+        # Present (and `lrc` empty) when Aria made out the words but her timings
+        # could not be trusted — see _run_lyrics_transcription_job. The client
+        # shows these as a static block rather than as synced lyrics.
+        "plain": job.get("plain"),
+        # False only in that case. Absent/true means `lrc` is real synced output.
+        "synced": job.get("synced"),
         "instrumental": job.get("instrumental"),
         "confidence": job.get("confidence"),
     }

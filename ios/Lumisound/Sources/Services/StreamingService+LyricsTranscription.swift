@@ -10,6 +10,15 @@ struct LyricsTranscriptionResult {
     /// already writes to — see `NowPlayingView+Helpers.swift`'s
     /// `syncedLyricsURL(for:)`. Empty when `instrumental` is true.
     let lrc: String
+    /// Words Aria made out but could NOT reliably time, one per line and with no
+    /// timestamps. Populated (with `lrc` empty and `synced` false) when her
+    /// timings fell outside the track's real length — see
+    /// `lyrics_ai.timings_are_plausible` on the bridge. Worth keeping: the
+    /// transcription itself is usually right even when the timing isn't.
+    let plain: String
+    /// False only for that case. Governs which file the caller writes to, which
+    /// decides whether these outrank a genuinely-synced LRCLIB version later.
+    let synced: Bool
     let instrumental: Bool
     let confidence: String
 }
@@ -98,6 +107,8 @@ extension StreamingService {
             let status: String
             let detail: String?
             let lrc: String?
+            let plain: String?
+            let synced: Bool?
             let instrumental: Bool?
             let confidence: String?
         }
@@ -133,6 +144,11 @@ extension StreamingService {
             case "done":
                 return LyricsTranscriptionResult(
                     lrc: status.lrc ?? "",
+                    plain: status.plain ?? "",
+                    // Absent on an older bridge, which only ever returned synced
+                    // output — defaulting to true keeps that behaviour rather
+                    // than silently treating every result as untimed.
+                    synced: status.synced ?? true,
                     instrumental: status.instrumental ?? false,
                     confidence: status.confidence ?? "low"
                 )

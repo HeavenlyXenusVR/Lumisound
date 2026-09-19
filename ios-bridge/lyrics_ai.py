@@ -66,6 +66,15 @@ from the audio yourself, since candidate text never comes with real timing.
 Do not invent lines that aren't actually present in the audio, and do not
 omit lines that are present.
 
+"track_duration_seconds" is the track's exact measured length. Every
+timestamp you return MUST fall inside it — the last line must begin before
+the track ends, not after. Timestamps past the end are worse than useless:
+those lines can never be shown, and their presence means the earlier ones
+are stretched out of step with the music too. Check your final line against
+this number before answering, and if your timings run past it, re-listen
+and correct them rather than scaling them. Distribute timestamps according
+to where words actually land in the audio, not evenly across the track.
+
 If the track is instrumental (no sung/spoken words) or you cannot make out
 any lyrics with reasonable confidence, set "instrumental" to true (only if
 there are no words at all) and return an empty "lines" array, and set
@@ -111,10 +120,24 @@ def _run_transcription(
     artist: str,
     hint_lyrics: str | None,
     model: str,
+    duration_seconds: float | None,
 ) -> str:
     """The actual blocking Gemini call — run via asyncio.to_thread by the
     caller, same pattern intelligence.py's _run_gemini_request uses."""
-    user_text = {"title": title, "artist": artist, "candidate_lyrics": hint_lyrics or None}
+    # The track's real length, measured from the audio (see
+    # _probe_audio_duration in main.py). Without it the model has no anchor for
+    # what "the end of the track" means and its timestamps drift off the end:
+    # measured on two real tracks from this deployment, a 208s track came back
+    # with its last line at 313s and a 243s track with its last line at 414s —
+    # 70% past the end. Every line after the real end is unreachable, and the
+    # ones before it are stretched, which is what made Aria's lyrics scroll out
+    # of step with the music.
+    user_text = {
+        "title": title,
+        "artist": artist,
+        "candidate_lyrics": hint_lyrics or None,
+        "track_duration_seconds": round(duration_seconds, 2) if duration_seconds else None,
+    }
     parts: list[genai_types.Part] = [
         genai_types.Part.from_text(text=json.dumps(user_text)),
         genai_types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
@@ -144,12 +167,56 @@ def _run_transcription(
     return text
 
 
+# How far past the measured end of the track the last line may sit before the
+# whole set of timings is treated as untrustworthy. A couple of seconds covers an
+# honest disagreement about where a final word lands or a duration read off a
+# slightly different encode; anything beyond it is not a rounding difference.
+_TIMING_OVERRUN_TOLERANCE = 3.0
+
+
+def timings_are_plausible(lines: list, duration_seconds: float | None) -> bool:
+    """Whether a transcription's timestamps can be believed enough to present
+    as SYNCED lyrics.
+
+    Wrong timings are worse than no timings. Unsynced words render as a plain
+    block that is honest about what it is, whereas wrong ones scroll confidently
+    out of step with the music and, because Aria's output is stored as the
+    user's own synced lyrics, take priority over a genuinely-synced version from
+    LRCLIB. So this gates presentation, not the words themselves.
+
+    Only checks what can be checked without ears: that the lines fall inside the
+    track. It cannot catch timings that are wrong but in-range — the prompt and
+    the duration hint are what address those.
+    """
+    if not lines or not duration_seconds or duration_seconds <= 0:
+        # Nothing measured to check against; the words still stand.
+        return True
+    times = [
+        float(entry.get("time_seconds", 0) or 0)
+        for entry in lines
+        if isinstance(entry, dict) and str(entry.get("text", "")).strip()
+    ]
+    if not times:
+        return True
+    return max(times) <= duration_seconds + _TIMING_OVERRUN_TOLERANCE
+
+
 async def transcribe_lyrics(
-    audio_bytes: bytes, mime_type: str, title: str, artist: str, hint_lyrics: str | None = None
+    audio_bytes: bytes,
+    mime_type: str,
+    title: str,
+    artist: str,
+    hint_lyrics: str | None = None,
+    duration_seconds: float | None = None,
 ) -> dict | None:
     """Returns {"instrumental": bool, "confidence": str, "lines": [{"time_seconds": float, "text": str}]},
     or None on any failure — no API key configured, a Gemini error, or an
-    unparseable response."""
+    unparseable response.
+
+    `duration_seconds` is the track's measured length. It is both given to the
+    model as an anchor and used to reject timings that land outside the track —
+    see `timings_are_plausible`.
+    """
     if intelligence._client is None:
         return None
 
@@ -165,7 +232,8 @@ async def transcribe_lyrics(
                 return None
             try:
                 text = await asyncio.to_thread(
-                    _run_transcription, audio_bytes, mime_type, title, artist, hint_lyrics, model
+                    _run_transcription, audio_bytes, mime_type, title, artist, hint_lyrics,
+                    model, duration_seconds,
                 )
                 parsed = json.loads(text)
                 if not isinstance(parsed.get("lines"), list):
@@ -174,6 +242,35 @@ async def transcribe_lyrics(
                     # for. Bail rather than burning the retry budget.
                     logger.warning("transcribe_lyrics: %s returned no usable 'lines' array", model)
                     return None
+
+                # Timings that run off the end of the track. Retried, because
+                # unlike a malformed response this is the model being sloppy
+                # rather than misunderstanding the task, and a re-listen with the
+                # same prompt does sometimes land inside the track. `timings_ok`
+                # is carried on the result so the caller can fall back to
+                # presenting the words unsynced instead of pretending the
+                # timestamps mean something.
+                parsed["timings_ok"] = timings_are_plausible(parsed["lines"], duration_seconds)
+                if not parsed["timings_ok"]:
+                    last = max(
+                        (float(e.get("time_seconds", 0) or 0) for e in parsed["lines"]
+                         if isinstance(e, dict)),
+                        default=0.0,
+                    )
+                    logger.warning(
+                        "transcribe_lyrics: %s timings overrun the track (last line %.1fs "
+                        "vs %.1fs duration) for %r — attempt %d/%d",
+                        model, last, duration_seconds or 0, title, attempt, _MAX_ATTEMPTS_PER_MODEL,
+                    )
+                    is_last_try = (attempt == _MAX_ATTEMPTS_PER_MODEL and model == models[-1])
+                    if not is_last_try:
+                        if attempt < _MAX_ATTEMPTS_PER_MODEL:
+                            await asyncio.sleep(
+                                _RETRY_BACKOFF_SECONDS[min(attempt - 1, len(_RETRY_BACKOFF_SECONDS) - 1)]
+                            )
+                            continue
+                        break  # move on to the fallback model
+
                 if attempt > 1 or model != intelligence.INTELLIGENCE_MODEL:
                     logger.info(
                         "transcribe_lyrics: succeeded on %s attempt %d (%.0fs elapsed)",
