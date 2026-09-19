@@ -149,7 +149,23 @@ struct LumisoundApp: App {
                     // guarantee delivery/timing) and jobs that finished
                     // between BGAppRefreshTask runs. Cheap when there's
                     // nothing pending (a single GET request).
-                    Task { await streaming.reconcilePendingDownloads() }
+                    // Reconcile, THEN resume — same ordering and same reasoning as
+                    // the launch path above (a finished-but-uncollected job must
+                    // be imported before the resume pass diffs the library, or it
+                    // re-downloads it).
+                    //
+                    // Resuming here is the fix for the case users actually hit:
+                    // iOS suspending the app mid-pass. The launch `.task` only
+                    // fires on a COLD launch, so before this, coming back to a
+                    // suspended app left a part-finished playlist with no trigger
+                    // at all — the user had to force-quit and reopen, or wait for
+                    // a background slot iOS may never grant.
+                    Task {
+                        await streaming.reconcilePendingDownloads()
+                        await TrackedPlaylistStore.shared.runAutoDownloads(
+                            streaming: streaming, library: libraryManager
+                        )
+                    }
                     // An announcement's window can open while the app is simply
                     // sitting suspended, which for a music app can be days — so
                     // relying on a cold launch alone would let a three-day
@@ -257,21 +273,32 @@ struct LumisoundApp: App {
                     // Task{} is unstructured — it starts immediately and keeps running
                     // independently of this .task's own cancellation, so it actually gets
                     // a chance to finish even on a quick app open.
+                    //
+                    // Reconciliation runs FIRST and is awaited before the
+                    // auto-download pass, rather than the two racing as separate
+                    // Tasks as they used to. They are not independent: a job the
+                    // bridge already finished while the app was away is a track
+                    // the resume pass must see as OWNED. Started in parallel, the
+                    // pass could resolve the playlist and diff it against the
+                    // library before reconciliation had imported those files, and
+                    // then ask the bridge to download tracks that were sitting
+                    // finished and waiting to be collected.
+                    //
+                    // Pick up whatever finished while the app was closed (see
+                    // StreamingService+PendingDownloads) — the scenePhase ==
+                    // .active handler covers returning to the foreground later,
+                    // but that onChange doesn't fire for the very first launch.
                     Task {
+                        await streaming.reconcilePendingDownloads()
                         await TrackedPlaylistStore.shared.runAutoDownloads(
                             streaming: streaming, library: libraryManager
                         )
-                    }
-
-                    // Pick up any downloads that finished while the app was
-                    // closed (see StreamingService+PendingDownloads) — the
-                    // scenePhase == .active handler below covers returning
-                    // to the foreground later, but that onChange doesn't
-                    // fire for the very first launch. Same unstructured-Task
-                    // reasoning as runAutoDownloads above: must survive this
-                    // .task being cancelled by a quick "open and close".
-                    Task {
-                        await streaming.reconcilePendingDownloads()
+                        // Keeps a long playlist progressing for as long as the
+                        // app stays open, instead of depending on iOS granting
+                        // background time. See startForegroundResumeLoop.
+                        TrackedPlaylistStore.shared.startForegroundResumeLoop(
+                            streaming: streaming, library: libraryManager
+                        )
                     }
 
                     // If logged in, pull latest state from DB as primary storage source.

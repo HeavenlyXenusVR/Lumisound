@@ -190,15 +190,35 @@ final class TrackedPlaylistStore: ObservableObject {
     /// (deduped via `LibraryManager.hasLocalCopy`). Safe to call on launch /
     /// foreground; throttled so it doesn't re-resolve constantly.
     ///
-    /// NOTE: lowering this doesn't buy true "every N minutes in the
-    /// background" behavior on its own — this only controls whether a check
+    /// NOTE: lowering `minInterval` doesn't buy true "every N minutes in the
+    /// background" behavior on its own — it only controls whether a check
     /// is SKIPPED once one actually runs. Whether a check runs at all while
     /// backgrounded is entirely up to `BackgroundRefreshService`/iOS's
     /// `BGAppRefreshTask` scheduling (see its doc comment), which iOS
     /// throttles independently of anything here and offers no cadence
-    /// guarantee. This just makes checks that DO happen (foreground, launch,
-    /// or whenever iOS grants a background slot) far less likely to be
+    /// guarantee. This just makes checks that DO happen far less likely to be
     /// skipped by this throttle.
+    ///
+    /// ## Resuming an interrupted pass
+    ///
+    /// Being interrupted is the normal case, not the exception — a background
+    /// task's budget expires, or iOS suspends the app mid-batch. Two things make
+    /// that recoverable, and both matter:
+    ///
+    ///   * This function leaves `lastAutoCheck` UNTOUCHED when it is cancelled or
+    ///     finds the bridge unreachable, so the playlist stays due and the next
+    ///     trigger picks it straight back up rather than waiting out the throttle
+    ///     window. It only stamps a playlist as checked on a pass that genuinely
+    ///     ran to completion.
+    ///   * `startForegroundResumeLoop` gives it a trigger that doesn't depend on
+    ///     iOS's background scheduling at all, alongside the cold-launch and
+    ///     foreground triggers in `LumisoundApp`.
+    ///
+    /// There is no separate persisted queue of "tracks I still owe": each pass
+    /// re-resolves the playlist and diffs it against the library, so whatever is
+    /// still missing IS the remaining work. That is self-healing across a crash,
+    /// a force-quit, and an app update, none of which a queue file would survive
+    /// as reliably.
     func runAutoDownloads(streaming: StreamingService,
                           library: LibraryManager,
                           minInterval: TimeInterval = 5 * 60) async {
@@ -215,8 +235,40 @@ final class TrackedPlaylistStore: ObservableObject {
         guard !due.isEmpty else { return }
 
         for pl in due {
+            // A pass gets interrupted far more often than it completes on a
+            // phone: a BGAppRefreshTask's budget expires (its expirationHandler
+            // cancels this task), or the app is suspended mid-batch. Stop
+            // promptly when that happens, and — critically — WITHOUT marking
+            // this playlist checked, so the next trigger resumes it straight
+            // away instead of treating it as freshly done. See the
+            // `markAutoChecked` call at the end of this loop.
+            if Task.isCancelled {
+                appLog("runAutoDownloads: cancelled before \"\(pl.name)\" — leaving it due so the next trigger resumes it", category: "network")
+                return
+            }
             await library.scanLocalDocumentsAsync()
             let tracks = await streaming.fetchPlaylistTracks(url: pl.url, existingSongs: [])
+
+            // `fetchPlaylistTracks` returns [] for EVERY failure — a dead
+            // bridge, a 500, a timeout, no network — which is the same value it
+            // returns for a playlist that genuinely has nothing new. That
+            // ambiguity is what made a server outage look like a successful
+            // check: the pass did nothing, then marked the playlist checked
+            // anyway, so a playlist mid-download would sit idle for the whole
+            // throttle window on the strength of a request that never
+            // succeeded. Probing health only when the resolve came back empty
+            // keeps this off the normal path entirely.
+            if tracks.isEmpty {
+                let reachable = await streaming.checkHealth()
+                if !reachable {
+                    appWarn("runAutoDownloads: bridge unreachable — stopping this pass with \"\(pl.name)\" still due so it retries rather than waiting out the throttle", category: "network")
+                    // Deliberately abandons the whole pass, not just this
+                    // playlist: every remaining one resolves against the same
+                    // bridge, and marching through them to fail identically
+                    // would mark each of them checked in turn.
+                    return
+                }
+            }
             // Build the fast-path lookups ONCE before filtering — calling
             // hasLocalCopy(of:) per track (O(library) each) over a big
             // playlist was an O(tracks × library) main-thread hang long
@@ -250,10 +302,22 @@ final class TrackedPlaylistStore: ObservableObject {
             // sitting mostly idle the whole time.
             var got = 0
             var blocked = 0
-            await withTaskGroup(of: (succeeded: Bool, wasBlocked: Bool).self) { group in
+            // Counted so a mid-batch outage can be told apart from a batch of
+            // individually-unavailable tracks — see the health probe after the
+            // group. `blocked` and `alreadyDownloaded` are deliberately NOT
+            // failures: both are settled answers about a specific track, and
+            // neither says anything about whether the bridge is up.
+            var failed = 0
+            await withTaskGroup(of: (succeeded: Bool, wasBlocked: Bool, failed: Bool).self) { group in
                 var nextIndex = 0
                 func startNext() {
                     guard nextIndex < toGet.count else { return }
+                    // Stop feeding the group once cancelled. Without this, an
+                    // expired background task kept starting fresh downloads
+                    // right up to the last track of the playlist, every one of
+                    // them doomed — burning bridge capacity and, worse, making
+                    // the pass look like it ran to completion.
+                    guard !Task.isCancelled else { return }
                     let track = toGet[nextIndex]
                     nextIndex += 1
                     group.addTask {
@@ -265,20 +329,36 @@ final class TrackedPlaylistStore: ObservableObject {
                                 destinationFolderName: pl.destinationFolder,
                                 reportExistingAsSkipped: true
                             )
-                            return (true, false)
+                            return (true, false, false)
                         } catch StreamingError.serverDetail {
                             // e.g. an auto-generated Topic-channel track
                             // blocked from extraction — tallied so the
                             // summary toast can explain why some tracks
                             // were skipped instead of silently dropping them.
-                            return (false, true)
+                            return (false, true, false)
                         } catch StreamingError.alreadyDownloaded {
-                            return (false, false)
+                            return (false, false, false)
+                        } catch StreamingError.alreadyInFlight {
+                            // Another download of this exact track is already
+                            // running, or WAS when the app died — the claim
+                            // (DownloadLedgerStore.beginDownload) is backed by
+                            // UserDefaults with a 5-minute TTL so it deliberately
+                            // outlives a crash. That makes this the normal answer
+                            // for the first resume attempt right after a crash,
+                            // and it is emphatically not a failure: counting it as
+                            // one would make a post-crash resume look like a
+                            // bridge outage (got == 0, many "failures") and cost
+                            // the pass its health probe and a throttle window.
+                            // Left to the next cycle, by which point the claim has
+                            // expired.
+                            return (false, false, false)
                         } catch {
                             // Other failures (network, timeout, etc.) stay
                             // silent here — this is a background check, and
                             // the next scheduled run will simply retry them.
-                            return (false, false)
+                            // Counted, though: a whole batch failing this way is
+                            // how a bridge that died mid-pass presents itself.
+                            return (false, false, true)
                         }
                     }
                 }
@@ -286,6 +366,7 @@ final class TrackedPlaylistStore: ObservableObject {
                 for await result in group {
                     if result.succeeded { got += 1 }
                     if result.wasBlocked { blocked += 1 }
+                    if result.failed { failed += 1 }
                     startNext()
                 }
             }
@@ -300,8 +381,102 @@ final class TrackedPlaylistStore: ObservableObject {
                     category: .warning
                 )
             }
-            markAutoChecked(id: pl.id)
             if !tracks.isEmpty { updateMetadata(id: pl.id, trackCount: tracks.count) }
+
+            // The bridge going down MID-BATCH, as opposed to before the resolve.
+            // The resolve succeeded, so the earlier health probe never ran, and
+            // every download after the outage failed into the generic catch
+            // above. Without this the playlist would be marked checked on the
+            // strength of a batch where nothing actually worked, and a playlist
+            // interrupted at track 12 of 300 would sit out the throttle window
+            // for no reason.
+            //
+            // Gated on `got == 0` so this only fires for a wholesale failure. A
+            // batch where most tracks landed and a few failed is a normal batch —
+            // some videos are region-locked, deleted, or simply flaky — and those
+            // must not stop the pass or hold back every other playlist.
+            if got == 0 && failed > 0 {
+                let reachable = await streaming.checkHealth()
+                if !reachable {
+                    appWarn("runAutoDownloads: bridge went down mid-batch on \"\(pl.name)\" (\(failed) failed, 0 downloaded) — leaving it due to retry", category: "network")
+                    return
+                }
+                appWarn("runAutoDownloads: \(failed) track(s) from \"\(pl.name)\" failed but the bridge is reachable — treating as per-track failures, will retry on the next cycle", category: "network")
+            }
+
+            // Only a pass that actually RAN TO COMPLETION counts as a check.
+            //
+            // This used to be unconditional, which is what stopped interrupted
+            // downloads resuming. `withTaskGroup` does not throw on
+            // cancellation — its children just return early — so an interrupted
+            // batch fell out of the loop looking exactly like a finished one,
+            // stamped `lastAutoCheck`, and made itself ineligible for the whole
+            // throttle window. A playlist cut off after 12 of 300 tracks was
+            // therefore guaranteed NOT to resume for the next five minutes, and
+            // if the next trigger was also cut short (the normal case for a
+            // background task with a ~30s budget), it could inch forward a
+            // dozen tracks at a time indefinitely.
+            //
+            // Note this deliberately keys on being interrupted, not on whether
+            // every track succeeded. Some tracks legitimately never download —
+            // an auto-generated "Topic" upload YouTube blocks, a deleted video —
+            // and treating a playlist as unchecked while any track is missing
+            // would re-resolve it on every single trigger, forever.
+            if Task.isCancelled {
+                appLog("runAutoDownloads: \"\(pl.name)\" interrupted after \(got)/\(toGet.count) — staying due so the next trigger picks up where this left off", category: "network")
+                return
+            }
+            markAutoChecked(id: pl.id)
+        }
+    }
+
+    // MARK: Foreground resume loop
+
+    /// How often a resume attempt runs while the app is actually open.
+    private static let foregroundResumeInterval: UInt64 = 5 * 60 * 1_000_000_000
+    /// An instance property rather than a `static var` (which is how
+    /// `LumisoundTrackVaultService` holds its equivalent loop) because this type
+    /// is a `@MainActor` class: statics on it are NOT implicitly actor-isolated,
+    /// so a mutable one would be exactly the kind of unprotected global state
+    /// strict concurrency checking objects to. The store is a singleton, so
+    /// per-instance is per-app regardless.
+    private var foregroundResumeLoop: Task<Void, Never>?
+
+    /// Keeps auto-downloads moving for as long as the app is open.
+    ///
+    /// Before this, `runAutoDownloads` had exactly two triggers: the root view's
+    /// launch `.task`, and `BackgroundRefreshService`'s `BGAppRefreshTask`. Both
+    /// are unreliable for the thing users actually notice — a big playlist
+    /// getting partway and stopping:
+    ///
+    ///   * The launch `.task` fires on a COLD launch only. Returning to an app
+    ///     iOS merely suspended does not re-run it, so the single most common
+    ///     way a pass gets interrupted was also the one case that never
+    ///     retriggered it. (`reconcilePendingDownloads` was already wired to
+    ///     foreground for precisely this reason — that recovers downloads the
+    ///     bridge already FINISHED, and there was no equivalent for the ones it
+    ///     was never asked to start.)
+    ///   * `BGAppRefreshTask` runs entirely at iOS's discretion — no cadence
+    ///     guarantee, and often not for long stretches (see
+    ///     BackgroundRefreshService's own doc comment). Its ~30s budget also
+    ///     means it is usually an INTERRUPTED pass rather than a complete one.
+    ///
+    /// So a user who left a 300-track playlist downloading, locked their phone,
+    /// and came back to it had no trigger at all until they force-quit and
+    /// relaunched. This loop is the dependable driver; the background task stays
+    /// as opportunistic extra progress.
+    ///
+    /// Idempotent — safe to call from a `.task` that re-fires.
+    func startForegroundResumeLoop(streaming: StreamingService, library: LibraryManager) {
+        guard foregroundResumeLoop == nil else { return }
+        foregroundResumeLoop = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.foregroundResumeInterval)
+                guard !Task.isCancelled, let self else { break }
+                // Cheap when there is nothing to do: everything still within
+                // its throttle window is filtered out before any request.
+                await self.runAutoDownloads(streaming: streaming, library: library)
+            }
         }
     }
 
