@@ -147,8 +147,7 @@ extension AudioPlayerManager {
         isCrossfading = false
         crossfadeTimer?.invalidate()
         crossfadeTimer = nil
-        crossfadeStartTimer?.invalidate()
-        crossfadeStartTimer = nil
+        crossfadeTriggerPosition = nil
         gaplessScheduled = false
         pendingNextIndex = nil
         position = 0
@@ -176,8 +175,7 @@ extension AudioPlayerManager {
         }
         gaplessScheduled = false
         pendingNextIndex = nil
-        crossfadeStartTimer?.invalidate()
-        crossfadeStartTimer = nil
+        crossfadeTriggerPosition = nil
         if isPlaying {
             playCurrent(from: target)
         } else {

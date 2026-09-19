@@ -144,7 +144,7 @@ extension AudioPlayerManager {
         prewarmBPM(for: peekNextSong())
         prewarmPlayableCache(for: peekNextSong())
 
-        // Arm the crossfade-start timer for the track that just became current —
+        // Arm the crossfade trigger for the track that just became current —
         // mirroring the setup `scheduleCurrent` does for the very first track.
         // Without this, `handleTrackEnded` only ever calls `beginCrossfade` again
         // at the natural end of `nextFile`'s full playback (zero seconds of
@@ -152,20 +152,11 @@ extension AudioPlayerManager {
         // from an actual crossfade into the new track simply fading in from
         // silence once the old one has already finished. Re-arming here keeps
         // the whole queue crossfading with consistent overlap.
-        let nextTrackLength = nextFile.duration
-        let nextCrossfadeOffset = max(0, nextTrackLength - fadeDuration)
-        crossfadeStartTimer?.invalidate()
-        crossfadeStartTimer = nil
-        if fadeDuration > 0 && nextCrossfadeOffset > 0 {
-            crossfadeStartTimer = Timer.scheduledTimer(
-                withTimeInterval: nextCrossfadeOffset, repeats: false
-            ) { [weak self] _ in
-                Task { @MainActor in
-                    guard let self, self.isPlaying, !self.isCrossfading else { return }
-                    self.beginCrossfade()
-                }
-            }
-        }
+        //
+        // A position rather than a countdown — see `crossfadeTriggerPosition`.
+        // The incoming track begins at 0, so its own duration is the origin.
+        let nextTrigger = nextFile.duration - fadeDuration
+        crossfadeTriggerPosition = (fadeDuration > 0 && nextTrigger > 0) ? nextTrigger : nil
 
         // When crossfadeDuration == 0, steps clamps to 1 (instantaneous swap). Intentional.
         let steps = max(1, Int(fadeDuration * 30))
@@ -176,6 +167,22 @@ extension AudioPlayerManager {
         crossfadeTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] t in
             Task { @MainActor [weak self] in
                 guard let self else { t.invalidate(); return }
+                // Freeze the ramp while paused instead of advancing it.
+                //
+                // `pause()` pauses BOTH nodes, so no audio moves — but this ramp
+                // is wall-clock, so it used to keep advancing through silence and
+                // run the fade to completion, calling `finishCrossfade` and
+                // stopping the outgoing track. Pausing anywhere inside the few
+                // seconds of an overlap therefore meant resuming on the NEXT
+                // track, with the one you paused already stopped. Same visible
+                // symptom as the overdue crossfade-start timer this commit
+                // replaces (see `crossfadeTriggerPosition`), just a narrower
+                // window to land in.
+                //
+                // Returning without invalidating leaves the timer live, so the
+                // fade simply picks up where it left off on resume — which is
+                // exactly what the audio does.
+                guard self.isPlaying else { return }
                 step += 1
                 let progress = Float(step) / Float(steps)
                 let clipped = min(max(progress, 0), 1)
@@ -211,8 +218,7 @@ extension AudioPlayerManager {
     func cancelCrossfade() {
         crossfadeTimer?.invalidate()
         crossfadeTimer = nil
-        crossfadeStartTimer?.invalidate()
-        crossfadeStartTimer = nil
+        crossfadeTriggerPosition = nil
         if isCrossfading {
             // `usingPrimaryNode`/`activeNode` already point at the track that's
             // becoming current (flipped at the start of the fade — see

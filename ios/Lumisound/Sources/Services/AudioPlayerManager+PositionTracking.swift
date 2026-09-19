@@ -25,6 +25,11 @@ extension AudioPlayerManager {
     func timerTick() {
         updatePositionFromPlayer()
 
+        // Checked immediately after the position refresh, and before anything
+        // that might change tracks, so the fade is judged against the freshest
+        // reading of where the audio actually is.
+        checkCrossfadeTrigger()
+
         bridgePushTickCounter += 1
         if bridgePushTickCounter >= 10 {
             bridgePushTickCounter = 0
@@ -53,6 +58,32 @@ extension AudioPlayerManager {
         // only refresh on play/pause/track-change events and can visibly drift from
         // (or briefly disagree with) the in-app scrubber.
         updateNowPlaying()
+    }
+
+    /// Starts the crossfade once playback actually reaches
+    /// `crossfadeTriggerPosition`.
+    ///
+    /// This replaced a wall-clock `Timer` — see `crossfadeTriggerPosition` for
+    /// what that timer did wrong (pausing, then resuming, skipped the song).
+    /// Running on the existing 0.5s tick means the check is driven by rendered
+    /// audio and cannot fire while paused, because `pause()` stops the tick.
+    ///
+    /// 0.5s of granularity is immaterial here: the fade it starts runs for
+    /// seconds, and the trigger point is itself an estimate of where the music
+    /// stops (see `transitionLead`).
+    func checkCrossfadeTrigger() {
+        guard let trigger = crossfadeTriggerPosition else { return }
+        guard isPlaying, !isCrossfading, !isUsingOpusPlayer else { return }
+        // A zero/unknown duration means the track isn't really loaded yet;
+        // triggering against a position of 0 would fade out of a track that has
+        // not started.
+        guard duration > 0, position >= trigger else { return }
+        // Cleared BEFORE beginning, so a fade that somehow takes longer than one
+        // tick cannot be started twice. `beginCrossfade` re-arms it for whatever
+        // track becomes current.
+        crossfadeTriggerPosition = nil
+        appLog("Crossfade trigger reached at \(String(format: "%.1f", position))s of \(String(format: "%.1f", duration))s — \(currentSong?.displayName ?? "?")", category: "audio")
+        beginCrossfade()
     }
 
     /// Mirrors the current track/position to the bridge (`/user/playback-state`)

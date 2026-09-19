@@ -354,8 +354,34 @@ final class AudioPlayerManager: ObservableObject {
     // Crossfade state
     var isCrossfading = false
     var crossfadeTimer: Timer?
-    // Fires crossfadeDuration seconds before a track ends so we begin fading early.
-    var crossfadeStartTimer: Timer?
+
+    /// Playback position (in seconds, in the current track's own timeline) at
+    /// which the crossfade into the next track should begin. `nil` when no
+    /// crossfade is pending. Evaluated on the 0.5s playback tick — see
+    /// `checkCrossfadeTrigger()`.
+    ///
+    /// This used to be a `Timer` armed for "crossfadeDuration seconds before the
+    /// track ends", and that was the cause of a long-standing bug: pausing for a
+    /// while and then resuming would jump to the next song.
+    ///
+    /// A `Timer` measures WALL CLOCK time, and a track's remaining playtime is
+    /// not wall-clock time — pausing stops the music but not the clock. While the
+    /// app was merely paused in the foreground, the timer fired on schedule and
+    /// its `isPlaying` guard discarded it (so that track then silently lost its
+    /// crossfade — the quieter half of the same bug). The skip came from pausing
+    /// and letting the app suspend: a suspended run loop doesn't fire timers, so
+    /// the timer sat overdue, and the instant the run loop came back it fired —
+    /// by which point `resume()` had already set `isPlaying = true`, so the guard
+    /// passed and a crossfade began seconds into a track that had minutes left.
+    /// From the outside, hitting resume skipped the song.
+    ///
+    /// A position threshold cannot drift from the audio, because `position` is
+    /// derived from frames the engine has actually rendered (see
+    /// `updatePositionFromPlayer`) and the tick that checks it only runs while
+    /// playing. It also fixes seeking for free: the old timer was invalidated on
+    /// seek but never re-armed against the new position, so a seek backwards left
+    /// the fade to fire early on wall-clock time.
+    var crossfadeTriggerPosition: Double?
 
     /// Grace-period timer armed by `pause()` — see `teardownEngineIfIdle()`.
     /// Lets a quick pause->resume avoid paying an engine restart, while a
@@ -536,7 +562,6 @@ final class AudioPlayerManager: ObservableObject {
     deinit {
         timer?.invalidate()
         crossfadeTimer?.invalidate()
-        crossfadeStartTimer?.invalidate()
         rotationLink?.invalidate()
         tremoloLink?.invalidate()
         vibratoLink?.invalidate()

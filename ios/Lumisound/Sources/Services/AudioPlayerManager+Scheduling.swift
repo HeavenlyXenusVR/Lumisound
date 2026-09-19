@@ -17,8 +17,7 @@ extension AudioPlayerManager {
         // Invalidate any pending completion callbacks BEFORE cancelCrossfade() or node.stop()
         // so that the stopped node's completion block never fires handleTrackEnded().
         scheduleGeneration &+= 1
-        crossfadeStartTimer?.invalidate()
-        crossfadeStartTimer = nil
+        crossfadeTriggerPosition = nil
         cancelCrossfade()
         // Clear before scheduling so failure can be detected below.
         errorMessage = nil
@@ -215,7 +214,13 @@ extension AudioPlayerManager {
             // Schedule crossfade to begin crossfadeDuration seconds before the track ends,
             // so the incoming track fades in while the current track is still playing.
             if audioSettings.crossfadeActive && audioSettings.crossfadeDuration > 0 {
-                let trackLength = Double(framesLeft) / file.processingFormat.sampleRate
+                // A POSITION in the track, not a countdown — see
+                // `crossfadeTriggerPosition`. Expressed against the file's full
+                // duration rather than the frames remaining from `startFrame`,
+                // because `position` is likewise measured from the start of the
+                // track; the two must share an origin or a mid-track start would
+                // trigger at the wrong place.
+                //
                 // Measured from the end of the MUSIC, not the end of the file.
                 //
                 // Trailing dead air is common — 8 tracks in 25 across a real
@@ -223,18 +228,10 @@ extension AudioPlayerManager {
                 // so a fade starting `crossfadeDuration` from the file's end was
                 // often partly, sometimes entirely, the next track fading up
                 // over nothing. See SmartCrossfade.
-                let crossfadeOffset = max(0, trackLength - transitionLead())
-                if crossfadeOffset > 0 {
-                    crossfadeStartTimer?.invalidate()
-                    crossfadeStartTimer = Timer.scheduledTimer(
-                        withTimeInterval: crossfadeOffset, repeats: false
-                    ) { [weak self] _ in
-                        Task { @MainActor in
-                            guard let self, self.isPlaying, !self.isCrossfading else { return }
-                            self.beginCrossfade()
-                        }
-                    }
-                }
+                let trigger = file.duration - transitionLead()
+                crossfadeTriggerPosition = trigger > 0 ? trigger : nil
+            } else {
+                crossfadeTriggerPosition = nil
             }
 
             // Pre-schedule the next track for gapless playback 0.1 s after this segment
@@ -389,23 +386,15 @@ extension AudioPlayerManager {
             prewarmBPM(for: peekNextSong())
             prewarmPlayableCache(for: peekNextSong())
 
-            // Crossfade timer — same logic as scheduleCurrent.
+            // Crossfade trigger — same logic as scheduleCurrent.
             if audioSettings.crossfadeActive && audioSettings.crossfadeDuration > 0 {
-                let trackLength     = Double(framesLeft) / sampleRate
-                // See scheduleCurrent — measured from the end of the music
-                // rather than the end of the file.
-                let crossfadeOffset = max(0, trackLength - transitionLead())
-                if crossfadeOffset > 0 {
-                    crossfadeStartTimer?.invalidate()
-                    crossfadeStartTimer = Timer.scheduledTimer(
-                        withTimeInterval: crossfadeOffset, repeats: false
-                    ) { [weak self] _ in
-                        Task { @MainActor in
-                            guard let self, self.isPlaying, !self.isCrossfading else { return }
-                            self.beginCrossfade()
-                        }
-                    }
-                }
+                // See scheduleCurrent — a position measured against the file's
+                // full duration, from the end of the music rather than the end of
+                // the file.
+                let trigger = file.duration - transitionLead()
+                crossfadeTriggerPosition = trigger > 0 ? trigger : nil
+            } else {
+                crossfadeTriggerPosition = nil
             }
 
             if isPlaying {
@@ -742,7 +731,7 @@ extension AudioPlayerManager {
         }
 
         if audioSettings.crossfadeActive {
-            // The crossfadeStartTimer may have already started the crossfade;
+            // The crossfade trigger may have already started the crossfade;
             // don't trigger a second crossfade if we're already mid-fade.
             guard !isCrossfading else { return }
             beginCrossfade()
