@@ -563,7 +563,13 @@ extension StreamingService {
                     if status.permanent == true {
                         // Remembered so every later pass stops asking. Only ever
                         // on the bridge's say-so — see DownloadFailureStore.
-                        DownloadFailureStore.shared.recordPermanentFailure(sourceTrackID: sourceTrackID)
+                        // Built from `track` rather than reusing an outer
+                        // binding: this poll loop lives in its own function which
+                        // declares its own `sourceTrackID` further down, so
+                        // referring to that one here would read it before its
+                        // declaration.
+                        DownloadFailureStore.shared.recordPermanentFailure(
+                            sourceTrackID: "\(track.source):\(track.id)")
                         appWarn("downloadToLibrary: \"\(track.title)\" is permanently unavailable (\(status.detail ?? "no detail")) — suppressing future attempts", category: "network")
                     } else {
                         appWarn("downloadToLibrary: not found for \"\(track.title)\" — \(status.detail ?? "no detail")", category: "network")
