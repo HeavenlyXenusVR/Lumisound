@@ -130,6 +130,11 @@
     <array>
         <string>com.lumisound.ios.refresh</string>
         <string>com.lumisound.ios.trackvault</string>
+        <!-- Long-form download catch-up. Separate from .refresh (a
+             BGAppRefreshTask, ~30s) because resuming a several-hundred-track
+             playlist cannot fit in that budget — see
+             BackgroundRefreshService.downloadTaskIdentifier. -->
+        <string>com.lumisound.ios.downloads</string>
     </array>
 
     <!-- Live Activities — Lock Screen / Dynamic Island Now Playing -->

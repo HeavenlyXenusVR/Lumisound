@@ -139,6 +139,17 @@ struct LumisoundApp: App {
                     // maintenance loop handle this work without blocking the
                     // transition.
                     LumisoundTrackVaultService.scheduleNext()
+                    // Submitted as the app leaves, which is exactly when an
+                    // unfinished playlist needs a way back in — and unlike the
+                    // launch `.task`'s copy of this call, nothing can cancel this
+                    // before it runs. Re-submitting replaces the outstanding
+                    // request for the same identifier rather than queueing a
+                    // second one, so doing it on every backgrounding is free.
+                    BackgroundRefreshService.scheduleNextDownloadCatchUp()
+                    // Same reasoning for the refresh task: the launch path's
+                    // scheduleNext() is behind a 3s sleep and an update check, so
+                    // a quick open-and-close could leave nothing scheduled at all.
+                    BackgroundRefreshService.scheduleNext()
                 } else if phase == .active {
                     // Take the diagnostics snapshot that came due while the
                     // app was suspended (its main-run-loop timer doesn't fire
@@ -344,6 +355,14 @@ struct LumisoundApp: App {
                     // Queue the periodic background check (subscriptions +
                     // tracked playlists) — see BackgroundRefreshService.
                     BackgroundRefreshService.scheduleNext()
+                    // Long-form download catch-up (a BGProcessingTask, minutes
+                    // rather than the refresh task's ~30s) — see
+                    // BackgroundRefreshService.downloadTaskIdentifier. Also
+                    // submitted from the `.background` scenePhase handler, which
+                    // is the reliable one: everything here runs after a 3s sleep
+                    // and an update check, inside a `.task` that a quick "open and
+                    // close" cancels before reaching this line.
+                    BackgroundRefreshService.scheduleNextDownloadCatchUp()
                     LumisoundTrackVaultService.scheduleNext()
 
                     // Standing "what does a real session look like right

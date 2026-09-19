@@ -19,7 +19,27 @@ import Foundation
 enum BackgroundRefreshService {
     static let taskIdentifier = "com.lumisound.ios.refresh"
 
-    /// Registers the task handler. MUST be called before the app finishes
+    /// A second, LONGER-RUNNING background task dedicated to downloads.
+    ///
+    /// `taskIdentifier` above is a `BGAppRefreshTask`, which iOS budgets at
+    /// roughly 30 seconds. That is fine for its original purpose — asking
+    /// whether anything is new — and hopeless for acting on the answer: at the
+    /// bridge's measured ~3s per track, 30 seconds is under a dozen tracks, so
+    /// resuming a several-hundred-track playlist in the background was never
+    /// going to be more than a trickle no matter how often it ran. Worse, the
+    /// refresh task runs subscriptions first and downloads last, so downloads
+    /// were the thing most likely to be cut off before starting at all.
+    ///
+    /// A `BGProcessingTask` gets minutes rather than seconds, which is the
+    /// difference between finishing a playlist and nibbling at it. iOS grants it
+    /// more conservatively (it favours charging and idle), so this does not
+    /// replace the refresh task — it runs the same work with room to complete,
+    /// whenever the OS is feeling generous, while the refresh task keeps making
+    /// small progress more often and `startForegroundResumeLoop` remains the
+    /// dependable driver.
+    static let downloadTaskIdentifier = "com.lumisound.ios.downloads"
+
+    /// Registers both task handlers. MUST be called before the app finishes
     /// launching — from `LumisoundApp.init()`, not a View's `.task`/`.onAppear`
     /// (BGTaskScheduler requires registration before the app is fully active).
     static func register() {
@@ -29,6 +49,13 @@ enum BackgroundRefreshService {
                 return
             }
             handle(task: refreshTask)
+        }
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: downloadTaskIdentifier, using: nil) { task in
+            guard let processingTask = task as? BGProcessingTask else {
+                task.setTaskCompleted(success: false)
+                return
+            }
+            handleDownloads(task: processingTask)
         }
     }
 
@@ -51,6 +78,62 @@ enum BackgroundRefreshService {
         } catch {
             appWarn("BackgroundRefreshService: submit failed: \(error.localizedDescription)", category: "background")
         }
+    }
+
+    /// Requests the next long-form download catch-up. Call alongside
+    /// `scheduleNext()`.
+    static func scheduleNextDownloadCatchUp() {
+        let request = BGProcessingTaskRequest(identifier: downloadTaskIdentifier)
+        // Downloading is the entire point, so unlike the track-vault task this
+        // one genuinely cannot run without the network — saying so lets iOS pick
+        // a moment when it will actually succeed instead of waking us to fail.
+        request.requiresNetworkConnectivity = true
+        // NOT requiring external power. It would make iOS more willing to run
+        // this, but "resume my playlist only while plugged in" is not what a user
+        // who started a download asked for, and the work is network-bound rather
+        // than the sustained CPU grind that flag is meant for.
+        request.requiresExternalPower = false
+        // Further out than the refresh task's 5 minutes: a processing task is a
+        // bigger favour to ask, and asking too eagerly gets it deprioritised.
+        // Still only a floor, never a promise — see this file's top doc comment.
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+        do {
+            try BGTaskScheduler.shared.submit(request)
+        } catch {
+            appWarn("BackgroundRefreshService: download catch-up submit failed: \(error.localizedDescription)", category: "background")
+        }
+    }
+
+    private static func handleDownloads(task: BGProcessingTask) {
+        // Chain the next run before doing any work, same as the refresh task.
+        scheduleNextDownloadCatchUp()
+
+        let work = Task {
+            await runDownloadCatchUp()
+            task.setTaskCompleted(success: true)
+        }
+        // Cancellation is what makes this safe to cut off at any point:
+        // `runAutoDownloads` checks for it and leaves an unfinished playlist
+        // marked as still owing work, so an expired task resumes rather than
+        // losing its place. See TrackedPlaylistStore.runAutoDownloads.
+        task.expirationHandler = {
+            work.cancel()
+        }
+    }
+
+    @MainActor
+    private static func runDownloadCatchUp() async {
+        guard let library = LibraryManager.shared, let streaming = StreamingService.shared else { return }
+        appLog("BackgroundRefreshService: running download catch-up", category: "background")
+        // Deliberately ONLY the download path — no subscription check. Those
+        // already have the refresh task, and letting them share this one would
+        // recreate the starvation this task exists to escape.
+        //
+        // Reconcile first, for the same reason as the launch and foreground
+        // paths: a job the bridge already finished is a track the resume pass
+        // must see as owned, or it asks for it again.
+        await streaming.reconcilePendingDownloads()
+        await TrackedPlaylistStore.shared.runAutoDownloads(streaming: streaming, library: library)
     }
 
     private static func handle(task: BGAppRefreshTask) {
