@@ -550,6 +550,35 @@ _ARIA2_DOWNLOADER_ARGS = [
 # the original change. Left at yt-dlp's own default client selection —
 # still not the same as before bd3ab019 (that commit's actual fix, the
 # removed blanket Topic-channel block, is independent of this setting).
+# Client used ONLY on the final download attempt, when the default selection has
+# already failed twice.
+#
+# This was `android_vr`, chosen because it reliably surfaced proper adaptive
+# audio formats for the itag-18-only failure mode (yt-dlp/yt-dlp#16150) that the
+# default selection sometimes hit. That relationship has since inverted:
+# android_vr is now the client that returns itag 18 and nothing else. Measured
+# against four real videos from this library, it offered ONE format each time —
+# 640x360 muxed video carrying 44kbps AAC — and zero audio-only streams, while
+# the default selection offered seven audio-only formats including 130kbps opus.
+#
+# So the fallback had become strictly worse than the thing it was meant to
+# rescue: reaching it meant downloading a 7.5MiB video to extract a quarter of
+# the audio quality, then paying a real lossy re-encode to opus rather than a
+# remux. `mweb` measured 6 audio-only formats including 4 opus with no errors,
+# and is genuinely DIFFERENT from the default selection — which matters, since
+# the whole point of a final attempt is to try something the first two did not.
+#
+# Worth re-measuring whenever downloads degrade: which client YouTube serves
+# adaptive formats to has now changed twice, so this is a moving target rather
+# than a setting to fix and forget.
+_YTDLP_FALLBACK_CLIENT = os.getenv("YTDLP_FALLBACK_CLIENT", "mweb")
+
+# yt-dlp announces its chosen format on stdout as "Downloading 1 format(s): 18".
+# These itags are MUXED (video carrying audio) rather than audio-only, so
+# selecting one means the client offered no audio-only stream.
+_MUXED_ITAGS = {"17", "18", "22", "36", "43", "59", "22"}
+_CHOSEN_FORMAT_RE = re.compile(r"Downloading \d+ format\(s\): ([0-9+]+)")
+
 _YTDLP_NETWORK_ARGS = ["-4", "--socket-timeout", "10"]
 
 # Base URL of the bgutil-ytdlp-pot-provider POT server
@@ -1315,26 +1344,59 @@ YTDLP_USER_COOKIES_DIR = pathlib.Path(os.getenv("YTDLP_USER_COOKIES_DIR", "/app/
 _GLOBAL_COOKIES_CACHE_PATH = pathlib.Path(YTDLP_CACHE_DIR) / "global-cookies.txt"
 
 
+# Fingerprint of the source the copy was last made from — see below for why
+# modification times cannot be used for this.
+_GLOBAL_COOKIES_STAMP_PATH = pathlib.Path(YTDLP_CACHE_DIR) / "global-cookies.source"
+
+
 def _writable_global_cookies_path() -> Optional[str]:
-    """Returns a writable copy of YTDLP_COOKIES_FILE yt-dlp can safely
-    rewrite, refreshing it from the read-only source whenever the source is
-    newer (picks up the scheduled cookie-refresh job's updates) or the copy
-    doesn't exist yet. Returns None if the source itself is missing/empty."""
+    """Returns a writable copy of YTDLP_COOKIES_FILE yt-dlp can safely rewrite,
+    refreshed whenever the SOURCE's contents change.
+
+    Staleness used to be `copy.mtime < source.mtime`, which cannot work here,
+    because yt-dlp rewrites the copy at the end of every run — that is the whole
+    reason it is handed a copy. So the copy's mtime is newer than the source's
+    almost permanently, the refresh never fires, and whatever yt-dlp last wrote
+    becomes the cookie jar forever.
+
+    That is not hypothetical damage. yt-dlp saves back only the cookies it
+    actually touched, so the copy collapsed from the source's 1,142 cookies to
+    59 — enough to look present and be handed to every download, and not enough
+    to pass YouTube's bot check. Every download failed with "Sign in to confirm
+    you're not a bot" while a perfectly good jar sat unused beside it, and the
+    mtime rule guaranteed it could never recover on its own.
+
+    Comparing a hash of the source instead is immune to yt-dlp touching the
+    copy: the copy is rebuilt when, and only when, the source's contents differ
+    from whatever the copy was built from.
+    """
     try:
         source_stat = os.stat(YTDLP_COOKIES_FILE)
     except OSError:
         return None
     if source_stat.st_size == 0:
         return None
+
     try:
-        copy_stat = _GLOBAL_COOKIES_CACHE_PATH.stat()
-        stale = copy_stat.st_mtime < source_stat.st_mtime
-    except FileNotFoundError:
+        with open(YTDLP_COOKIES_FILE, "rb") as f:
+            source_hash = hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return None
+
+    try:
+        stale = _GLOBAL_COOKIES_STAMP_PATH.read_text().strip() != source_hash
+    except OSError:
         stale = True
+    if not _GLOBAL_COOKIES_CACHE_PATH.exists():
+        stale = True
+
     if stale:
         try:
             _GLOBAL_COOKIES_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(YTDLP_COOKIES_FILE, _GLOBAL_COOKIES_CACHE_PATH)
+            _GLOBAL_COOKIES_STAMP_PATH.write_text(source_hash)
+            logger.info("refreshed writable cookie copy from source (%d bytes)",
+                        source_stat.st_size)
         except OSError:
             logger.exception("failed to refresh writable global cookies copy")
             return YTDLP_COOKIES_FILE if _GLOBAL_COOKIES_CACHE_PATH.exists() else None
@@ -4183,7 +4245,7 @@ async def _do_download_job(
         # applied blanket to every attempt), so this only pays that cost
         # once real fallback is actually needed, not on the fast/common path.
         client_override_args: list[str] = (
-            ["--extractor-args", "youtube:player_client=android_vr"]
+            ["--extractor-args", f"youtube:player_client={_YTDLP_FALLBACK_CLIENT}"]
             if attempt == max_attempts else []
         )
         # Client-configurable throttle (Settings → yt-dlp). throttle_seconds=0
@@ -4247,7 +4309,8 @@ async def _do_download_job(
                 # timeout, since the HTTP request already returned with a job_id.
                 # Still bounded so a truly stuck process doesn't hold its semaphore
                 # slot (and tmp dir) forever.
-                _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=ytdlp_timeout)
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    proc.communicate(), timeout=ytdlp_timeout)
             except asyncio.TimeoutError:
                 proc.kill()
                 await proc.communicate()  # reap the zombie (Fix 7)
@@ -4396,6 +4459,17 @@ async def _do_download_job(
         # tagging) wouldn't have caught — exactly the kind of file the client's
         # own integrity check then rejects, forcing a retry. Fall back to the
         # already-verified untagged file rather than serve a possibly-broken one.
+        # Flag a SILENT quality downgrade.
+        #
+        # `bestaudio` matches a muxed video stream too, because it does contain
+        # audio — so when a client offers no audio-only formats the download
+        # succeeds carrying a whole video file, a fraction of the audio bitrate,
+        # and a real lossy re-encode where a remux would have done. Nothing
+        # fails, so nothing was logged, and an exit code cannot tell a good
+        # download from a degraded one. That is how android_vr silently became
+        # the worst option here without anyone noticing.
+        _warn_if_muxed(stdout_bytes, safe_title, attempt, downloader_name)
+
         if (proc.returncode == 0 and tagged_file.exists() and tagged_file.stat().st_size > 0
                 and await _verify_downloaded_audio(tagged_file, expected_duration=float(duration) if duration else None)):
             output_file.unlink(missing_ok=True)
@@ -4659,6 +4733,30 @@ async def list_pending_downloads(request: Request):
             for r in rows
         ]
     })
+
+
+def _warn_if_muxed(stdout_bytes: bytes | None, title: str, attempt: int, downloader: str) -> None:
+    """Records when a download settled for a muxed format instead of audio-only."""
+    if not stdout_bytes:
+        return
+    match = _CHOSEN_FORMAT_RE.search(stdout_bytes.decode("utf-8", "replace"))
+    if not match:
+        return
+    chosen = match.group(1)
+    # A "+" means separate video and audio streams were merged, which is the
+    # adaptive case and perfectly fine; only a lone muxed itag is a downgrade.
+    if "+" in chosen or chosen not in _MUXED_ITAGS:
+        return
+    logger.warning(
+        "yt-dlp fell back to muxed format %s for %r (client offered no audio-only "
+        "stream) — lower bitrate and a full re-encode rather than a remux",
+        chosen, title,
+    )
+    asyncio.create_task(log_event(
+        "download", "muxed_format_fallback", level="warn",
+        message=f"format {chosen}",
+        detail={"format": chosen, "attempt": attempt, "downloader": downloader},
+    ))
 
 
 async def _verify_downloaded_audio(path: pathlib.Path, expected_duration: Optional[float] = None) -> bool:
