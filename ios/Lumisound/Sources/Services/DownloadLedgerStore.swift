@@ -27,6 +27,13 @@ final class DownloadLedgerStore {
     /// Records that `sourceTrackID` is present on disk as `filename`.
     func record(sourceTrackID: String, filename: String) {
         guard !sourceTrackID.isEmpty, !filename.isEmpty else { return }
+        // Having the file contradicts "this track is unavailable", so forget any
+        // remembered failure for it (see DownloadFailureStore). Done here rather
+        // than at each of the six call sites that record a ledger entry: this is
+        // the app's single "we now have this track" signal, so a future success
+        // path cannot forget to clear the suppression and leave a track that
+        // demonstrably works sitting in a month-long cool-off.
+        DownloadFailureStore.shared.clear(sourceTrackID: sourceTrackID)
         if map[sourceTrackID] == filename { return }
         map[sourceTrackID] = filename
         save()

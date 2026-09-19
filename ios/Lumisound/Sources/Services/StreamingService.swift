@@ -369,6 +369,11 @@ enum StreamingError: LocalizedError {
     /// Blocked by the Wi-Fi Only Downloads setting (Settings → Streaming)
     /// — see `NetworkPathMonitor`/`downloadToLibrary`'s guard at the top.
     case wifiRequired
+    /// The bridge previously reported this track as gone for good (removed,
+    /// private, terminated channel) and it is still inside its cool-off, so no
+    /// request was made — see `DownloadFailureStore`. Distinct from `.notFound`,
+    /// which is a fresh answer from the server rather than a remembered one.
+    case permanentlyUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -414,6 +419,8 @@ enum StreamingError: LocalizedError {
             return "This track is already downloaded."
         case .wifiRequired:
             return "Wi-Fi Only Downloads is on and you're on cellular — connect to Wi-Fi or turn the setting off in Settings → Streaming."
+        case .permanentlyUnavailable:
+            return "This track is no longer available to download. The app will check again for it later."
         }
     }
 }

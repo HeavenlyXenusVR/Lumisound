@@ -46,6 +46,18 @@ extension StreamingService {
 
         let sourceTrackID = "\(track.source):\(track.id)"
 
+        // Tracks the bridge has told us are gone (removed, private, terminated
+        // channel) are left alone for a while — see DownloadFailureStore. Placed
+        // at this same chokepoint, before any network work, so every download path
+        // in the app inherits it: with no memory of failure, a dead video was
+        // re-requested by every pass forever — 9,842 attempts across 2,223 such
+        // tracks in one measured week, which is both wasted work and part of what
+        // provokes the bot wall that breaks the downloads that COULD succeed.
+        if DownloadFailureStore.shared.shouldSkip(sourceTrackID: sourceTrackID) {
+            appLog("downloadToLibrary: skipping \"\(track.title)\" — known unavailable, still in cool-off", category: "network")
+            throw StreamingError.permanentlyUnavailable
+        }
+
         // Pre-download dedupe — skip entirely if we already have a valid copy
         // of this exact source track (matched by sourceTrackID/LUMISOUND_ID).
         if let match = existingSongs.first(where: { $0.sourceTrackID == sourceTrackID }),
@@ -465,7 +477,18 @@ extension StreamingService {
         var statusRequest = startRequest
         statusRequest.url = statusURL
 
-        struct StatusPayload: Decodable { let status: String; let code: Int?; let detail: String? }
+        struct StatusPayload: Decodable {
+            let status: String
+            let code: Int?
+            let detail: String?
+            /// Set by the bridge when the failure is a property of the VIDEO
+            /// (removed, private, terminated channel) rather than of our session
+            /// or the network — see `_ytdlp_failure_is_permanent` there. Both
+            /// cases arrive as a 404, so this flag is the only way to tell them
+            /// apart; absent on an older bridge, which is read as "not
+            /// permanent" so nothing is suppressed on a guess.
+            let permanent: Bool?
+        }
 
         // Poll for up to 5 minutes — matches the previous client-side timeout,
         // and each poll is a trivial dict lookup (<1s), so this never approaches
@@ -537,7 +560,14 @@ extension StreamingService {
                     appWarn("downloadToLibrary: timeout for \"\(track.title)\"", category: "network")
                     throw StreamingError.timeout
                 case 404:
-                    appWarn("downloadToLibrary: not found for \"\(track.title)\"", category: "network")
+                    if status.permanent == true {
+                        // Remembered so every later pass stops asking. Only ever
+                        // on the bridge's say-so — see DownloadFailureStore.
+                        DownloadFailureStore.shared.recordPermanentFailure(sourceTrackID: sourceTrackID)
+                        appWarn("downloadToLibrary: \"\(track.title)\" is permanently unavailable (\(status.detail ?? "no detail")) — suppressing future attempts", category: "network")
+                    } else {
+                        appWarn("downloadToLibrary: not found for \"\(track.title)\" — \(status.detail ?? "no detail")", category: "network")
+                    }
                     throw StreamingError.notFound(track.title)
                 case 502, 503, 504, 524:
                     appWarn("downloadToLibrary: job failed with gateway error \(status.code ?? 0) for \"\(track.title)\" — will retry", category: "network")

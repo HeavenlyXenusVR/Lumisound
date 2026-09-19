@@ -3971,6 +3971,51 @@ def _ytdlp_auth_failure_reason(stderr: bytes) -> Optional[str]:
     return None
 
 
+# Failure signatures that mean "retrying this soon cannot possibly help".
+#
+# Why this classification is needed at all: a removed video and a bot wall both
+# surface to the client as a 404, so the client could not tell "this will never
+# work" from "this will work once the session is fixed" — and therefore retried
+# both forever. Measured over one week, that came to 9,842 download attempts
+# across 2,223 tracks that no longer exist on YouTube, with the worst individual
+# tracks re-attempted over 300 times across six weeks. Besides the wasted work,
+# that request volume is itself part of what provokes the bot wall, so the endless
+# retrying of dead videos was helping to break the downloads that could work.
+_PERMANENT_FAILURE_MARKERS = (
+    "video unavailable",
+    "private video",
+    "this video is private",
+    "removed by the uploader",
+    "has been terminated",
+    "no longer available",
+    "video has been removed",
+    "this video is no longer available",
+    "does not exist",
+    "unavailable in your country",
+)
+
+
+def _ytdlp_failure_is_permanent(stderr: bytes) -> bool:
+    """Whether this failure is a property of the VIDEO rather than of our session
+    or the network.
+
+    Deliberately conservative: only signatures that clearly describe the video
+    itself count. Everything else — the bot wall, an age gate, a missing audio
+    format, a timeout, a 5xx — is treated as transient, because those are fixed
+    by cookies, by waiting, or by a retry, and marking them permanent would
+    suppress a track that is perfectly downloadable. Being wrong in that
+    direction would hide music the user owns, so the check errs toward retrying.
+
+    Note an age gate is NOT permanent (fresh cookies from a verified account fix
+    it) and neither is "no compatible audio stream", which is a known-temporary
+    YouTube quirk — see `_ytdlp_auth_failure_reason`.
+    """
+    text = stderr.decode(errors="replace").lower()
+    if "sign in to confirm" in text or "not a bot" in text:
+        return False
+    return any(marker in text for marker in _PERMANENT_FAILURE_MARKERS)
+
+
 def _format_flag(format: str) -> str:
     """Map a format name to a yt-dlp -f flag value for direct URL extraction."""
     mapping = {
@@ -4469,6 +4514,13 @@ async def _do_download_job(
                     cookie_args = forced_args
             if attempt == max_attempts:
                 detail = _ytdlp_auth_failure_reason(last_stderr) or _ytdlp_generic_failure_summary(last_stderr)
+                # Recorded on the job (see _run_download_job's handler) so the
+                # client can stop asking for a video that no longer exists,
+                # instead of inferring it from a 404 that a bot wall produces too.
+                if _ytdlp_failure_is_permanent(last_stderr):
+                    job = _DOWNLOAD_JOBS.get(job_id)
+                    if job is not None:
+                        job["permanent"] = True
                 raise HTTPException(status_code=404, detail=detail)
             continue
         # `paced` is logged separately from `elapsed` on purpose: the two used to
@@ -4751,7 +4803,15 @@ async def download_status(request: Request, job_id: str = Query(...)):
     job = _DOWNLOAD_JOBS.get(job_id)
     if job:
         if job["status"] == "error":
-            return JSONResponse({"status": "error", "code": job["code"], "detail": job["detail"]})
+            return JSONResponse({
+                "status": "error", "code": job["code"], "detail": job["detail"],
+                # True only when the failure is a property of the video itself
+                # (removed, private, terminated channel) rather than of our
+                # session or the network — see _ytdlp_failure_is_permanent. The
+                # client uses it to stop re-requesting a dead video; it must never
+                # be set for a bot wall or an age gate, which cookies fix.
+                "permanent": bool(job.get("permanent", False)),
+            })
         return JSONResponse({"status": job["status"]})
 
     user_id = _account_token_user_id(request)

@@ -338,6 +338,13 @@ final class TrackedPlaylistStore: ObservableObject {
                             return (false, true, false)
                         } catch StreamingError.alreadyDownloaded {
                             return (false, false, false)
+                        } catch StreamingError.permanentlyUnavailable {
+                            // Known-gone and still in cool-off, so no request was
+                            // made — see DownloadFailureStore. Not a failure and
+                            // deliberately not counted as one: a playlist full of
+                            // dead videos must not look like a bridge outage to the
+                            // health probe below.
+                            return (false, false, false)
                         } catch StreamingError.alreadyInFlight {
                             // Another download of this exact track is already
                             // running, or WAS when the app died — the claim
@@ -380,6 +387,21 @@ final class TrackedPlaylistStore: ObservableObject {
                     "\(blocked) track\(blocked == 1 ? "" : "s") from \"\(pl.name)\" blocked by YouTube (auto-generated \"Topic\" channel)",
                     category: .warning
                 )
+            }
+            // Said out loud, once per pass, because the old behaviour was for
+            // these tracks to silently never appear while the app re-requested
+            // them indefinitely. A count the user can see is what turns "this
+            // playlist never finishes" into "these ones are gone from YouTube".
+            let unavailable = DownloadFailureStore.shared.suppressedCount(
+                among: toGet.map(\.sourceTrackID))
+            if unavailable > 0 {
+                appLog("runAutoDownloads: \(unavailable) track(s) from \"\(pl.name)\" skipped — no longer available on YouTube", category: "network")
+                if got > 0 || blocked > 0 {
+                    ToastCenter.shared.show(
+                        "\(unavailable) track\(unavailable == 1 ? "" : "s") from \"\(pl.name)\" \(unavailable == 1 ? "is" : "are") no longer available on YouTube",
+                        category: .info
+                    )
+                }
             }
             if !tracks.isEmpty { updateMetadata(id: pl.id, trackCount: tracks.count) }
 
