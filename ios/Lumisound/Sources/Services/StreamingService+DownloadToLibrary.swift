@@ -696,7 +696,17 @@ extension StreamingService {
         do {
             try FileManager.default.moveItem(at: downloadedURL, to: destURL)
         } catch {
-            appError("downloadToLibrary: move failed for \"\(track.title)\": \(error)", category: "network")
+            // Records WHAT it tried to move to, not just that it failed. The
+            // previous message named only the track, which was not enough to tell
+            // a name collision from a destination that had collapsed to a
+            // directory — the two look identical in the error text and need
+            // completely different fixes.
+            var isDir: ObjCBool = false
+            let destExists = FileManager.default.fileExists(atPath: destURL.path, isDirectory: &isDir)
+            appError("downloadToLibrary: move failed for \"\(track.title)\" -> \(destURL.path) "
+                     + "(exists: \(destExists), isDirectory: \(isDir.boolValue), "
+                     + "ext: \(destURL.pathExtension), dir: \(importDir.lastPathComponent)): \(error)",
+                     category: "network")
             throw error
         }
         if actualExt != requestedExt {
@@ -951,7 +961,19 @@ extension StreamingService {
         // each time since the result was identical. The ledger's recorded
         // filename is the only thing that still points at where a track
         // actually lives post-conversion.
-        if let ledgerName = DownloadLedgerStore.shared.filename(for: sourceTrackID) {
+        // A name that resolves back to `dir` itself is rejected rather than used.
+        // `appendingPathComponent("")` and `appendingPathComponent(".")` both
+        // return the DIRECTORY, and a directory passes `fileExists`, so a bad
+        // entry here could hand back the folder as though it were the track — and
+        // the caller would then try to move a download onto its own destination
+        // folder. Field logs show exactly that shape: a move refused because
+        // "an item with the same name already exists", where the name given was a
+        // folder, not a file. The origin of such an entry is still unaccounted
+        // for, so this refuses the impossible value instead of assuming where it
+        // came from.
+        if let ledgerName = DownloadLedgerStore.shared.filename(for: sourceTrackID),
+           !ledgerName.isEmpty,
+           dir.appendingPathComponent(ledgerName).standardizedFileURL != dir.standardizedFileURL {
             let ledgerURL = dir.appendingPathComponent(ledgerName)
             let ledgerIsValid = await Task.detached(priority: .utility) {
                 FileManager.default.fileExists(atPath: ledgerURL.path) &&
