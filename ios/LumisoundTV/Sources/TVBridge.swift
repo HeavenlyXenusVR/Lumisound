@@ -631,21 +631,25 @@ final class TVBridgeClient: ObservableObject {
             }
             return (data, response)
         } catch {
-            if retries > 0 { return try await dataWithRetry(request, retries: retries - 1) }
             let ns = error as NSError
-
-            // A cancelled request is not a failure.
+            // Cancellation is checked BEFORE retrying, not after.
             //
-            // NSURLErrorCancelled (-999) is what every `.task` produces when its
-            // screen goes away mid-request, which on a remote-driven UI happens
-            // constantly — 90 of these in a day, all of them -999, on paths like
-            // /user/on-this-day and /user/music/smart-playlists that a tab
-            // simply navigated away from. Logging them as errors buried the real
-            // network failures underneath, exactly as cancelled artwork loads
-            // did before that path was fixed.
+            // The retry came first, so a request cancelled because its screen went
+            // away was reissued — for a screen that no longer exists — and only
+            // then recognised as cancelled. On a remote-driven UI that navigates
+            // constantly this was the single most common "failure" in the logs, so
+            // it was also the most retried. Re-asking for /user/on-this-day on
+            // behalf of a tab the user already left is pure waste.
             if ns.code == NSURLErrorCancelled {
                 throw error
             }
+            if retries > 0 { return try await dataWithRetry(request, retries: retries - 1) }
+
+            // Cancellations never reach here — handled above before any retry.
+            // Kept out of the error log for the reason that fix records: -999 is
+            // what every `.task` produces when its screen goes away mid-request,
+            // which on a remote-driven UI happens constantly, and logging them as
+            // errors buried the real network failures underneath.
 
             TVRemoteLogger.logError(
                 category: "network", event: "request_failed_after_retries",

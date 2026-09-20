@@ -10445,12 +10445,17 @@ async def server_artwork(
             except Exception as exc:
                 # Caching is an optimisation; serving the image is the job.
                 logger.warning("user_music_artwork: could not cache recovered artwork for %s: %s", path, exc)
-            from fastapi.responses import Response
+            _artwork_cache_put(full_path, data)
             return Response(content=data, media_type="image/jpeg")
 
+        # Remembered as "nothing here". This is the case that cost the most while
+        # being cached the least: each of these re-ran ffmpeg AND a full unmask to
+        # arrive at the same answer. 342 were measured in one week, every one
+        # paying the whole bill to learn nothing had changed.
+        _artwork_cache_put(full_path, _ARTWORK_CACHE_NEGATIVE)
         raise HTTPException(status_code=404, detail="No embedded artwork found")
 
-    from fastapi.responses import Response
+    _artwork_cache_put(full_path, stdout_bytes)
     return Response(content=stdout_bytes, media_type="image/jpeg")
 
 
@@ -11476,6 +11481,76 @@ async def user_music_artwork_upload(
     await asyncio.to_thread(dest.write_bytes, body)
 
 
+# ---------------------------------------------------------------------------
+# Extracted-artwork cache (Feature: artwork-extract-cache)
+# ---------------------------------------------------------------------------
+#
+# Artwork extraction was redone from scratch on every single request, and for a
+# locked (.lms) track it is not cheap: an ffmpeg pass over a decompressed copy,
+# and failing that a full unmask — read, XOR and write the WHOLE file — just to
+# look at its embedded picture. Nothing was kept.
+#
+# A television grid asks for a screenful at once (tvOS opens up to 12 connections
+# per host), so scrolling re-ran that work for every tile, every time. Measured
+# from client telemetry: 314 artwork requests returned no HTTP response at all,
+# which is the client's 25-second timeout expiring while the server was busy
+# repeating extractions it had already done.
+#
+# The negative result matters as much as the positive one. 342 requests ended in
+# "this track has no artwork" — and each of those had paid the entire ffmpeg-plus-
+# unmask cost to find out, then paid it again on the next scroll, forever. Caching
+# only hits would have left the most expensive case untouched.
+#
+# Keyed on path plus mtime plus size, the same identity `_FfprobeCache` uses, so
+# replacing a track's file invalidates its entry for free.
+_ARTWORK_CACHE_DIR = pathlib.Path(
+    os.path.join(YTDLP_CACHE_DIR, "artwork-cache") if YTDLP_CACHE_DIR
+    else os.path.join(tempfile.gettempdir(), "lumisound-artwork-cache")
+)
+# A marker file standing for "looked, found nothing", so a track with no artwork
+# is answered from disk instead of re-extracted.
+_ARTWORK_CACHE_NEGATIVE = b"\x00LUMISOUND-NO-ARTWORK"
+_ARTWORK_CACHE_MAX_ENTRIES = 20000
+
+
+def _artwork_cache_path(full_path: pathlib.Path) -> Optional[pathlib.Path]:
+    try:
+        stat = full_path.stat()
+        key = f"{full_path}|{int(stat.st_mtime)}|{stat.st_size}"
+    except OSError:
+        return None
+    digest = hashlib.sha256(key.encode()).hexdigest()
+    return _ARTWORK_CACHE_DIR / digest[:2] / f"{digest}.jpg"
+
+
+def _artwork_cache_get(full_path: pathlib.Path) -> Optional[bytes]:
+    """Cached bytes, `_ARTWORK_CACHE_NEGATIVE` for a known-absent one, or None."""
+    cache_path = _artwork_cache_path(full_path)
+    if cache_path is None:
+        return None
+    try:
+        return cache_path.read_bytes()
+    except OSError:
+        return None
+
+
+def _artwork_cache_put(full_path: pathlib.Path, data: bytes) -> None:
+    """Best-effort: a cache write failing must never fail the request."""
+    cache_path = _artwork_cache_path(full_path)
+    if cache_path is None:
+        return
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        # Written via a temp file in the same directory and renamed, so a
+        # concurrent reader never sees a half-written image — the grid requests
+        # that make this worth caching are exactly the ones that would race it.
+        tmp = cache_path.with_suffix(".part")
+        tmp.write_bytes(data)
+        tmp.replace(cache_path)
+    except OSError as exc:
+        logger.debug("artwork cache write failed for %s: %s", full_path, exc)
+
+
 @app.get("/user/music/artwork")
 async def user_music_artwork(
     path: str = Query(..., description="Relative path within user's music dir"),
@@ -11496,6 +11571,15 @@ async def user_music_artwork(
     if not full_path.exists() or not full_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
+    # Answered from the cache before any extraction work — including the "no
+    # artwork here" answer, which previously cost a full extraction every time to
+    # rediscover. See the _ARTWORK_CACHE_DIR comment.
+    cached = _artwork_cache_get(full_path)
+    if cached is not None:
+        if cached == _ARTWORK_CACHE_NEGATIVE:
+            raise HTTPException(status_code=404, detail="No artwork available")
+        return Response(content=cached, media_type="image/jpeg")
+
     try:
         rel_path = str(full_path.relative_to(music_dir))
         pool = await get_pool()
@@ -11509,8 +11593,11 @@ async def user_music_artwork(
         if row:
             pre_uploaded = _locked_artwork_path(music_dir, row[0])
             if pre_uploaded.exists():
-                from fastapi.responses import Response
-                return Response(content=pre_uploaded.read_bytes(), media_type="image/jpeg")
+                data = pre_uploaded.read_bytes()
+                # Cached as well: this path is cheaper than extraction but still a
+                # database round-trip plus a read for every tile on screen.
+                _artwork_cache_put(full_path, data)
+                return Response(content=data, media_type="image/jpeg")
     except Exception as exc:
         logger.warning("user_music_artwork: pre-uploaded thumbnail lookup failed for %s: %s", path, exc)
 
