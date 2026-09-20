@@ -3449,10 +3449,78 @@ async def stream(
     return {"url": stream_url, "expires_in": 21600}
 
 
+# ---------------------------------------------------------------------------
+# Stream tickets (Feature: avplayer-range-auth)
+# ---------------------------------------------------------------------------
+#
+# Short-lived opaque credentials that travel in the stream URL's QUERY STRING
+# rather than in a header.
+#
+# AVPlayer is handed the proxy URL directly and fetches it itself. Auth is
+# supplied through AVURLAsset's "AVURLAssetHTTPHeaderFieldsKey" option, which
+# applies those headers to the FIRST request and does not reliably carry them
+# onto the byte-range requests that follow. The evidence is unambiguous: of every
+# recorded stream_proxy_auth_rejected event carrying range information, 309 of 309
+# were ranged and not one was not — the opening request authenticates, then every
+# range request arrives bare and is refused, so playback dies a second or two in.
+#
+# A URL survives what headers do not, so the credential moves into the URL. It is
+# deliberately NOT the account token: query strings land in access logs, and a
+# session token does not belong there. A ticket is random, carries no account
+# information of its own, is bound server-side to the user who asked for it, and
+# expires — so a ticket recovered from a log is worth little and not for long.
+_STREAM_TICKETS: dict[str, tuple[str, float]] = {}
+_STREAM_TICKET_TTL = 6 * 60 * 60  # comfortably longer than any single track
+_STREAM_TICKET_MAX = 5000
+
+
+def _sweep_stream_tickets() -> None:
+    now = time.monotonic()
+    for ticket in [t for t, (_, exp) in _STREAM_TICKETS.items() if exp < now]:
+        _STREAM_TICKETS.pop(ticket, None)
+    # Hard bound so a pathological client cannot grow this without limit; the
+    # oldest go first and their owners simply fetch a new ticket.
+    if len(_STREAM_TICKETS) > _STREAM_TICKET_MAX:
+        for ticket, _ in sorted(_STREAM_TICKETS.items(), key=lambda kv: kv[1][1])[:len(_STREAM_TICKETS) - _STREAM_TICKET_MAX]:
+            _STREAM_TICKETS.pop(ticket, None)
+
+
+def _stream_ticket_user(ticket: str) -> Optional[str]:
+    """The user a ticket belongs to, or None if unknown/expired."""
+    entry = _STREAM_TICKETS.get(ticket)
+    if not entry:
+        return None
+    user_id, expires = entry
+    if expires < time.monotonic():
+        _STREAM_TICKETS.pop(ticket, None)
+        return None
+    return user_id
+
+
+@app.get("/api/stream/ticket")
+async def issue_stream_ticket(payload: dict = Depends(get_current_user)):
+    """Issues a ticket for this account to put in stream URLs.
+
+    Authenticated normally (a header, on a request the app makes itself), so the
+    ticket is only ever handed to someone who already proved who they are.
+    """
+    _sweep_stream_tickets()
+    ticket = secrets.token_urlsafe(24)
+    _STREAM_TICKETS[ticket] = (payload["sub"], time.monotonic() + _STREAM_TICKET_TTL)
+    return {"ticket": ticket, "expires_in": _STREAM_TICKET_TTL}
+
+
 @app.get("/api/stream/proxy")
 async def stream_proxy(
     request: Request,
     id: str = Query(..., description="Video/track ID"),
+    ticket: str = Query(
+        "",
+        description="Short-lived credential from /api/stream/ticket. Accepted because "
+                    "AVPlayer does not carry custom headers onto its byte-range requests, "
+                    "so a header-only scheme authenticates the first request and fails "
+                    "every one after it — see the _STREAM_TICKETS comment.",
+    ),
     source: str = Query("youtube", description="youtube, soundcloud, or bandcamp"),
     url: Optional[str] = Query(None, description="Full URL (required for soundcloud/bandcamp)"),
     format: str = Query("m4a", description="Audio format"),
@@ -3486,6 +3554,11 @@ async def stream_proxy(
         # added for exactly this wall.
         account_token = request.headers.get("X-Account-Token", "")
         if account_token and _valid_account_token(account_token):
+            pass
+        elif ticket and _stream_ticket_user(ticket):
+            # The only credential AVPlayer's range requests can actually carry —
+            # see the _STREAM_TICKETS comment above for why headers cannot be
+            # relied on here.
             pass
         else:
             await check_auth(request)

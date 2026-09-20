@@ -47,6 +47,13 @@ extension StreamingService {
         if track.source == "soundcloud" || track.source == "bandcamp" {
             queryItems.append(URLQueryItem(name: "url", value: track.youtubeURL))
         }
+        // Carried in the URL because AVPlayer's byte-range requests do not carry
+        // our headers — see StreamingService+StreamTicket. The header auth stays
+        // on as well; this is the credential that survives the requests the
+        // headers never reach.
+        if let ticket = await streamTicket() {
+            queryItems.append(URLQueryItem(name: "ticket", value: ticket))
+        }
 
         var components = URLComponents()
         components.path = "/api/stream/proxy"

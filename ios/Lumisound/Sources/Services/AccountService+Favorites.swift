@@ -61,13 +61,21 @@ extension AccountService {
         struct Row: Decodable {
             let song_id: String
         }
-        struct Response: Decodable {
-            let favorites: [Row]
-        }
         do {
             let data = try await makeRequest("/user/favorites")
-            let decoded = try JSONDecoder().decode(Response.self, from: data)
-            let remote = Set(decoded.favorites.map(\.song_id))
+            // `GET /user/favorites` returns a BARE ARRAY of rows, not an object
+            // wrapping them.
+            //
+            // This decoded `{"favorites": [...]}`, a shape the endpoint has never
+            // produced, so the decode threw every single time and this function
+            // could not once do the job it exists for. Telemetry across all
+            // signed-in accounts showed the same failure for 22 of them and zero
+            // successes — favourites simply never came back from the account after
+            // a reinstall or on a second device, which is the entire reason this
+            // was written. tvOS reads the same endpoint as an array and was always
+            // fine, which is why the mismatch stayed invisible on one platform.
+            let decoded = try JSONDecoder().decode([Row].self, from: data)
+            let remote = Set(decoded.map(\.song_id))
             guard !remote.isEmpty else { return }
 
             let before = library.favoriteSongIDs.count

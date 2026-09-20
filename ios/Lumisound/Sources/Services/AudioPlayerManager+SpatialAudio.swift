@@ -176,7 +176,33 @@ extension AudioPlayerManager {
             isMonoAudioRouted = false
             configureEngine()
             configureEqualizer()
-            try? AVAudioSession.sharedInstance().setActive(true)
+
+            // The session activation result is no longer discarded.
+            //
+            // This was `try? ... setActive(true)`, which swallowed the one error
+            // that explains the whole failure: `CannotInterruptOthers` (OSStatus
+            // '!int'), raised when another app owns audio and ours is not in a
+            // position to take it. The code then started the engine regardless,
+            // which cannot work without an active session, and reported a
+            // generic AudioUnit error — so the logs blamed the engine for a
+            // session problem. Across all users the rebuild path was 74 attempts
+            // and 74 failures with not one recovery, and the real reason was
+            // invisible in every one of them.
+            //
+            // Bailing out here is not giving up: nothing about the engine has been
+            // left broken (it is configured and merely not started), and the
+            // existing retry paths — `timerTick`'s "playing but the engine stopped"
+            // check and the interruption-ended handler — come back to it once the
+            // session can actually be had. Retrying in a moment when it is
+            // impossible only produced noise.
+            do {
+                try AVAudioSession.sharedInstance().setActive(true)
+            } catch {
+                errorMessage = error.localizedDescription
+                appWarn("Audio engine rebuild: audio session would not activate (\(error.localizedDescription)) — leaving the engine stopped; it will be retried when the session is available", category: "audio")
+                return
+            }
+
             do {
                 try engine.start()
                 appLog("Audio engine recovered after rebuild", category: "audio")

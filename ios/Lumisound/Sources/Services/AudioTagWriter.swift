@@ -20,6 +20,30 @@ enum AudioTagWriter {
     /// losing the `LUMISOUND_ID` tag only means `DownloadLedgerStore`'s
     /// existing belt-and-suspenders dedup carries the load instead of the
     /// embedded-tag detection in `DocumentImportService`.
+    /// Containers AVFoundation cannot demux, and therefore cannot tag.
+    ///
+    /// `tag` exports to m4a via AVAssetExportSession, which requires the SOURCE
+    /// to be readable by AVFoundation. Ogg/Opus and WebM are not: there is no Ogg
+    /// demuxer on the platform at all (the same limitation that makes
+    /// `scheduleCurrent` route these through a transcode, and that leaves
+    /// `Song.sourceTrackID` nil for every .opus download). Passthrough export of
+    /// one of these "succeeds" and produces an unreadable file.
+    private static let untaggableExtensions: Set<String> = ["opus", "ogg", "oga", "webm"]
+
+    /// Whether tagging this file can possibly work.
+    ///
+    /// Exists because the failure was being discovered the expensive way, over and
+    /// over: the caller exported, the export reported success, the output failed
+    /// its readability check, and the whole thing was retried on the next pass.
+    /// Telemetry counted 29,436 such failures across 340 Ogg/Opus files — an
+    /// average of 87 attempts each — none of which could ever have succeeded.
+    /// Checked through `effectiveExtension` so a `.lms`-locked file is judged by
+    /// the real container inside it rather than by the lock's own extension.
+    static func canTag(fileAt url: URL) -> Bool {
+        !untaggableExtensions.contains(
+            LumisoundExclusiveExtensionService.effectiveExtension(for: url))
+    }
+
     static func tag(
         fileAt url: URL,
         title: String?,
@@ -31,6 +55,15 @@ enum AudioTagWriter {
         year: String? = nil,
         trackNumber: Int? = nil
     ) async -> URL? {
+        // Refused up front rather than discovered after a failed export. Logged
+        // at info, not warning: for an Ogg/Opus library this is the expected
+        // answer for every track, and 29k warnings about an unsupported container
+        // buried the telemetry it was competing with.
+        guard canTag(fileAt: url) else {
+            appLog("AudioTagWriter: \(url.lastPathComponent) is a container AVFoundation cannot tag — skipping (sourceTrackID: \(sourceTrackID))", category: "network")
+            return nil
+        }
+
         let startTime = Date()
         let outURL = url.deletingLastPathComponent()
             .appendingPathComponent(UUID().uuidString)

@@ -57,6 +57,11 @@ extension AccountService {
         currentUser = nil
         isLoggedIn = false
         hasDateOfBirth = false
+        // A stream ticket is bound to the account that asked for it, so it must
+        // not survive into the next session's stream URLs. Cleared here rather
+        // than in logout() because every path that ends a session comes through
+        // this function — account deletion and session revocation included.
+        StreamingService.clearStreamTicket()
         avatarImage = nil
         stopAutoPushTimer()
         UserDefaults.standard.removeObject(forKey: Self.userKey)

@@ -355,6 +355,10 @@ enum LumisoundTrackVaultService {
     /// plain 5-minute loop like the rest of this pipeline.
     private static let metadataRepairMigrationLastRunKey = "lumisoundTrackVault.metadataRepairMigration.lastRun"
     private static let metadataRepairMigrationInterval: TimeInterval = 24 * 60 * 60
+    /// Per-track count of failed repair attempts, so a track that cannot be
+    /// repaired stops being retried (and stops holding `lastRun` back).
+    private static let metadataRepairStrikesKey = "lumisoundTrackVault.metadataRepair.strikes"
+    private static let maxMetadataRepairAttempts = 3
 
     @MainActor
     static func runMetadataRepairMigrationIfNeeded() async {
@@ -392,6 +396,14 @@ enum LumisoundTrackVaultService {
                     guard let (id, entry) = iterator.next() else { return }
                     pending += 1
                     group.addTask {
+                        // A container AVFoundation cannot tag can never be
+                        // repaired, so it must not be queued. Without this the
+                        // repair phase below failed on it every pass, `allResolved`
+                        // stayed false, `lastRun` never advanced, and this whole
+                        // 24-hour migration re-ran on every 5-minute tick doing
+                        // full-file lock/unlock I/O — 29,436 logged failures over
+                        // 340 Ogg/Opus files, none of which could ever succeed.
+                        guard AudioTagWriter.canTag(fileAt: entry.url) else { return nil }
                         guard await LumisoundExclusiveExtensionService.hasEmbeddedSourceTag(fileURL: entry.url) else {
                             return id
                         }
@@ -433,15 +445,33 @@ enum LumisoundTrackVaultService {
         // whole library.
         var repaired = 0
         var allResolved = true
+        var strikes = UserDefaults.standard.dictionary(forKey: metadataRepairStrikesKey) as? [String: Int] ?? [:]
+        var gaveUp = 0
         for (index, id) in idsNeedingRepair.enumerated() {
             if Task.isCancelled { allResolved = false; break }
             if id == currentlyPlayingID {
                 allResolved = false
                 continue
             }
+            // A track that has failed repair this many times is not going to
+            // start working, and must stop holding the migration open.
+            //
+            // `allResolved` gating `lastRun` is right for a transient failure —
+            // retry on the next tick rather than waiting out 24 hours — but it
+            // gave a single permanently-unrepairable track the power to keep the
+            // entire pass due forever, re-running every 5 minutes with real
+            // file I/O. The Ogg/Opus case that caused this in the field is now
+            // excluded before it gets here; this is the general backstop for
+            // whatever else turns out to be unrepairable.
+            if (strikes[id] ?? 0) >= maxMetadataRepairAttempts {
+                gaveUp += 1
+                continue
+            }
             if await library.repairEmbeddedMetadata(songID: id, currentlyPlayingID: currentlyPlayingID) {
                 repaired += 1
+                strikes[id] = nil
             } else {
+                strikes[id] = (strikes[id] ?? 0) + 1
                 allResolved = false
             }
             if (index + 1) % batchSize == 0 {
@@ -449,7 +479,13 @@ enum LumisoundTrackVaultService {
             }
         }
 
-        appLog("LumisoundTrackVaultService: metadata repair migration — repaired \(repaired)/\(idsNeedingRepair.count) track(s)", category: "background")
+        // Pruned to the tracks still in play, so the record cannot grow forever.
+        strikes = strikes.filter { idsNeedingRepair.contains($0.key) }
+        UserDefaults.standard.set(strikes, forKey: metadataRepairStrikesKey)
+
+        appLog("LumisoundTrackVaultService: metadata repair migration — repaired \(repaired)/\(idsNeedingRepair.count) track(s)"
+               + (gaveUp > 0 ? ", gave up on \(gaveUp) after \(maxMetadataRepairAttempts) failed attempts" : ""),
+               category: "background")
         // Only advances lastRun once every converted track either already
         // had its tag or was successfully repaired this pass — anything
         // left unresolved (currently playing, or a repair that failed)
