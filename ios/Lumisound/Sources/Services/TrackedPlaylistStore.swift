@@ -234,6 +234,25 @@ final class TrackedPlaylistStore: ObservableObject {
         }
         guard !due.isEmpty else { return }
 
+        // Scanned ONCE up front rather than once per playlist.
+        //
+        // This scan was inside the loop, so a pass over several tracked playlists
+        // ran a full local-library scan for each of them. Measured from a real
+        // session: scans every three to six seconds, and a single pass taking
+        // thirty seconds to walk three playlists with a scan apiece. Each one
+        // flips `@Published isScanning`, which forces a SwiftUI re-render across
+        // every view observing LibraryManager — the documented cause of the
+        // visible freezing, and why scrolling the library stuttered for roughly
+        // two seconds out of every five.
+        //
+        // Correctness is unaffected because the scan exists to keep dedup
+        // decisions honest, and the library can only change mid-pass if this pass
+        // downloads something. Between playlists where nothing was downloaded,
+        // `allSongs` is byte-for-byte what it already was, so re-scanning could not
+        // change a single decision. Where something IS downloaded, the loop
+        // re-scans before moving on (see the end of the loop).
+        await library.scanLocalDocumentsAsync()
+
         for pl in due {
             // A pass gets interrupted far more often than it completes on a
             // phone: a BGAppRefreshTask's budget expires (its expirationHandler
@@ -246,7 +265,6 @@ final class TrackedPlaylistStore: ObservableObject {
                 appLog("runAutoDownloads: cancelled before \"\(pl.name)\" — leaving it due so the next trigger resumes it", category: "network")
                 return
             }
-            await library.scanLocalDocumentsAsync()
             let tracks = await streaming.fetchPlaylistTracks(url: pl.url, existingSongs: [])
 
             // `fetchPlaylistTracks` returns [] for EVERY failure — a dead
@@ -378,7 +396,10 @@ final class TrackedPlaylistStore: ObservableObject {
                 }
             }
             if got > 0 {
-                library.scanLocalDocuments()
+                // The library genuinely changed, so the next playlist's dedup needs
+                // to see it. This is the only condition under which a mid-pass
+                // re-scan can affect any decision.
+                await library.scanLocalDocumentsAsync()
                 ToastCenter.shared.show("Auto-downloaded \(got) new track\(got == 1 ? "" : "s") from \"\(pl.name)\"",
                                         category: .download)
             }

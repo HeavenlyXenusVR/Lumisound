@@ -559,14 +559,39 @@ final class BackgroundService: ObservableObject {
     /// nothing on disk to recover them from) — each recovered image gets a
     /// fresh UUID placeholder, same as any other "unknown source" entry.
     private func rebuildManifestFromDisk() {
+        // Records "there is nothing here" as a real answer.
+        //
+        // Every early return below used to leave the manifest key UNSET, which is
+        // the same state that sent us here in the first place — so `loadImagesFromDisk`
+        // took the "no saved filenames" branch again on the very next call and
+        // re-scanned the disk, forever. For the common case of a user with no
+        // custom backgrounds (the directory does not even exist) that repeated on
+        // every single invocation: 53 disk scans in eight hours, each one
+        // rediscovering the same nothing.
+        //
+        // Writing an empty manifest distinguishes "we looked and there is nothing"
+        // from "we have never looked", which is the distinction the guard in
+        // `loadImagesFromDisk` is actually trying to make. Any real image added
+        // later goes through `saveImagesToDisk`, which rewrites this key anyway.
+        func recordEmptyManifest() {
+            UserDefaults.standard.set([String](), forKey: Keys.imageFilenames)
+            UserDefaults.standard.set([String](), forKey: Keys.imageAssetIDs)
+        }
+
         let fm = FileManager.default
-        guard fm.fileExists(atPath: imageStorageDir.path) else { return }
+        guard fm.fileExists(atPath: imageStorageDir.path) else {
+            recordEmptyManifest()
+            return
+        }
         let imageExts: Set<String> = ["jpg", "jpeg", "png", "heic", "gif"]
         let files = (try? fm.contentsOfDirectory(atPath: imageStorageDir.path)) ?? []
         let imageFiles = files
             .filter { imageExts.contains(($0 as NSString).pathExtension.lowercased()) }
             .sorted()
-        guard !imageFiles.isEmpty else { return }
+        guard !imageFiles.isEmpty else {
+            recordEmptyManifest()
+            return
+        }
         var loaded: [UIImage] = []
         var loadedGIFData: [Data?] = []
         for name in imageFiles {
@@ -582,7 +607,12 @@ final class BackgroundService: ObservableObject {
                 loadedGIFData.append(nil)
             }
         }
-        guard !loaded.isEmpty else { return }
+        guard !loaded.isEmpty else {
+            // Files existed but none decoded into a usable image — still a
+            // conclusive "nothing to restore", so do not keep rediscovering it.
+            recordEmptyManifest()
+            return
+        }
         images = loaded
         imageGIFData = loadedGIFData
         imageAssetIDs = (0..<loaded.count).map { _ in UUID().uuidString }

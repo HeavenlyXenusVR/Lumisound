@@ -73,12 +73,21 @@ final class LibraryManager: ObservableObject {
 
     func beginScan() {
         activeScanCount += 1
-        isScanning = true
+        // Assigned only on a real transition.
+        //
+        // `@Published` fires `objectWillChange` on every assignment, whether or
+        // not the value differs — so re-asserting `true` while a scan was already
+        // running forced a full SwiftUI re-render across every view observing
+        // LibraryManager, for no change at all. With several scans overlapping
+        // (the auto-download pass used to run one per tracked playlist) that was
+        // a burst of app-wide re-renders every few seconds, which is what the
+        // freezing actually looked like from the outside.
+        if !isScanning { isScanning = true }
     }
 
     func endScan() {
         activeScanCount = max(0, activeScanCount - 1)
-        if activeScanCount == 0 {
+        if activeScanCount == 0, isScanning {
             isScanning = false
         }
     }
