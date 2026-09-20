@@ -45,6 +45,8 @@ extension AudioPlayerManager {
             handleEngineConfigurationChange()
         }
 
+        checkForPlaybackStall()
+
         // AB Repeat enforcement
         if abRepeatEnabled,
            let start = abRepeatStart,
@@ -58,6 +60,65 @@ extension AudioPlayerManager {
         // only refresh on play/pause/track-change events and can visibly drift from
         // (or briefly disagree with) the in-app scrubber.
         updateNowPlaying()
+    }
+
+    /// Catches the case where the engine is running, we believe we are playing,
+    /// and yet no audio is being rendered.
+    ///
+    /// The existing recovery above only notices a STOPPED engine. It cannot see the
+    /// worse version: an engine that is running perfectly with nothing scheduled on
+    /// its player node, which renders silence indefinitely while `isPlaying` stays
+    /// true. Two real paths lead there, and both were live:
+    ///
+    ///   * `AVAudioEngineConfigurationChange` (logged 252 times across 27 accounts)
+    ///     restarts the engine and calls `play()` again, but never re-schedules the
+    ///     track — and a configuration change can invalidate the graph, taking the
+    ///     scheduled segment with it.
+    ///   * The rebuild inside `startEngineIfNeeded` calls `engine.reset()`, which
+    ///     detaches every node and clears what was scheduled on them. `play()` on a
+    ///     node with nothing left to play is silent.
+    ///
+    /// Rather than guess which happened, this watches the only thing that actually
+    /// settles it: `position` is derived from frames the engine has RENDERED, so if
+    /// it is not moving then audio is not flowing, whatever the engine claims. The
+    /// track is then re-scheduled from where it had got to, which is the one repair
+    /// that works for both causes.
+    func checkForPlaybackStall() {
+        // Every condition here is a state where position legitimately does not
+        // advance, and treating any of them as a stall would restart playback on
+        // top of itself.
+        guard isPlaying, !isUsingOpusPlayer, engine.isRunning,
+              !isCrossfading, !isSchedulingAsync,
+              currentSong != nil,
+              duration > 0, position < duration - 1.0
+        else {
+            stalledTickCount = 0
+            lastStallCheckPosition = position
+            return
+        }
+
+        // A tick is 0.5s, so anything genuinely playing moves well beyond this.
+        if position > lastStallCheckPosition + 0.05 {
+            stalledTickCount = 0
+            lastStallCheckPosition = position
+            return
+        }
+
+        stalledTickCount += 1
+        // Six ticks — three seconds of believing we play while rendering nothing.
+        // Deliberately not shorter: a brief hitch under load can stall the render
+        // for a tick or two, and restarting playback over that would be worse than
+        // the hitch.
+        guard stalledTickCount >= 6 else { return }
+
+        let resumeAt = position
+        stalledTickCount = 0
+        lastStallCheckPosition = resumeAt
+        appWarn("Playback stalled — engine running but position frozen at \(String(format: "%.1f", resumeAt))s for 3s; rescheduling \"\(currentSong?.displayName ?? "?")\"", category: "audio")
+        RemoteLogger.logError(category: "audio", event: "playback_stall_recovered",
+                              message: "position frozen at \(Int(resumeAt))s",
+                              detail: ["position": Int(resumeAt), "duration": Int(duration)])
+        playCurrent(from: resumeAt)
     }
 
     /// Starts the crossfade once playback actually reaches

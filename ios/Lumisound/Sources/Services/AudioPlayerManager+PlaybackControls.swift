@@ -43,6 +43,12 @@ extension AudioPlayerManager {
     }
 
     func pause() {
+        // Any pause clears the "resume me after the interruption" memory, so an
+        // interruption that ends AFTER the listener has deliberately paused does
+        // not start the music up again behind them. The interruption handler sets
+        // the flag immediately after calling this, so its own pause still arms it
+        // — see handleAudioInterruption.
+        wasInterrupted = false
         if isUsingOpusPlayer {
             opusPlayer?.pause()
             isPlaying = false

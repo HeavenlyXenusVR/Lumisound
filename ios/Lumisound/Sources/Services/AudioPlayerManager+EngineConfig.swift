@@ -85,18 +85,52 @@ extension AudioPlayerManager {
                 wasInterrupted = true
             }
         case .ended:
+            // `wasInterrupted` is finally READ here, which is the fix.
+            //
+            // It was set on `.began` and cleared at the top of this case before
+            // anything ever looked at it — written twice, read never. So the app
+            // had no memory that it had paused because of an interruption rather
+            // than because the listener chose to, and the decision to resume rested
+            // entirely on `.shouldResume` being present.
+            //
+            // iOS leaves that option out routinely, and the logs show how often:
+            // 16 interruptions ended "not resuming" against 11 that resumed, across
+            // 7 accounts. So the majority of interruptions stopped the music for
+            // good and waited for someone to press play — which is exactly the
+            // "audio suddenly pauses" report. Worse, the `guard` below used to
+            // `return` when the options key was missing entirely, so that case
+            // stopped playback permanently AND logged nothing at all.
+            //
+            // `.shouldResume` is a hint, not a permission slip. What actually
+            // decides whether playback can continue is whether the session can be
+            // made active again, so that is what is tested — and only a real
+            // failure there (another app holding audio) stops the resume.
+            let resumeBecauseInterrupted = wasInterrupted
             wasInterrupted = false
-            guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
-            let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-            if options.contains(.shouldResume) {
-                appLog("Audio session interruption ended — resuming", category: "audio")
-                // Re-activate the audio session before restarting the engine; the
-                // system deactivates it when an interruption begins.
-                try? AVAudioSession.sharedInstance().setActive(true)
-                resume()
-            } else {
-                appLog("Audio session interruption ended — not resuming", category: "audio")
+
+            let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt
+            let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue ?? 0)
+            let systemSuggestsResume = options.contains(.shouldResume)
+
+            guard resumeBecauseInterrupted || systemSuggestsResume else {
+                // Nothing was playing when the interruption began, so there is
+                // nothing to put back.
+                appLog("Audio session interruption ended — nothing was playing", category: "audio")
+                return
             }
+
+            do {
+                // The system deactivates the session when an interruption begins,
+                // so it has to be reclaimed before the engine can start.
+                try AVAudioSession.sharedInstance().setActive(true)
+            } catch {
+                appWarn("Audio session interruption ended — session still unavailable (\(error.localizedDescription)); leaving playback paused", category: "audio")
+                return
+            }
+            appLog("Audio session interruption ended — resuming"
+                   + (systemSuggestsResume ? "" : " (no shouldResume hint, but we were interrupted mid-playback)"),
+                   category: "audio")
+            resume()
         @unknown default:
             break
         }

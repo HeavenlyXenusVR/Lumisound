@@ -459,6 +459,14 @@ final class AudioPlayerManager: ObservableObject {
 
     // Audio interruption / route change
     var wasInterrupted = false
+
+    // MARK: Stall detection
+    //
+    // Position as of the previous tick, and how many consecutive ticks it has
+    // failed to move while we believed audio was playing. See
+    // `checkForPlaybackStall()`.
+    var lastStallCheckPosition: TimeInterval = 0
+    var stalledTickCount = 0
     // True when playback was auto-paused because the active output route
     // disappeared (e.g. Bluetooth disconnect) — used to auto-resume when a
     // route becomes available again.

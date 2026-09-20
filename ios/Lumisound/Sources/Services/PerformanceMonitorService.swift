@@ -130,6 +130,144 @@ private final class MetricSubscriber: NSObject, MXMetricManagerSubscriber {
                 extra["cumulativeGPUTimeSeconds"] = String(format: "%.1f", gpu.converted(to: .seconds).value)
             }
             appLog("MetricKit daily CPU/GPU report", category: "performance", extra: extra)
+
+            // WHY the app stopped running, which nothing here reported before.
+            //
+            // Field logs show real unclean shutdowns — the app's own breadcrumb
+            // trail records 15 on the current build across 6 accounts, always
+            // ending mid-playback or just after opening the Library — but the
+            // breadcrumbs only say what happened BEFORE, never the reason. That
+            // left "a few crashes" unanswerable: memory peaks top out near 400MB
+            // with no correlation to which accounts die most (one account peaked
+            // at 396MB with a single shutdown, another at 362MB with dozens), so
+            // guessing from resource usage was not going to settle it either.
+            //
+            // `applicationExitMetrics` is the authoritative answer and costs
+            // nothing extra: the OS already computes it and it distinguishes the
+            // possibilities that need completely different fixes — a memory kill,
+            // a watchdog timeout, a bad memory access, a CPU limit while
+            // backgrounded, or an ordinary exit that was never a crash at all.
+            reportExitMetrics(payload)
+        }
+    }
+
+    /// Reports the OS's own breakdown of how this app's recent sessions ended.
+    ///
+    /// Foreground and background are kept apart deliberately: a background memory
+    /// kill is routine for an audio app and means one thing, while the same kill in
+    /// the foreground means the app is genuinely using too much. Zero counts are
+    /// dropped so the report carries only what actually happened.
+    private func reportExitMetrics(_ payload: MXMetricPayload) {
+        guard let exits = payload.applicationExitMetrics else { return }
+
+        var detail: [String: Any] = [
+            "periodStart": Self.iso(payload.timeStampBegin),
+            "periodEnd": Self.iso(payload.timeStampEnd),
+        ]
+        func add(_ prefix: String, _ counts: [(String, Int)]) {
+            for (name, value) in counts where value > 0 {
+                detail["\(prefix)_\(name)"] = value
+            }
+        }
+        let fg = exits.foregroundExitData
+        add("fg", [
+            ("normal", fg.cumulativeNormalAppExitCount),
+            ("memoryLimit", fg.cumulativeMemoryResourceLimitExitCount),
+            ("badAccess", fg.cumulativeBadAccessExitCount),
+            ("abnormal", fg.cumulativeAbnormalExitCount),
+            ("illegalInstruction", fg.cumulativeIllegalInstructionExitCount),
+            ("watchdog", fg.cumulativeAppWatchdogExitCount),
+        ])
+        let bg = exits.backgroundExitData
+        add("bg", [
+            ("normal", bg.cumulativeNormalAppExitCount),
+            ("memoryLimit", bg.cumulativeMemoryResourceLimitExitCount),
+            ("cpuLimit", bg.cumulativeCPUResourceLimitExitCount),
+            ("badAccess", bg.cumulativeBadAccessExitCount),
+            ("abnormal", bg.cumulativeAbnormalExitCount),
+            ("illegalInstruction", bg.cumulativeIllegalInstructionExitCount),
+            ("watchdog", bg.cumulativeAppWatchdogExitCount),
+            ("suspendedWithLockedFile", bg.cumulativeSuspendedWithLockedFileExitCount),
+            ("backgroundTaskTimeout", bg.cumulativeBackgroundTaskAssertionTimeoutExitCount),
+        ])
+
+        // An abnormal count of zero everywhere is the good case and still worth
+        // recording: it is what distinguishes "no crashes happened" from "nothing
+        // reported", which the unclean-shutdown breadcrumbs cannot tell apart.
+        let crashy = detail.keys.contains { key in
+            key.hasSuffix("memoryLimit") || key.hasSuffix("badAccess") || key.hasSuffix("abnormal")
+                || key.hasSuffix("illegalInstruction") || key.hasSuffix("watchdog")
+                || key.hasSuffix("cpuLimit") || key.hasSuffix("backgroundTaskTimeout")
+        }
+        RemoteLogger.log(
+            category: "diagnostics", event: "app_exit_metrics",
+            level: crashy ? "warning" : "info",
+            message: crashy ? "abnormal exits reported" : "no abnormal exits",
+            detail: detail
+        )
+    }
+
+    // MARK: Crash / hang diagnostics
+
+    /// Delivered by the OS after a crash, an unresponsive stretch, or a
+    /// disk-write exception — usually on the next launch.
+    ///
+    /// This callback simply was not implemented, which is why crashes had no
+    /// recorded cause at all. `MXMetricPayload` above covers CPU and GPU; the
+    /// diagnostic payload is the separate one carrying the exception type, the
+    /// signal, the OS's termination reason, and the call stack that produced it.
+    /// Without it the only evidence of a crash was the app noticing, on its next
+    /// launch, that the previous session had not shut down cleanly — which says
+    /// nothing whatsoever about why.
+    func didReceive(_ payloads: [MXDiagnosticPayload]) {
+        for payload in payloads {
+            for crash in payload.crashDiagnostics ?? [] {
+                var detail: [String: Any] = [
+                    "appVersion": crash.metaData.applicationBuildVersion,
+                    "osVersion": crash.metaData.osVersion,
+                    "deviceType": crash.metaData.deviceType,
+                ]
+                if let type = crash.exceptionType { detail["exceptionType"] = type.intValue }
+                if let code = crash.exceptionCode { detail["exceptionCode"] = code.intValue }
+                if let signal = crash.signal { detail["signal"] = signal.intValue }
+                if let reason = crash.terminationReason { detail["terminationReason"] = reason }
+                if let vmRegion = crash.virtualMemoryRegionInfo { detail["vmRegion"] = String(vmRegion.prefix(200)) }
+                // The full tree is large and mostly addresses; the leading frames
+                // are what identify a crash site, and keeping this bounded means a
+                // crash report can never be too big to actually get uploaded.
+                if let json = try? crash.callStackTree.jsonRepresentation(),
+                   let text = String(data: json, encoding: .utf8) {
+                    detail["callStackPrefix"] = String(text.prefix(1800))
+                }
+                RemoteLogger.logError(
+                    category: "diagnostics", event: "crash_diagnostic",
+                    message: crash.terminationReason ?? "crash reported by MetricKit",
+                    detail: detail
+                )
+            }
+
+            // A hang is not a crash, but it is what the OS kills an app FOR — a
+            // watchdog exit in the metrics above and a hang here are two views of
+            // the same event, so both are needed to tell them apart.
+            for hang in payload.hangDiagnostics ?? [] {
+                RemoteLogger.log(
+                    category: "diagnostics", event: "hang_diagnostic", level: "warning",
+                    message: "main thread unresponsive for \(String(format: "%.1f", hang.hangDuration.converted(to: .seconds).value))s",
+                    detail: [
+                        "hangSeconds": hang.hangDuration.converted(to: .seconds).value,
+                        "appVersion": hang.metaData.applicationBuildVersion,
+                        "osVersion": hang.metaData.osVersion,
+                    ]
+                )
+            }
+
+            for exception in payload.diskWriteExceptionDiagnostics ?? [] {
+                RemoteLogger.log(
+                    category: "diagnostics", event: "disk_write_exception", level: "warning",
+                    message: "excessive disk writes",
+                    detail: ["writesCausedMB": exception.totalWritesCaused.converted(to: .megabytes).value]
+                )
+            }
         }
     }
 
