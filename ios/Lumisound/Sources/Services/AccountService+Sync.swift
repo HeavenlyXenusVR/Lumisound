@@ -184,7 +184,20 @@ extension AccountService {
         )
 
         do {
-            _ = try await makeRequest("/user/sync", method: "POST", body: payload)
+            // Retried, because the push is an idempotent upsert — the server
+            // REPLACES this account's favourites and playlists with what is sent,
+            // so sending it twice is indistinguishable from sending it once.
+            //
+            // Previously a single timeout abandoned the push entirely. Nothing was
+            // permanently lost (a 20-minute safety-net timer re-pushes) but the
+            // account stayed stale on every other device until it fired, and the
+            // payload is tiny — 140 favourites and one playlist for the largest
+            // account here — so these were ordinary network blips, not requests too
+            // big to finish. Three attempts with backoff cover a blip in seconds
+            // instead of twenty minutes.
+            _ = try await NetworkRetry.withRetry(maxAttempts: 3, baseDelay: 0.8) {
+                try await makeRequest("/user/sync", method: "POST", body: payload)
+            }
             lastSyncDate = Date()
             // The server broadcasts a "sync_changed" live event to every one
             // of this account's active connections after a successful push —
@@ -211,8 +224,20 @@ extension AccountService {
                 appLog("Push sync superseded by a newer sync (expected)", category: "account")
                 return
             }
-            appError("Push sync error: \(error.localizedDescription)", category: "account")
-            errorMessage = error.localizedDescription
+            // A transport failure that survived the retries above is reported but
+            // NOT surfaced to the user. `errorMessage` has visible homes in the UI,
+            // and telling someone their account failed to sync over a dropped
+            // connection — which the safety-net timer will quietly fix, and which
+            // they can do nothing about — is alarming without being useful. A real
+            // server rejection still surfaces: that is the `AccountError` branch
+            // above, where the status code means something actionable.
+            let isTransport = error is URLError
+            appError("Push sync error: \(error.localizedDescription)"
+                     + (isTransport ? " (transient, will retry on the next sync)" : ""),
+                     category: "account")
+            if !isTransport {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 

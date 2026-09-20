@@ -210,8 +210,21 @@ final class AccountService: ObservableObject {
         }
         struct InventoryBody: Encodable { let source_ids: [String] }
         do {
-            _ = try await makeRequest("/user/library/inventory", method: "POST",
-                                      body: InventoryBody(source_ids: Array(ids)))
+            // The largest request this app makes, and the only one whose cost
+            // scales with the whole library: every owned source id in one body,
+            // which the server then replaces wholesale. 3,378 ids for the biggest
+            // account here, and the shared 20-second timeout was not enough for it
+            // — 792 "request timed out" failures accumulated on this one endpoint,
+            // more than every other sync failure combined.
+            //
+            // Retried as well as lengthened, because it is a replace and therefore
+            // idempotent: sending it twice leaves the server in the same state as
+            // sending it once.
+            _ = try await NetworkRetry.withRetry(maxAttempts: 3, baseDelay: 1.0) {
+                try await makeRequest("/user/library/inventory", method: "POST",
+                                      body: InventoryBody(source_ids: Array(ids)),
+                                      timeout: 90)
+            }
             appLog("syncLibraryInventory: uploaded \(ids.count) source id(s)", category: "account")
             // One event per debounced push, not per source id.
             RemoteLogger.log(category: "sync", event: "library_inventory_synced", detail: ["count": ids.count])
@@ -225,8 +238,13 @@ final class AccountService: ObservableObject {
                 return
             }
             appWarn("syncLibraryInventory failed: \(error.localizedDescription)", category: "account")
+            // The id count travels with the failure now. This endpoint's cost is a
+            // function of exactly that number, and without it a timeout could not
+            // be told apart from an ordinary network drop — which is why a long
+            // tail of them sat unexplained.
             RemoteLogger.logError(category: "sync", event: "library_inventory_sync_failed",
-                                   message: error.localizedDescription)
+                                   message: error.localizedDescription,
+                                   detail: ["sourceIDCount": ids.count])
         }
     }
 

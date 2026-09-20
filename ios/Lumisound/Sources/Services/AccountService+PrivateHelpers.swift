@@ -67,15 +67,25 @@ extension AccountService {
         UserDefaults.standard.removeObject(forKey: Self.userKey)
     }
 
-    func makeRequest<T: Encodable>(_ path: String, method: String = "GET", body: T) async throws -> Data {
-        try await _makeRequest(path, method: method, bodyData: try JSONEncoder().encode(body))
+    func makeRequest<T: Encodable>(_ path: String, method: String = "GET", body: T,
+                                   timeout: TimeInterval? = nil) async throws -> Data {
+        try await _makeRequest(path, method: method,
+                               bodyData: try JSONEncoder().encode(body), timeout: timeout)
     }
 
-    func makeRequest(_ path: String, method: String = "GET") async throws -> Data {
-        try await _makeRequest(path, method: method, bodyData: nil)
+    func makeRequest(_ path: String, method: String = "GET",
+                     timeout: TimeInterval? = nil) async throws -> Data {
+        try await _makeRequest(path, method: method, bodyData: nil, timeout: timeout)
     }
 
-    func _makeRequest(_ path: String, method: String, bodyData: Data?) async throws -> Data {
+    /// `timeout` overrides the 20s default for the handful of calls whose work is
+    /// inherently proportional to library size. 20s is right for the ordinary
+    /// small request and demonstrably too short for a bulk one — the library
+    /// inventory upload sends every owned source id at once (3,378 for the largest
+    /// account here) and the server replaces the whole set, which is what produced
+    /// a long tail of "request timed out" on that one endpoint.
+    func _makeRequest(_ path: String, method: String, bodyData: Data?,
+                      timeout: TimeInterval? = nil) async throws -> Data {
         let base = bridgeURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let normalizedPath = path.hasPrefix("/") ? path : "/\(path)"
         guard let url = URL(string: base + normalizedPath) else {
@@ -84,7 +94,7 @@ extension AccountService {
 
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.timeoutInterval = 20
+        request.timeoutInterval = timeout ?? 20
 
         if let tok = token {
             request.setValue("Bearer \(tok)", forHTTPHeaderField: "Authorization")
