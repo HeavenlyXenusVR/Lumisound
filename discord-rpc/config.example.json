@@ -1,4 +1,7 @@
 {
   "access_token": "paste a token from Lumisound -> Account -> Generate Rich Presence Token",
-  "poll_interval_seconds": 5
+  "poll_interval_seconds": 5,
+
+  "//show_when_paused": "Optional. Default false: while playback is paused, Rich Presence is cleared rather than leaving the track on screen. Set true to keep showing the paused track (without an elapsed timer).",
+  "show_when_paused": false
 }

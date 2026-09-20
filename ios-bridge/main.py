@@ -12779,7 +12779,19 @@ async def get_playback_state(payload: dict = Depends(get_current_user)):
         "source": row[4],
         "position_seconds": row[5],
         "duration_seconds": row[6],
-        "updated_at": row[7].isoformat() if row[7] else None,
+        # Stamped with an explicit UTC offset rather than emitted naive.
+        #
+        # This column is stored naive and the database runs in UTC, so
+        # `.isoformat()` produced e.g. "2026-09-20T03:45:27" with nothing saying
+        # which zone that is. The only consumer that does arithmetic on it — the
+        # local Discord Rich Presence daemon, which uses it to decide whether a
+        # "now playing" row is stale — had to guess, guessed local time, and was
+        # therefore wrong by the host's whole UTC offset. On a UTC-5 machine that
+        # made every row read as ~5 hours NEWER than it was, so a stale
+        # "is_playing" row kept a listener's presence up for hours after they
+        # stopped. Saying the zone outright is the fix; no consumer should have to
+        # infer it.
+        "updated_at": row[7].replace(tzinfo=timezone.utc).isoformat() if row[7] else None,
         "is_playing": bool(row[8]),
         "bpm": row[9],
     }

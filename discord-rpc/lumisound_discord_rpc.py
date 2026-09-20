@@ -323,15 +323,28 @@ _BUTTON_LABELS = {
     "soundcloud": "Listen on SoundCloud",
 }
 
+# How long after the app's last report a "now playing" row stops counting.
+#
+# The app reports every few seconds while playing and once more when playback
+# stops, so anything older than this means the app went away without a final
+# word — backgrounded, killed, or the device went to sleep — and its last known
+# state should not keep standing in for the present.
+STALE_AFTER_SECONDS = 120
+
 
 def build_activity(
     state: dict,
     large_image: Optional[str],
     small_image: Optional[str] = None,
     show_buttons: bool = True,
+    show_when_paused: bool = False,
 ) -> Optional[dict]:
     """Translates a /user/playback-state response into a Discord SET_ACTIVITY
-    payload, or None if nothing should be shown (stale/no track)."""
+    payload, or None if nothing should be shown.
+
+    Returns None for: no track, a report too old to trust (see
+    STALE_AFTER_SECONDS), or paused playback unless `show_when_paused` is set.
+    """
     if not state or not state.get("title"):
         return None
 
@@ -341,17 +354,38 @@ def build_activity(
             from datetime import datetime, timezone
             updated = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
             if updated.tzinfo is None:
-                # The bridge returns naive timestamps in the server's local
-                # time zone (not UTC), so compare against local "now".
-                age = (datetime.now() - updated).total_seconds()
+                # A timestamp with no zone from this bridge is UTC — its database
+                # runs in UTC and the column is stored naive. (Current bridges
+                # stamp the offset explicitly and take the branch below; this is
+                # for older ones.)
+                #
+                # This previously assumed the server's LOCAL zone and compared
+                # against a local "now", which silently subtracted the host's UTC
+                # offset from every age. On a UTC-5 machine the check became "is
+                # this older than five hours and two minutes" instead of "older
+                # than two minutes": a row reading is_playing with a real age of
+                # 4h47m computed as -743s, passed as fresh, and kept a listener
+                # shown as listening long after they had stopped. That is the
+                # "always says I'm playing something" bug.
+                age = (datetime.now(timezone.utc)
+                       - updated.replace(tzinfo=timezone.utc)).total_seconds()
             else:
                 age = (datetime.now(timezone.utc) - updated).total_seconds()
-            if age > 120:
+            if age > STALE_AFTER_SECONDS:
                 return None  # client hasn't reported in — likely backgrounded/closed
         except ValueError:
             pass
 
-    is_playing = state.get("is_playing", True)
+    # Absent means "this bridge is too old to tell us", and the honest answer
+    # there is to show nothing rather than to assert playback. This defaulted to
+    # True, which is the one direction that can invent a listening session out of
+    # a missing field.
+    is_playing = bool(state.get("is_playing", False))
+    if not is_playing and not show_when_paused:
+        # Paused is not listening. The old behaviour kept the activity up and
+        # merely dropped the elapsed timer, so Discord still told everyone the
+        # user was listening to a track they had stopped.
+        return None
 
     activity: dict = {
         # ActivityType 2 = "Listening to ..." instead of the default 0
@@ -418,6 +452,10 @@ def main() -> None:
     large_image = config.get("large_image")
     small_image = config.get("small_image")
     show_buttons = config.get("show_buttons", True)
+    # Off by default: a paused track is not something to broadcast as listening.
+    # Opt in to keep the old behaviour of leaving the track on screen (without an
+    # elapsed timer) while stopped.
+    show_when_paused = config.get("show_when_paused", False)
 
     if not client_id:
         log("No discord_client_id in local config — fetching registration from bridge")
@@ -504,7 +542,8 @@ def main() -> None:
             continue
 
         # --- Update Rich Presence ---------------------------------------
-        activity = build_activity(state, large_image, small_image, show_buttons)
+        activity = build_activity(state, large_image, small_image, show_buttons,
+                                  show_when_paused)
         try:
             # Discord's rate limit (5 SET_ACTIVITY calls per 20s) is well
             # above our poll interval, so we re-send every poll (timestamps

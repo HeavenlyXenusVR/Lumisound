@@ -106,3 +106,6 @@ showing:
 
 If playback is paused or the last update is older than 2 minutes (app
 backgrounded/closed), the Rich Presence is cleared.
+
+If you would rather keep a paused track on screen (without the elapsed timer),
+set `"show_when_paused": true` in your config.
