@@ -18434,7 +18434,13 @@ def _valid_accent_hex(value: Optional[str]) -> Optional[str]:
 # Purely cosmetic, client-rendered ring styles around the profile avatar
 # (see ProfileHeaderCard / AvatarFrame in ProfileHeaderComponents.swift) —
 # validated the same way as accent hexes: an allowlist, not free text.
-_VALID_AVATAR_FRAMES = {"none", "glow", "ring", "dashed", "pulse", "gradient"}
+_VALID_AVATAR_FRAMES = {
+    "none", "glow", "ring", "dashed", "pulse", "gradient",
+    # Second wave — must stay in step with AvatarFrameStyle.swift, which is the
+    # list the picker actually renders. A value the client can offer but this
+    # rejects fails only at save time, after the user has already chosen it.
+    "double", "beads", "spin", "orbit", "halo", "arc",
+}
 
 
 def _valid_avatar_frame(value: Optional[str]) -> str:
@@ -18467,7 +18473,11 @@ def _valid_glow_intensity(value: Optional[str]) -> str:
 # avatar_frame's ring, which sits AROUND it) — see AvatarDecorationStyle.swift
 # for the client-rendered particle system each value maps to. Same
 # allowlist-not-free-text validation precedent as avatar_frame.
-_VALID_AVATAR_DECORATIONS = {"none", "sparkles", "fireflies", "petals", "snowfall", "embers"}
+_VALID_AVATAR_DECORATIONS = {
+    "none", "sparkles", "fireflies", "petals", "snowfall", "embers",
+    # Keep in step with AvatarDecorationStyle.swift.
+    "bubbles", "orbits", "rainfall", "dust", "notes",
+}
 
 
 def _valid_avatar_decoration(value: Optional[str]) -> str:
@@ -18483,7 +18493,11 @@ def _valid_avatar_decoration(value: Optional[str]) -> str:
 # looping animation overlaid across the whole banner (see
 # ProfileEffectStyle.swift). Same allowlist precedent as avatar_frame/
 # avatar_decoration above.
-_VALID_PROFILE_EFFECTS = {"none", "blastOff", "aurora", "shootingStars", "confetti", "rain"}
+_VALID_PROFILE_EFFECTS = {
+    "none", "blastOff", "aurora", "shootingStars", "confetti", "rain",
+    # Keep in step with ProfileEffectStyle.swift.
+    "waveform", "starfield", "bokeh", "snowfall", "pulse",
+}
 
 
 def _valid_profile_effect(value: Optional[str]) -> str:

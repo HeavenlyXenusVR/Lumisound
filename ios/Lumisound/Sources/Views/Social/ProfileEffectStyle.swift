@@ -14,6 +14,9 @@ import SwiftUI
 // same convention `DuplicateReason.apiValue` uses.
 enum ProfileEffectStyle: String, CaseIterable, Identifiable {
     case none, blastOff, aurora, shootingStars, confetti, rain
+    // Second wave. `waveform` and `pulse` are the two that belong specifically
+    // to a music app — the rest of the set could sit on any profile.
+    case waveform, starfield, bokeh, snowfall, pulse
 
     var id: String { rawValue }
 
@@ -25,6 +28,11 @@ enum ProfileEffectStyle: String, CaseIterable, Identifiable {
         case .shootingStars: return "Shooting Stars"
         case .confetti:      return "Confetti"
         case .rain:          return "Rain"
+        case .waveform:      return "Waveform"
+        case .starfield:     return "Starfield"
+        case .bokeh:         return "Bokeh"
+        case .snowfall:      return "Snowfall"
+        case .pulse:         return "Pulse"
         }
     }
 
@@ -194,6 +202,105 @@ struct ProfileEffectOverlay: View {
             path.move(to: point(startX, y))
             path.addLine(to: point(startX + slant, y + length))
             context.stroke(path, with: .color(tint.opacity(0.25)), style: StrokeStyle(lineWidth: 1, lineCap: .round))
+
+        case .waveform:
+            // Bars along the bottom edge, each rising and falling on its own
+            // frequency. Two summed sines per bar rather than one, because a
+            // single sine makes every bar sweep in an obvious wave — the two
+            // beating against each other is what reads as audio.
+            let barCount = 26.0
+            let index = floor(particle.hash(2) * barCount)
+            let barWidth = w / barCount
+            let x = index * barWidth
+            let speedA = 1.6 + particle.hash(3) * 1.8
+            let speedB = 2.7 + particle.hash(4) * 2.2
+            let phase = particle.hash(5) * .pi * 2
+            let level = (sin(time * speedA + phase) + sin(time * speedB + phase * 1.7)) / 4 + 0.5
+            let barHeight = max(2.0, level * h * 0.38)
+            let barRect = CGRect(
+                x: CGFloat(x + barWidth * 0.2), y: CGFloat(h - barHeight),
+                width: CGFloat(barWidth * 0.6), height: CGFloat(barHeight)
+            )
+            context.opacity = 0.32
+            context.fill(Path(roundedRect: barRect, cornerRadius: CGFloat(barWidth * 0.3)), with: .color(tint))
+
+        case .starfield:
+            // Fixed points that twinkle, with a slow horizontal drift so the
+            // field never looks pinned to the banner. Sizes vary enough to
+            // suggest depth without anything actually moving in Z.
+            let baseX = particle.hash(2)
+            let y = particle.hash(3) * h
+            let drift = (time * 0.012 + baseX).truncatingRemainder(dividingBy: 1.0)
+            let x = drift * w
+            let phase = particle.hash(4) * .pi * 2
+            let twinkle = (sin(time * 1.8 + phase) + 1) / 2
+            let radius = 0.6 + particle.hash(5) * 1.1
+            context.opacity = 0.2 + twinkle * 0.55
+            context.fill(
+                Path(ellipseIn: CGRect(x: CGFloat(x - radius), y: CGFloat(y - radius),
+                                       width: CGFloat(radius * 2), height: CGFloat(radius * 2))),
+                with: .color(tint.mixed(with: .white, amount: 0.4))
+            )
+
+        case .bokeh:
+            // Large, soft, slow circles — the one effect meant to be felt
+            // rather than noticed. Kept well under half opacity and heavily
+            // blurred so the name and avatar sitting on top stay readable,
+            // which is the constraint every banner effect here works within.
+            let driftSpeed = 0.02 + particle.hash(2) * 0.03
+            let baseY = particle.hash(3)
+            let x = ((time * driftSpeed + particle.hash(4)).truncatingRemainder(dividingBy: 1.2) / 1.2) * (w + 60) - 30
+            let y = (baseY + sin(time * 0.15 + particle.hash(5) * 6) * 0.06) * h
+            let radius = 8.0 + particle.hash(6) * 16
+            let breathe = (sin(time * 0.4 + particle.hash(7) * 6) + 1) / 2
+            context.drawLayer { layer in
+                layer.opacity = 0.10 + breathe * 0.12
+                layer.addFilter(.blur(radius: 6))
+                layer.fill(
+                    Path(ellipseIn: CGRect(x: CGFloat(x - radius), y: CGFloat(y - radius),
+                                           width: CGFloat(radius * 2), height: CGFloat(radius * 2))),
+                    with: .color(tint)
+                )
+            }
+
+        case .snowfall:
+            // The banner-wide counterpart to the avatar decoration of the same
+            // name, at a larger scale and lower contrast so it behaves as
+            // background texture rather than competing with the profile itself.
+            let fallSpeed = 0.1 + particle.hash(2) * 0.1
+            let startX = particle.hash(3)
+            let sway = 0.02 + particle.hash(4) * 0.03
+            let phase = particle.hash(5) * .pi * 2
+            let progress = (time * fallSpeed + particle.hash(6)).truncatingRemainder(dividingBy: 1.0)
+            let x = (startX + sin(time * 0.6 + phase) * sway).truncatingRemainder(dividingBy: 1) * w
+            let y = progress * (h + 12) - 6
+            guard y > -6, y < h + 6 else { return }
+            let radius = 1.0 + particle.hash(7) * 1.3
+            context.opacity = 0.45
+            context.fill(
+                Path(ellipseIn: CGRect(x: CGFloat(x - radius), y: CGFloat(y - radius),
+                                       width: CGFloat(radius * 2), height: CGFloat(radius * 2))),
+                with: .color(tint.mixed(with: .white, amount: 0.55))
+            )
+
+        case .pulse:
+            // Rings expanding from a fixed origin per particle and fading as
+            // they grow, like something reacting to a beat. Stroke width thins
+            // with the expansion so a ring dissipates rather than simply
+            // vanishing at full size.
+            let originX = particle.hash(2) * w
+            let originY = particle.hash(3) * h
+            let period = 2.2 + particle.hash(4) * 1.6
+            let progress = (time + particle.hash(5) * period).truncatingRemainder(dividingBy: period) / period
+            let radius = progress * min(w, h) * 0.45
+            guard radius > 1 else { return }
+            context.opacity = 0.35 * (1 - progress)
+            context.stroke(
+                Path(ellipseIn: CGRect(x: CGFloat(originX - radius), y: CGFloat(originY - radius),
+                                       width: CGFloat(radius * 2), height: CGFloat(radius * 2))),
+                with: .color(tint),
+                lineWidth: CGFloat(max(0.4, 1.6 * (1 - progress)))
+            )
         }
     }
 

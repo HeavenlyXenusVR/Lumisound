@@ -14,6 +14,10 @@ import SwiftUI
 // reach the client — keep this list in sync if it ever changes.
 enum AvatarDecorationStyle: String, CaseIterable, Identifiable {
     case none, sparkles, fireflies, petals, snowfall, embers
+    // Second wave, built on the same stateless particle model: every position
+    // is a pure function of the clock and the particle's seed, so these cost no
+    // stored state and animate identically no matter when they appear.
+    case bubbles, orbits, rainfall, dust, notes
 
     var id: String { rawValue }
 
@@ -25,6 +29,11 @@ enum AvatarDecorationStyle: String, CaseIterable, Identifiable {
         case .petals:    return "Petals"
         case .snowfall:  return "Snowfall"
         case .embers:    return "Embers"
+        case .bubbles:   return "Bubbles"
+        case .orbits:    return "Orbits"
+        case .rainfall:  return "Rain"
+        case .dust:      return "Dust"
+        case .notes:     return "Notes"
         }
     }
 
@@ -204,6 +213,93 @@ struct AvatarDecorationOverlay: View {
                 layer.addFilter(.blur(radius: 1))
                 layer.fill(Path(ellipseIn: dot), with: .color(emberColor))
             }
+
+        case .bubbles:
+            // Rises like embers but reads as liquid rather than fire: stroked
+            // outlines instead of filled dots, a wider wobble, and a size that
+            // grows on the way up the way a real bubble expands as pressure drops.
+            let riseSpeed = 0.14 + particle.hash(2) * 0.12
+            let startX = particle.hash(3)
+            let wobble = 0.04 + particle.hash(4) * 0.05
+            let phase = particle.hash(5) * .pi * 2
+            let progress = (time * riseSpeed + particle.hash(6)).truncatingRemainder(dividingBy: 1.0)
+            let x = (startX + sin(time * 1.4 + phase) * wobble).truncatingRemainder(dividingBy: 1) * w
+            let y = h - progress * h * 1.15 + h * 0.08
+            guard y > -5, y < h + 5 else { return }
+            let radius = 1.0 + particle.hash(7) * 1.4 + progress * 0.8
+            context.opacity = 0.65 * (1 - progress * 0.5)
+            context.stroke(Path(ellipseIn: rect(x: x, y: y, radius: radius)),
+                           with: .color(tint), lineWidth: 0.9)
+
+        case .orbits:
+            // Everything circles the avatar's centre rather than drifting
+            // independently, which gives the overlay a single focal point
+            // instead of scattered motion. Alternating direction keeps it from
+            // looking like one rigid rotating disc.
+            let cx = w / 2, cy = h / 2
+            let orbitRadius = (0.18 + particle.hash(2) * 0.28) * min(w, h)
+            let speed = 0.5 + particle.hash(3) * 0.7
+            let direction: Double = particle.hash(4) > 0.5 ? 1 : -1
+            let phase = particle.hash(5) * .pi * 2
+            let angle = time * speed * direction + phase
+            let x = cx + cos(angle) * orbitRadius
+            let y = cy + sin(angle) * orbitRadius * 0.55   // flattened, so it reads as a tilted orbit
+            context.opacity = 0.75
+            context.fill(Path(ellipseIn: rect(x: x, y: y, radius: 1.1 + particle.hash(6))),
+                         with: .color(tint))
+
+        case .rainfall:
+            // Short vertical streaks falling fast and straight — drawn as lines
+            // rather than dots, since a dot moving quickly reads as a dot, and a
+            // streak reads as speed.
+            let fallSpeed = 0.5 + particle.hash(2) * 0.4
+            let x = particle.hash(3) * w
+            let progress = (time * fallSpeed + particle.hash(4)).truncatingRemainder(dividingBy: 1.0)
+            let y = progress * h * 1.25 - h * 0.12
+            let length = 4.0 + particle.hash(5) * 4
+            guard y > -length, y < h + length else { return }
+            var streak = Path()
+            streak.move(to: CGPoint(x: CGFloat(x), y: CGFloat(y)))
+            streak.addLine(to: CGPoint(x: CGFloat(x), y: CGFloat(y + length)))
+            context.opacity = 0.5
+            context.stroke(streak, with: .color(tint.mixed(with: .white, amount: 0.35)), lineWidth: 0.9)
+
+        case .dust:
+            // Barely-moving motes. Two sine terms at unrelated speeds give a
+            // wandering path that never repeats on an obvious beat, which is what
+            // separates "floating" from "orbiting".
+            let baseX = particle.hash(2)
+            let baseY = particle.hash(3)
+            let driftX = sin(time * (0.15 + particle.hash(4) * 0.2) + particle.hash(5) * 6) * 0.06
+            let driftY = cos(time * (0.11 + particle.hash(6) * 0.17) + particle.hash(7) * 6) * 0.06
+            let x = (baseX + driftX) * w
+            let y = (baseY + driftY) * h
+            let shimmer = (sin(time * 0.9 + particle.hash(8) * 6) + 1) / 2
+            context.opacity = 0.25 + shimmer * 0.35
+            context.fill(Path(ellipseIn: rect(x: x, y: y, radius: 0.9)), with: .color(tint))
+
+        case .notes:
+            // Music notes drifting upward. The only style that draws a glyph
+            // rather than a shape — `resolve` rasterises the SF Symbol once per
+            // draw so it can be tinted and positioned like any other fill.
+            let riseSpeed = 0.1 + particle.hash(2) * 0.09
+            let startX = particle.hash(3)
+            let sway = 0.05 + particle.hash(4) * 0.05
+            let phase = particle.hash(5) * .pi * 2
+            let progress = (time * riseSpeed + particle.hash(6)).truncatingRemainder(dividingBy: 1.0)
+            let x = (startX + sin(time * 0.9 + phase) * sway).truncatingRemainder(dividingBy: 1) * w
+            let y = h - progress * h * 1.15 + h * 0.08
+            guard y > -8, y < h + 8 else { return }
+            // Fades in at the bottom and out at the top so notes never pop into
+            // or out of existence at the edges.
+            let edgeFade = min(1, progress / 0.15) * min(1, (1 - progress) / 0.2)
+            let glyph = particle.hash(7) > 0.5 ? "music.note" : "music.note.list"
+            var symbol = context.resolve(
+                Image(systemName: glyph).font(.system(size: 7, weight: .semibold))
+            )
+            symbol.shading = .color(tint)
+            context.opacity = 0.75 * edgeFade
+            context.draw(symbol, at: CGPoint(x: CGFloat(x), y: CGFloat(y)), anchor: .center)
         }
     }
 }

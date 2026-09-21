@@ -10,6 +10,10 @@ import SwiftUI
 // the client; keep this list in sync if it ever changes.
 enum AvatarFrameStyle: String, CaseIterable, Identifiable {
     case none, ring, glow, dashed, pulse, gradient
+    // Second wave. Each is built from the same accent pair as the originals so
+    // a frame always belongs to the profile wearing it rather than introducing
+    // a palette of its own.
+    case double, beads, spin, orbit, halo, arc
 
     var id: String { rawValue }
 
@@ -21,6 +25,12 @@ enum AvatarFrameStyle: String, CaseIterable, Identifiable {
         case .dashed:   return "Dashed"
         case .pulse:    return "Pulse"
         case .gradient: return "Gradient"
+        case .double:   return "Double"
+        case .beads:    return "Beads"
+        case .spin:     return "Spin"
+        case .orbit:    return "Orbit"
+        case .halo:     return "Halo"
+        case .arc:      return "Arc"
         }
     }
 
@@ -74,6 +84,92 @@ struct AvatarFrameOverlay: View {
                     lineWidth: 3.5
                 )
                 .frame(width: diameter + 10, height: diameter + 10)
+
+        case .double:
+            // Two rings at different radii, one per accent, so the pair reads as
+            // deliberate rather than as a single ring that happens to be thick.
+            ZStack {
+                Circle()
+                    .stroke(mainTint, lineWidth: 2.5)
+                    .frame(width: diameter + 14, height: diameter + 14)
+                Circle()
+                    .stroke(subTint.opacity(0.85), lineWidth: 1.5)
+                    .frame(width: diameter + 6, height: diameter + 6)
+            }
+
+        case .beads:
+            // A dotted ring. Round caps with a near-zero dash length turn each
+            // dash into a circle, which is how you get evenly-spaced dots around
+            // a curve without positioning any of them by hand.
+            Circle()
+                .stroke(
+                    mainTint,
+                    style: StrokeStyle(lineWidth: 4, lineCap: .round, dash: [0.01, 9])
+                )
+                .frame(width: diameter + 12, height: diameter + 12)
+
+        case .spin:
+            // A gradient arc that rotates continuously. Driven by TimelineView
+            // rather than a repeating `.animation`, matching how the decoration
+            // and effect overlays animate — the angle is a pure function of the
+            // clock, so nothing has to be started, stopped, or kept in sync.
+            TimelineView(.animation) { timeline in
+                let angle = timeline.date.timeIntervalSinceReferenceDate
+                    .truncatingRemainder(dividingBy: 3) / 3 * 360
+                Circle()
+                    .trim(from: 0, to: 0.65)
+                    .stroke(
+                        AngularGradient(colors: [mainTint.opacity(0), mainTint, subTint], center: .center),
+                        style: StrokeStyle(lineWidth: 3, lineCap: .round)
+                    )
+                    .rotationEffect(.degrees(angle))
+                    .frame(width: diameter + 12, height: diameter + 12)
+            }
+
+        case .orbit:
+            // A faint track with a single dot travelling around it.
+            TimelineView(.animation) { timeline in
+                let t = timeline.date.timeIntervalSinceReferenceDate
+                let angle = t.truncatingRemainder(dividingBy: 4) / 4 * 2 * .pi
+                let radius = (diameter + 14) / 2
+                ZStack {
+                    Circle()
+                        .stroke(mainTint.opacity(0.25), lineWidth: 1)
+                        .frame(width: diameter + 14, height: diameter + 14)
+                    Circle()
+                        .fill(subTint)
+                        .frame(width: 6, height: 6)
+                        .offset(x: radius * cos(angle), y: radius * sin(angle))
+                }
+                .frame(width: diameter + 20, height: diameter + 20)
+            }
+
+        case .halo:
+            // Two glows at different spreads. A single blur reads as a smudge;
+            // a tight bright core inside a wide soft one reads as light.
+            ZStack {
+                Circle()
+                    .fill(subTint.opacity(0.35))
+                    .frame(width: diameter + 16, height: diameter + 16)
+                    .blur(radius: 14)
+                Circle()
+                    .fill(mainTint.opacity(0.6))
+                    .frame(width: diameter + 4, height: diameter + 4)
+                    .blur(radius: 5)
+            }
+
+        case .arc:
+            // A single thick sweep with a visible gap, like a progress ring
+            // stopped partway — the most graphic of the set.
+            Circle()
+                .trim(from: 0.08, to: 0.67)
+                .stroke(
+                    LinearGradient(colors: [mainTint, subTint],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing),
+                    style: StrokeStyle(lineWidth: 4, lineCap: .round)
+                )
+                .rotationEffect(.degrees(-90))
+                .frame(width: diameter + 12, height: diameter + 12)
         }
     }
 }
