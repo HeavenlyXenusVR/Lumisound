@@ -1584,3 +1584,27 @@ CREATE TABLE IF NOT EXISTS ios_announcement_views (
     PRIMARY KEY (announcement_id, user_id),
     FOREIGN KEY (user_id) REFERENCES ios_users(id) ON DELETE CASCADE
 );
+
+-- Feature: recommended people — being offered to other users as someone with
+-- similar taste.
+--
+-- Separate from `share_listening_activity`, and deliberately so. That flag
+-- governs whether other people can see WHAT you listen to (your recent plays,
+-- via /social/activity and /social/discover) and defaults to off. This one
+-- governs only whether you can be SUGGESTED to someone as a similar listener,
+-- which reveals no track, artist or play of yours — just that a resemblance
+-- exists, plus the profile fields that /api/social/users/search already makes
+-- findable by anyone who types your name.
+--
+-- Defaulting to TRUE is therefore not a widening of what is visible: a profile
+-- is already searchable, and this exposes strictly less than the search that
+-- finds it. Gating it off by default would instead make the feature empty for
+-- everyone — 59 of 60 accounts have never turned on the activity flag — which
+-- is the exact failure the mutual-friends suggestions already have.
+--
+-- Where the line actually sits: a recommendation may say "82% match" and "you
+-- both lean fast and bright", because those are aggregate and name nothing. It
+-- may NOT name a shared artist unless that user has turned on
+-- share_listening_activity, because an artist name is a specific thing they
+-- listen to. See _recommendation_reasons in main.py.
+ALTER TABLE ios_users ADD COLUMN IF NOT EXISTS discoverable_in_recommendations BOOLEAN DEFAULT TRUE;

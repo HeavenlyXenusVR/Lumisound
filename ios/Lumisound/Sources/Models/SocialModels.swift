@@ -299,6 +299,77 @@ struct SocialFriendRequestsResponse: Decodable {
     let outgoing: [SocialFriendRequest]
 }
 
+/// One entry from GET /api/social/recommended-people.
+///
+/// Distinct from `SocialFriendSuggestion`, which is ranked purely by mutual
+/// friends and therefore has nothing to say to anyone who has not made a friend
+/// yet — the position almost every account is in. This is ranked by how much two
+/// people's listening actually resembles each other's, so it works from someone's
+/// first few tracks.
+struct RecommendedPerson: Decodable, Identifiable {
+    let userId: String
+    let username: String
+    let displayName: String?
+    let avatarURL: String?
+    /// 0-100. Low is not necessarily "you two are unalike" — see `confidence`.
+    let score: Int
+    /// How much of the score came from the two libraries SOUNDING alike rather
+    /// than sharing artist names. Nil when either side has no measured
+    /// fingerprint yet.
+    let sonicScore: Int?
+    let mutualFriendCount: Int
+    /// Plain-language reasons. The server decides what may appear here: a shared
+    /// artist is only ever named when that person has opted into sharing their
+    /// listening activity, so this can say "2 artists in common" where it may not
+    /// say which two.
+    let reasons: [String]
+    /// Empty unless that person opted into sharing listening activity — the
+    /// server withholds the names rather than trusting the client to hide them.
+    let sharedArtists: [String]
+    let sharedGenres: [String]
+    /// "low" / "medium" / "high" — how much listening the thinner of the two
+    /// profiles actually has behind it. Lets the UI distinguish a weak match from
+    /// a match it simply cannot judge yet, which a bare percentage cannot.
+    let confidence: String
+
+    var id: String { userId }
+
+    var isLowConfidence: Bool { confidence == "low" }
+
+    enum CodingKeys: String, CodingKey {
+        case userId            = "user_id"
+        case username
+        case displayName       = "display_name"
+        case avatarURL         = "avatar_url"
+        case score
+        case sonicScore        = "sonic_score"
+        case mutualFriendCount = "mutual_friend_count"
+        case reasons
+        case sharedArtists     = "shared_artists"
+        case sharedGenres      = "shared_genres"
+        case confidence
+    }
+}
+
+/// Why `GET /api/social/recommended-people` returned nobody. The three cases
+/// need different things said to the user, and an empty list says none of them.
+enum RecommendedPeopleEmptyReason: String, Decodable {
+    case notEnoughListeningHistory = "not_enough_listening_history"
+    case noSimilarListenersYet     = "no_similar_listeners_yet"
+    case noCandidates              = "no_candidates"
+
+    var message: String {
+        switch self {
+        case .notEnoughListeningHistory:
+            return "Play a few more tracks and we'll find people who listen like you."
+        case .noSimilarListenersYet:
+            return "No one matches your taste yet — check back as more people join."
+        case .noCandidates:
+            return "You're already connected to everyone we could suggest."
+        }
+    }
+}
+
 /// One entry from GET /api/social/friends/suggestions.
 struct SocialFriendSuggestion: Decodable, Identifiable {
     let userId: String

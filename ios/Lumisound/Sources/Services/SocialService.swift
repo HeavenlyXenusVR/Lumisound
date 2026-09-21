@@ -24,6 +24,11 @@ final class SocialService: ObservableObject {
     @Published var outgoingRequests: [SocialFriendRequest] = []
     @Published var blockedUsers: [BlockedUserRef] = []
     @Published var suggestions: [SocialFriendSuggestion] = []
+    /// Ranked by listening similarity — see `RecommendedPerson`.
+    @Published var recommendedPeople: [RecommendedPerson] = []
+    /// Set when `recommendedPeople` is empty and the server said why.
+    @Published var recommendedPeopleEmptyReason: RecommendedPeopleEmptyReason?
+    @Published var isLoadingRecommendedPeople = false
     @Published var friendsActivity: [SocialActivityEntry] = []
     @Published var searchResults: [SocialUserRef] = []
     @Published var errorMessage: String? = nil
@@ -340,6 +345,35 @@ final class SocialService: ObservableObject {
             let data = try await account.makeRequest("/api/social/friends/suggestions")
             struct Response: Decodable { let suggestions: [SocialFriendSuggestion] }
             suggestions = try JSONDecoder().decode(Response.self, from: data).suggestions
+        } catch {
+            handle(error)
+        }
+    }
+
+    // MARK: - Recommended people (ranked by listening similarity)
+
+    /// Loads people worth adding, ranked by how much their listening resembles
+    /// the caller's.
+    ///
+    /// Kept separate from `fetchSuggestions` rather than replacing it: mutual
+    /// friends are strong evidence when they exist, and taste similarity is what
+    /// works when they do not. The two answer different questions and the UI
+    /// shows both.
+    func fetchRecommendedPeople() async {
+        guard let account, account.isLoggedIn else { return }
+        isLoadingRecommendedPeople = true
+        defer { isLoadingRecommendedPeople = false }
+        do {
+            let data = try await account.makeRequest("/api/social/recommended-people")
+            struct Response: Decodable {
+                let people: [RecommendedPerson]
+                let reason: String?
+            }
+            let decoded = try JSONDecoder().decode(Response.self, from: data)
+            recommendedPeople = decoded.people
+            recommendedPeopleEmptyReason = decoded.people.isEmpty
+                ? decoded.reason.flatMap(RecommendedPeopleEmptyReason.init(rawValue:))
+                : nil
         } catch {
             handle(error)
         }

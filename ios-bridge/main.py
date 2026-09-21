@@ -6525,6 +6525,10 @@ async def update_me(body: UpdateMeRequest, payload: dict = Depends(get_current_u
 class PrivacyRequest(BaseModel):
     share_listening_activity: Optional[bool] = None
     ai_assisted_suggestions: Optional[bool] = None
+    # Whether this account may be offered to others as a similar listener. See
+    # the ios_users column comment in schema.sql for why this is separate from
+    # share_listening_activity and why it defaults on.
+    discoverable_in_recommendations: Optional[bool] = None
 
 
 @app.put("/user/privacy")
@@ -6545,6 +6549,8 @@ async def update_privacy(body: PrivacyRequest, payload: dict = Depends(get_curre
         updates["share_listening_activity"] = body.share_listening_activity
     if body.ai_assisted_suggestions is not None:
         updates["ai_assisted_suggestions"] = body.ai_assisted_suggestions
+    if body.discoverable_in_recommendations is not None:
+        updates["discoverable_in_recommendations"] = body.discoverable_in_recommendations
 
     if updates:
         set_clause = ", ".join(f"{col} = %s" for col in updates)
@@ -19848,6 +19854,342 @@ def _jaccard(a: set, b: set) -> float:
     return len(a & b) / len(a | b)
 
 
+async def _artist_keys_for_user(user_id: str) -> tuple[set[str], dict[str, str]]:
+    """Every artist this user has played or favourited, lowercased for
+    comparison alongside a display casing. Unbounded on purpose — see the note
+    in `recommended_people` about why a top-N slice is the wrong input to a
+    similarity score.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT DISTINCT trim(artist) FROM ios_play_history
+                WHERE user_id = %s AND artist IS NOT NULL AND trim(artist) <> ''
+                UNION
+                SELECT DISTINCT trim(artist) FROM ios_user_favorites
+                WHERE user_id = %s AND artist IS NOT NULL AND trim(artist) <> ''
+                """,
+                (user_id, user_id),
+            )
+            names = [r[0] for r in await cur.fetchall()]
+    display, keys = _taste_display_map_and_keys(names)
+    return keys, display
+
+
+async def _genre_keys_for_user(user_id: str) -> tuple[set[str], dict[str, str]]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT DISTINCT trim(genre) FROM ios_user_music_metadata "
+                "WHERE user_id = %s AND genre IS NOT NULL AND trim(genre) <> ''",
+                (user_id,),
+            )
+            names = [r[0] for r in await cur.fetchall()]
+    display, keys = _taste_display_map_and_keys(names)
+    return keys, display
+
+
+def _taste_overlap(a: set, b: set) -> float:
+    """How much of the SMALLER taste is shared, damped by how much is known.
+
+    Not Jaccard, which the friend-to-friend score uses. Jaccard divides by the
+    union, so it punishes a difference in library size rather than measuring
+    agreement: a listener with ten artists who shares eight of them with someone
+    holding five hundred scores 8/502 — under 2% — despite sharing four fifths of
+    everything they listen to. Measured on this deployment that flattened every
+    real recommendation into the 5-14% range, which reads as "no matches" to
+    anyone looking at it.
+
+    The overlap coefficient asks the question that actually matters for
+    recommending a person: of the taste we know about for the more sparsely known
+    of the two, how much does the other one share? That is scale-free, so a new
+    account with a handful of plays can still be matched against someone with
+    thousands.
+
+    Its weakness is the opposite extreme — one shared artist out of one known
+    artist is a perfect 1.0 — so the result is damped by how much is known about
+    the thinner side. Below `full_confidence_at` distinct artists the score is
+    scaled down in proportion, which keeps a single coincidence from presenting
+    itself as a soulmate while still letting a genuinely small-but-overlapping
+    profile rank.
+    """
+    if not a or not b:
+        return 0.0
+    smaller = min(len(a), len(b))
+    overlap = len(a & b) / smaller
+    full_confidence_at = 8
+    confidence = min(1.0, smaller / full_confidence_at)
+    return overlap * confidence
+
+
+def _recommendation_reasons(
+    shared_artists: list[str],
+    shared_genres: list[str],
+    sonic_reasons: list[str],
+    mutual_friends: int,
+    candidate_shares_activity: bool,
+) -> list[str]:
+    """Plain-language reasons for a recommendation, filtered by what this
+    candidate has actually agreed to share.
+
+    The privacy line sits here, and it is deliberately not the same line as the
+    score. A score and a sonic description are aggregate — "82% match", "you both
+    lean fast and bright" — and name nothing this person listens to. A shared
+    ARTIST names something specific they play, so it is only spoken aloud when
+    they have turned on share_listening_activity, the existing opt-in that
+    governs exactly that. Their taste still influences the score either way; what
+    changes is whether the app says whose taste it was.
+
+    Genres are treated like artists rather than like sonic traits: "you both
+    listen to a lot of metal" is broader than naming an artist, but it is still a
+    statement about their library rather than about the pair.
+    """
+    reasons: list[str] = []
+    if mutual_friends > 0:
+        reasons.append(f"{mutual_friends} mutual friend{'s' if mutual_friends != 1 else ''}")
+    if candidate_shares_activity:
+        if shared_artists:
+            names = ", ".join(shared_artists[:2])
+            extra = len(shared_artists) - 2
+            reasons.append(f"Both listen to {names}" + (f" and {extra} more" if extra > 0 else ""))
+        elif shared_genres:
+            reasons.append(f"Both into {shared_genres[0]}")
+    elif shared_artists:
+        # Says THAT there is overlap without saying what it is — enough to make
+        # the score meaningful, nothing more.
+        reasons.append(f"{len(shared_artists)} artists in common")
+    reasons.extend(sonic_reasons[:2])
+    return reasons[:3]
+
+
+@app.get("/api/social/recommended-people")
+async def recommended_people(
+    limit: int = Query(20, ge=1, le=50),
+    payload: dict = Depends(get_current_user),
+):
+    """People worth adding, ranked by how much their taste resembles the
+    caller's.
+
+    The existing suggestion endpoint only knows mutual friends, which cannot
+    recommend anyone to a user who has no friends yet — the exact position nearly
+    everyone on this deployment is in, and a recommender that is empty for new
+    users is empty when it matters most. This ranks by listening similarity
+    instead, so it works from the first track someone plays, and folds mutual
+    friends in as a bonus rather than a prerequisite.
+
+    Taste comes from three sources so that a new account is not invisible: played
+    artists carry the most weight (a deliberate, repeated choice), favourited
+    artists next, and library genres last as a coarse fallback for someone who
+    has imported music but not played much yet.
+    """
+    user_id = payload["sub"]
+
+    # The caller's taste is gathered exactly the way every candidate's is below,
+    # rather than through `get_user_taste_profile`.
+    #
+    # That helper caps at the top fifteen played artists because it feeds Aria's
+    # prompt, where brevity is the point. Using it here compared the caller's top
+    # fifteen against each candidate's ENTIRE history — an asymmetry that
+    # systematically understated overlap, and worst for the listeners with the
+    # most history, since fifteen artists is a smaller slice of four thousand
+    # plays than of thirty. The account with by far the most listening on this
+    # deployment matched nobody at all.
+    my_artists, my_display_artists = await _artist_keys_for_user(user_id)
+    my_genres, my_display_genres = await _genre_keys_for_user(user_id)
+
+    if not my_artists and not my_genres:
+        # Honest empty state rather than a list of strangers with nothing behind
+        # it — the client shows "play a few tracks and come back".
+        return {"people": [], "reason": "not_enough_listening_history"}
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            # Candidates are everyone eligible to be recommended, minus the
+            # people it would be wrong or pointless to suggest: the caller,
+            # existing friends, anyone with a request already in flight either
+            # direction, and anyone either side has blocked.
+            await cur.execute(
+                """
+                SELECT u.id, u.username, u.display_name, u.avatar_url,
+                       u.share_listening_activity
+                FROM ios_users u
+                WHERE u.is_active = TRUE
+                  AND COALESCE(u.discoverable_in_recommendations, TRUE) = TRUE
+                  AND u.id <> %s
+                  AND u.id NOT IN (SELECT friend_id FROM ios_social_friends WHERE user_id = %s)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM ios_social_friend_requests r
+                      WHERE r.status = 'pending'
+                        AND ((r.from_user_id = %s AND r.to_user_id = u.id)
+                          OR (r.from_user_id = u.id AND r.to_user_id = %s))
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM ios_social_blocks b
+                      WHERE (b.user_id = %s AND b.blocked_id = u.id)
+                         OR (b.user_id = u.id AND b.blocked_id = %s)
+                  )
+                """,
+                (user_id, user_id, user_id, user_id, user_id, user_id),
+            )
+            candidate_rows = await cur.fetchall()
+            if not candidate_rows:
+                return {"people": [], "reason": "no_candidates"}
+
+            candidate_ids = [r[0] for r in candidate_rows]
+            placeholders = ",".join(["%s"] * len(candidate_ids))
+
+            # Every candidate's artists in ONE query rather than a taste-profile
+            # call each. Per-candidate profile building would mean dozens of
+            # round trips to rank a single screen, and this endpoint is opened
+            # from a tab.
+            await cur.execute(
+                f"""
+                SELECT user_id, lower(trim(artist)) AS artist_key, COUNT(*) AS plays
+                FROM ios_play_history
+                WHERE user_id IN ({placeholders})
+                  AND artist IS NOT NULL AND trim(artist) <> ''
+                GROUP BY user_id, artist_key
+                """,
+                tuple(candidate_ids),
+            )
+            artists_by_user: dict[str, set[str]] = {}
+            for uid, artist_key, _plays in await cur.fetchall():
+                artists_by_user.setdefault(uid, set()).add(artist_key)
+
+            await cur.execute(
+                f"""
+                SELECT user_id, lower(trim(artist)) AS artist_key
+                FROM ios_user_favorites
+                WHERE user_id IN ({placeholders})
+                  AND artist IS NOT NULL AND trim(artist) <> ''
+                """,
+                tuple(candidate_ids),
+            )
+            for uid, artist_key in await cur.fetchall():
+                artists_by_user.setdefault(uid, set()).add(artist_key)
+
+            await cur.execute(
+                f"""
+                SELECT user_id, lower(trim(genre)) AS genre_key
+                FROM ios_user_music_metadata
+                WHERE user_id IN ({placeholders})
+                  AND genre IS NOT NULL AND trim(genre) <> ''
+                GROUP BY user_id, genre_key
+                """,
+                tuple(candidate_ids),
+            )
+            genres_by_user: dict[str, set[str]] = {}
+            for uid, genre_key in await cur.fetchall():
+                genres_by_user.setdefault(uid, set()).add(genre_key)
+
+            # Mutual friends, as a bonus rather than a gate.
+            await cur.execute(
+                """
+                SELECT f2.friend_id, COUNT(*)
+                FROM ios_social_friends f1
+                JOIN ios_social_friends f2 ON f2.user_id = f1.friend_id
+                WHERE f1.user_id = %s AND f2.friend_id <> %s
+                GROUP BY f2.friend_id
+                """,
+                (user_id, user_id),
+            )
+            mutual_by_id = {row[0]: row[1] for row in await cur.fetchall()}
+
+    my_fingerprint = await get_sonic_fingerprint(user_id)
+
+    scored: list[dict] = []
+    for row in candidate_rows:
+        cid, username, display_name, avatar_url, shares_activity = row
+        their_artists = artists_by_user.get(cid, set())
+        their_genres = genres_by_user.get(cid, set())
+        if not their_artists and not their_genres:
+            # Nothing known about them, so any score would be invented.
+            continue
+
+        artist_similarity = _taste_overlap(my_artists, their_artists)
+        genre_similarity = _taste_overlap(my_genres, their_genres)
+        shared_artist_keys = sorted(my_artists & their_artists)
+        shared_genre_keys = sorted(my_genres & their_genres)
+
+        # Same weighting as the friend-to-friend Music Match score, so a
+        # recommendation and the score shown after adding someone agree with each
+        # other rather than being two different numbers for the same pair.
+        name_score = 0.7 * artist_similarity + 0.3 * genre_similarity
+        if name_score <= 0 and not mutual_by_id.get(cid):
+            continue
+
+        # How much is actually known about the thinner of the two tastes, so the
+        # client can tell a low score that means "you two differ" apart from one
+        # that means "we barely know either of you yet". Without this a genuinely
+        # promising match and a data-starved guess both render as a small
+        # percentage and look equally discouraging.
+        known = min(len(my_artists) or 0, len(their_artists) or 0)
+        confidence = "high" if known >= 8 else ("medium" if known >= 4 else "low")
+
+        mutual = mutual_by_id.get(cid, 0)
+        # A mutual friend is real evidence but must not manufacture a match out
+        # of nothing, so it tops up rather than dominates.
+        score = min(1.0, name_score + min(0.15, 0.05 * mutual))
+        scored.append({
+            "user_id": cid,
+            "username": username,
+            "display_name": display_name,
+            "avatar_url": avatar_url,
+            "_raw_score": score,
+            "mutual_friend_count": mutual,
+            "shared_artists": [my_display_artists.get(k, k) for k in shared_artist_keys],
+            "shared_genres": [my_display_genres.get(k, k) for k in shared_genre_keys],
+            "confidence": confidence,
+            "_shares_activity": bool(shares_activity),
+        })
+
+    scored.sort(key=lambda p: (p["_raw_score"], p["mutual_friend_count"]), reverse=True)
+    top = scored[:limit]
+
+    # Sonic similarity is computed only for the handful actually being returned.
+    # It needs a per-user fingerprint query, so doing it before ranking would
+    # spend that on candidates nobody will ever see.
+    people = []
+    for person in top:
+        sonic_reasons: list[str] = []
+        sonic_score = None
+        if my_fingerprint:
+            their_fingerprint = await get_sonic_fingerprint(person["user_id"])
+            if their_fingerprint:
+                sonic_score, sonic_reasons = describe_sonic_match(my_fingerprint, their_fingerprint)
+
+        raw = person["_raw_score"]
+        final = raw if sonic_score is None else (0.65 * raw + 0.35 * sonic_score)
+        shares = person.pop("_shares_activity")
+        person.pop("_raw_score")
+        people.append({
+            **person,
+            "score": round(100 * final),
+            "sonic_score": round(100 * sonic_score) if sonic_score is not None else None,
+            "reasons": _recommendation_reasons(
+                person["shared_artists"], person["shared_genres"],
+                sonic_reasons, person["mutual_friend_count"], shares,
+            ),
+            # Named overlap is withheld from the payload too, not merely from the
+            # reason text — a client should not receive what it must not show.
+            "shared_artists": person["shared_artists"][:5] if shares else [],
+            "shared_genres": person["shared_genres"][:3] if shares else [],
+        })
+
+    people.sort(key=lambda p: p["score"], reverse=True)
+    if not people:
+        # There ARE candidates, they simply have nothing in common with the
+        # caller yet. Distinguished from having no history and from having no
+        # candidates, because the three need different things said to the user
+        # and returning a bare empty list said none of them.
+        return {"people": [], "reason": "no_similar_listeners_yet"}
+    return {"people": people}
+
+
 @app.get("/api/social/compatibility/{user_id}")
 async def social_compatibility(user_id: str, payload: dict = Depends(get_current_user)):
     """Friend-to-friend "Music Match" score. Only offered between actual
@@ -19889,10 +20231,37 @@ async def social_compatibility(user_id: str, payload: dict = Depends(get_current
     # tag as e.g. "Rock".
     artist_similarity = _jaccard(artists_a, artists_b)
     genre_similarity = _jaccard(genres_a, genres_b)
-    score = round(100 * (0.7 * artist_similarity + 0.3 * genre_similarity))
+
+    # How alike the two libraries SOUND, from the measured fingerprints.
+    #
+    # This call was missing entirely: the response below read `sonic_score` and
+    # `sonic_reasons` without either ever being assigned, so every request that
+    # got past the friendship check raised a NameError and returned a 500. Music
+    # Match has therefore never once produced a result.
+    sonic_score: float | None = None
+    sonic_reasons: list[str] = []
+    fingerprint_a = await get_sonic_fingerprint(caller_id)
+    fingerprint_b = await get_sonic_fingerprint(user_id)
+    if fingerprint_a and fingerprint_b:
+        sonic_score, sonic_reasons = describe_sonic_match(fingerprint_a, fingerprint_b)
+
+    # Names carry most of the score, sound the rest — sharing a specific artist
+    # is stronger evidence of shared taste than two libraries happening to sit in
+    # the same tonal range. When no fingerprint is available the name score stands
+    # on its own rather than being scaled down for a measurement we do not have.
+    name_score = 0.7 * artist_similarity + 0.3 * genre_similarity
+    if sonic_score is None:
+        score = round(100 * name_score)
+    else:
+        score = round(100 * (0.65 * name_score + 0.35 * sonic_score))
 
     shared_artist_keys = sorted(artists_a & artists_b)[:10]
     shared_genre_keys = sorted(genres_a & genres_b)[:6]
+
+    # A score resting entirely on sounding alike is weaker evidence than a shared
+    # artist, so it is capped rather than allowed to look like a strong match.
+    if not shared_artist_keys and sonic_score is not None:
+        score = min(score, 80)
 
     if shared_artist_keys:
         sonic_reasons.insert(0, f"{len(shared_artist_keys)} artists in common")

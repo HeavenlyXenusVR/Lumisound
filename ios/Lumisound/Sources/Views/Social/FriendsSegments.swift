@@ -67,6 +67,36 @@ struct DiscoverSegmentView: View {
             }
             .listRowBackground(AppTheme.surface)
 
+            // Placed ABOVE "People You May Know" because it is the section that
+            // can actually answer for a new account. Mutual-friend suggestions
+            // need an existing friend to work from and are therefore empty for
+            // exactly the people who most need somewhere to start.
+            Section {
+                if social.isLoadingRecommendedPeople && social.recommendedPeople.isEmpty {
+                    HStack(spacing: 10) {
+                        ProgressView().tint(AppTheme.dynamicAccent)
+                        Text("Finding people who listen like you…")
+                            .font(AppTheme.bodyFont(size: 13))
+                            .foregroundStyle(AppTheme.textSecondary)
+                    }
+                } else if social.recommendedPeople.isEmpty {
+                    // Says WHICH kind of empty this is. "Play a few more tracks"
+                    // and "no one matches yet" call for different things from the
+                    // reader, and a blank section asks for nothing.
+                    Text(social.recommendedPeopleEmptyReason?.message
+                         ?? "No recommendations right now.")
+                        .font(AppTheme.bodyFont(size: 13))
+                        .foregroundStyle(AppTheme.textSecondary)
+                } else {
+                    ForEach(social.recommendedPeople) { person in
+                        recommendedPersonRow(person)
+                    }
+                }
+            } header: {
+                friendsSectionHeader("Recommended For You")
+            }
+            .listRowBackground(AppTheme.surface)
+
             if !social.suggestions.isEmpty {
                 Section {
                     ForEach(social.suggestions) { suggestion in
@@ -79,8 +109,14 @@ struct DiscoverSegmentView: View {
             }
         }
         .scrollContentBackground(.hidden)
-        .task { await social.fetchSuggestions() }
-        .refreshable { await social.fetchSuggestions() }
+        .task {
+            await social.fetchSuggestions()
+            await social.fetchRecommendedPeople()
+        }
+        .refreshable {
+            await social.fetchSuggestions()
+            await social.fetchRecommendedPeople()
+        }
     }
 
     private func searchResultRow(_ user: SocialUserRef) -> some View {
@@ -143,6 +179,96 @@ struct DiscoverSegmentView: View {
                         .foregroundStyle(AppTheme.dynamicAccent)
                 }
                 .buttonStyle(.plain)
+            }
+        }
+    }
+
+    /// A recommendation row: who they are, how strong the match is, and why.
+    ///
+    /// The whole row is a link into `PublicProfileView`, the same full profile
+    /// reached from search or from a friend — deciding whether to add someone
+    /// means looking at them properly, not at a score in a list.
+    private func recommendedPersonRow(_ person: RecommendedPerson) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            NavigationLink(destination: PublicProfileView(userId: person.userId)) {
+                HStack(alignment: .top, spacing: 12) {
+                    SocialAvatarView(userId: person.userId, size: 44)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(person.displayName ?? person.username)
+                            .foregroundStyle(AppTheme.textPrimary)
+                        Text("@\(person.username)")
+                            .font(AppTheme.bodyFont(size: 11))
+                            .foregroundStyle(AppTheme.textSecondary)
+
+                        matchLine(person)
+
+                        // The reasons carry the actual meaning. A percentage on
+                        // its own is not something anyone can agree or disagree
+                        // with; "2 artists in common" is.
+                        ForEach(person.reasons.prefix(2), id: \.self) { reason in
+                            Label {
+                                Text(reason)
+                                    .font(AppTheme.bodyFont(size: 11))
+                                    .foregroundStyle(AppTheme.textSecondary)
+                            } icon: {
+                                Image(systemName: "sparkle")
+                                    .font(.system(size: 8))
+                                    .foregroundStyle(AppTheme.dynamicAccent)
+                            }
+                        }
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+
+            Spacer(minLength: 4)
+
+            if sendingRequestTo.contains(person.userId) {
+                ProgressView().tint(AppTheme.dynamicAccent)
+            } else if isPendingOutgoing(person.userId) {
+                Text("Sent")
+                    .font(AppTheme.bodyFont(size: 12))
+                    .foregroundStyle(AppTheme.textSecondary)
+            } else {
+                Button {
+                    sendRequest(to: person.userId)
+                } label: {
+                    Image(systemName: "person.badge.plus")
+                        .foregroundStyle(AppTheme.dynamicAccent)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    /// The match strength, stated in a way that does not overclaim.
+    ///
+    /// A low score has two very different meanings — "your tastes differ" and
+    /// "we barely know either of you yet" — and a bare percentage cannot tell
+    /// them apart. When the server reports low confidence the number is dropped
+    /// entirely rather than shown as a discouraging single digit, because at that
+    /// point it is not measuring the people, it is measuring how little has been
+    /// listened to so far.
+    @ViewBuilder
+    private func matchLine(_ person: RecommendedPerson) -> some View {
+        if person.isLowConfidence {
+            Text("Still learning your taste")
+                .font(AppTheme.bodyFont(size: 11))
+                .foregroundStyle(AppTheme.textSecondary.opacity(0.85))
+        } else {
+            HStack(spacing: 6) {
+                Text("\(person.score)% match")
+                    .font(AppTheme.bodyFont(size: 12).weight(.semibold))
+                    .foregroundStyle(AppTheme.dynamicAccent)
+                if let sonic = person.sonicScore, person.sharedArtists.isEmpty {
+                    // Worth distinguishing: a score resting on the two libraries
+                    // sounding alike is weaker evidence than a shared artist, and
+                    // saying so is more honest than letting both read the same.
+                    Text("· \(sonic)% alike by sound")
+                        .font(AppTheme.bodyFont(size: 11))
+                        .foregroundStyle(AppTheme.textSecondary)
+                }
             }
         }
     }

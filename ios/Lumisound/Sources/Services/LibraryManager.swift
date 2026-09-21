@@ -70,6 +70,12 @@ final class LibraryManager: ObservableObject {
     var lastWatchedFolderScanDate = Date.distantPast
     /// Throttle for `scanLocalDocuments()` — see that function's doc comment.
     var lastLocalDocumentsScanDate = Date.distantPast
+    /// When the last scan actually STARTED, for the interval reported alongside
+    /// each completed scan. Distinct from the throttle date above, which only
+    /// tracks the throttled entry point and so cannot see scans arriving through
+    /// `scanLocalDocumentsAsync`. Static because the scan itself is coalesced
+    /// process-wide.
+    static var lastScanStartedAt: Date?
 
     func beginScan() {
         activeScanCount += 1

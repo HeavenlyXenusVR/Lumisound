@@ -145,6 +145,15 @@ extension LibraryManager {
 
     private func runLocalDocumentsScan(force: Bool) async {
         appLog("Scanning local documents directory (force: \(force))", category: "library")
+        // Instrumented because this path was the cause of the visible freezing
+        // and nothing recorded how often it ran or what it cost. The frequency
+        // had to be reconstructed by counting log lines and re-deriving the rate
+        // from client timestamps; a scan that reports its own interval and
+        // duration makes that answerable directly, and makes a regression
+        // obvious rather than something to be rediscovered from a video.
+        let scanStartedAt = Date()
+        let secondsSinceLastScan = Self.lastScanStartedAt.map { scanStartedAt.timeIntervalSince($0) }
+        Self.lastScanStartedAt = scanStartedAt
         guard FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first != nil else { return }
 
         // Snapshot the current library's local file URLs before hopping off the
@@ -252,7 +261,31 @@ extension LibraryManager {
 
         let newSongs = await resolveSongs(for: newURLs)
 
-        appLog("Local scan complete: \(newSongs.count) song(s)", category: "library")
+        let scanDuration = Date().timeIntervalSince(scanStartedAt)
+        appLog("Local scan complete: \(newSongs.count) song(s) in \(String(format: "%.2f", scanDuration))s"
+               + (secondsSinceLastScan.map { String(format: " (%.1fs since the previous scan)", $0) } ?? ""),
+               category: "library")
+        // Reported as a structured event, not just a log line, so the rate and
+        // cost are queryable across every account instead of needing a
+        // hand-written pattern match over free text.
+        //
+        // `sinceLastScanSeconds` is the field that matters: a scan taking 300ms
+        // is fine on its own and ruinous ten times a minute, and only the
+        // interval separates those two. Flagged when scans arrive closer together
+        // than the throttle that is supposed to be governing them.
+        RemoteLogger.log(
+            category: "library",
+            event: "local_scan_completed",
+            level: (secondsSinceLastScan.map { $0 < 10 } ?? false) ? "warning" : "info",
+            message: "\(newSongs.count) new song(s) in \(String(format: "%.2f", scanDuration))s",
+            detail: [
+                "durationMs": Int(scanDuration * 1000),
+                "newSongs": newSongs.count,
+                "librarySize": importedSongs.count,
+                "forced": force,
+                "sinceLastScanSeconds": secondsSinceLastScan.map { Int($0) } ?? -1,
+            ]
+        )
         importedSongs.append(contentsOf: newSongs)
         importedSongs = Array(Dictionary(grouping: importedSongs, by: { song in song.url.map { $0.standardizedFileURL.absoluteString } ?? song.id }).compactMap { $0.value.first })
         rebuildAllSongs()
