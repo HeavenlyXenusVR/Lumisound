@@ -279,9 +279,11 @@ struct AvatarDecorationOverlay: View {
             context.fill(Path(ellipseIn: rect(x: x, y: y, radius: 0.9)), with: .color(tint))
 
         case .notes:
-            // Music notes drifting upward. The only style that draws a glyph
-            // rather than a shape — `resolve` rasterises the SF Symbol once per
-            // draw so it can be tinted and positioned like any other fill.
+            // Music notes drifting upward — a filled note head with a stem,
+            // drawn as paths like everything else here rather than as an SF
+            // Symbol. A resolved symbol would have to be sized through a draw
+            // rect and tinted through its shading, which is more moving parts
+            // than a two-shape glyph needs at seven points across.
             let riseSpeed = 0.1 + particle.hash(2) * 0.09
             let startX = particle.hash(3)
             let sway = 0.05 + particle.hash(4) * 0.05
@@ -293,13 +295,27 @@ struct AvatarDecorationOverlay: View {
             // Fades in at the bottom and out at the top so notes never pop into
             // or out of existence at the edges.
             let edgeFade = min(1, progress / 0.15) * min(1, (1 - progress) / 0.2)
-            let glyph = particle.hash(7) > 0.5 ? "music.note" : "music.note.list"
-            var symbol = context.resolve(
-                Image(systemName: glyph).font(.system(size: 7, weight: .semibold))
-            )
-            symbol.shading = .color(tint)
             context.opacity = 0.75 * edgeFade
-            context.draw(symbol, at: CGPoint(x: CGFloat(x), y: CGFloat(y)), anchor: .center)
+            // Head: a slightly wide ellipse, tilted the way a drawn note is by
+            // making it wider than tall rather than by applying a rotation.
+            let headW = 3.4, headH = 2.6
+            let headRect = CGRect(x: CGFloat(x - headW / 2), y: CGFloat(y - headH / 2),
+                                  width: CGFloat(headW), height: CGFloat(headH))
+            context.fill(Path(ellipseIn: headRect), with: .color(tint))
+            // Stem: up from the right edge of the head.
+            var stem = Path()
+            stem.move(to: CGPoint(x: CGFloat(x + headW / 2 - 0.4), y: CGFloat(y)))
+            stem.addLine(to: CGPoint(x: CGFloat(x + headW / 2 - 0.4), y: CGFloat(y - 6)))
+            context.stroke(stem, with: .color(tint), lineWidth: 0.9)
+            // Flag, on roughly half of them, so the field reads as mixed notes
+            // rather than one glyph repeated.
+            if particle.hash(7) > 0.5 {
+                var flag = Path()
+                flag.move(to: CGPoint(x: CGFloat(x + headW / 2 - 0.4), y: CGFloat(y - 6)))
+                flag.addQuadCurve(to: CGPoint(x: CGFloat(x + headW / 2 + 2), y: CGFloat(y - 3.2)),
+                                  control: CGPoint(x: CGFloat(x + headW / 2 + 2.4), y: CGFloat(y - 5.4)))
+                context.stroke(flag, with: .color(tint), lineWidth: 0.9)
+            }
         }
     }
 }
