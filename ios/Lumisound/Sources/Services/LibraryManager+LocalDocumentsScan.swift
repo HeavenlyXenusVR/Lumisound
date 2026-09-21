@@ -81,7 +81,12 @@ extension LibraryManager {
     /// "Download All") that need `allSongs` to reflect every locally-imported
     /// file, including any sitting in subfolders the user created or moved
     /// files into, *before* deciding what still needs to be downloaded.
-    func scanLocalDocumentsAsync() async {
+    /// `userInitiated: false` runs the scan without raising the visible
+    /// scanning state — see `LibraryManager.visibleScanCount`. Automatic callers
+    /// (the auto-download check, pending-download reconciliation, the
+    /// return-to-foreground refresh) pass false: nobody asked for these, and a
+    /// scan nobody asked for should not hold the launch screen or spin a tab.
+    func scanLocalDocumentsAsync(userInitiated: Bool = true) async {
         // Same reasoning as scanLocalDocuments()'s guard above — several
         // callers (Download All, TrackedPlaylistStore auto-downloads,
         // pending-download reconciliation) can legitimately call this around
@@ -91,8 +96,8 @@ extension LibraryManager {
             await performLocalDocumentsScan()
             return
         }
-        beginScan()
-        defer { endScan() }
+        beginScan(visible: userInitiated)
+        defer { endScan(visible: userInitiated) }
         await performLocalDocumentsScan()
     }
 
@@ -154,6 +159,16 @@ extension LibraryManager {
         let scanStartedAt = Date()
         let secondsSinceLastScan = Self.lastScanStartedAt.map { scanStartedAt.timeIntervalSince($0) }
         Self.lastScanStartedAt = scanStartedAt
+        // Whether the app left the foreground at any point during this scan.
+        //
+        // The duration below is wall-clock, and wall-clock keeps running while
+        // the process is suspended — so a scan interrupted by the user leaving
+        // the app reported however long they were away. The first real samples
+        // came back claiming a single scan took two and a half HOURS, which is
+        // not a slow scan, it is a stopwatch left running. A measurement that
+        // can be wrong by four orders of magnitude is worse than none, because
+        // it will be believed.
+        let wasActiveAtStart = UIApplication.shared.applicationState == .active
         guard FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first != nil else { return }
 
         // Snapshot the current library's local file URLs before hopping off the
@@ -284,10 +299,39 @@ extension LibraryManager {
                 "librarySize": importedSongs.count,
                 "forced": force,
                 "sinceLastScanSeconds": secondsSinceLastScan.map { Int($0) } ?? -1,
+                // Consult this before trusting `durationMs`: false means the app
+                // was backgrounded for part of the scan and the figure includes
+                // however long it sat suspended.
+                "foregroundThroughout": wasActiveAtStart
+                    && UIApplication.shared.applicationState == .active,
             ]
         )
+        // Nothing found and nothing removed means the library is byte-for-byte
+        // what it already was, so there is nothing to merge and nothing to
+        // rebuild. This ran unconditionally, and on a large library that is the
+        // whole cost of an automatic scan: a dictionary keyed on every song —
+        // each key holding its own array — followed by a full index rebuild,
+        // both on the main actor, both to arrive back at the list already held.
+        // For a three-thousand-song library that is thousands of allocations
+        // several times over, every time anything asked for a scan, almost
+        // always to discover that nothing had changed.
+        guard !newSongs.isEmpty || evicted || mergedDuplicates > 0 || cleanedUpOrphans > 0 else {
+            return
+        }
+
         importedSongs.append(contentsOf: newSongs)
-        importedSongs = Array(Dictionary(grouping: importedSongs, by: { song in song.url.map { $0.standardizedFileURL.absoluteString } ?? song.id }).compactMap { $0.value.first })
+        // Deduplicated with a seen-set rather than `Dictionary(grouping:)`.
+        //
+        // Grouping allocates an array per distinct key and then throws all but
+        // the first element of each away — thousands of short-lived arrays to
+        // produce a result that only ever needed one pass and one set. Same
+        // output, same first-wins ordering, without the garbage.
+        var seenKeys = Set<String>()
+        seenKeys.reserveCapacity(importedSongs.count)
+        importedSongs = importedSongs.filter { song in
+            let key = song.url.map { $0.standardizedFileURL.absoluteString } ?? song.id
+            return seenKeys.insert(key).inserted
+        }
         rebuildAllSongs()
     }
 

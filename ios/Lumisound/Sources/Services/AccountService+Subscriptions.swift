@@ -197,7 +197,7 @@ extension AccountService {
         streaming: StreamingService,
         library: LibraryManager
     ) async {
-        await library.scanLocalDocumentsAsync()
+        await library.scanLocalDocumentsAsync(userInitiated: false)
         let localSourceIDs = await library.localSourceIDs()
         let identityIndex = library.importedIdentityIndex()
         let toGet = tracks.filter { !library.hasLocalCopy(of: $0, localSourceIDs: localSourceIDs, identityIndex: identityIndex) }

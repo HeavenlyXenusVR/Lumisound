@@ -1018,6 +1018,220 @@ def _check_auth_rate(client_ip: str) -> None:
     _auth_attempts[client_ip].append(now)
 
 
+# ---------------------------------------------------------------------------
+# Per-account brute-force protection
+# ---------------------------------------------------------------------------
+#
+# Complements `_check_auth_rate`, which is per-IP. The two defend against
+# different attacks and neither substitutes for the other: the IP limiter stops
+# one machine hammering the endpoint, and this stops one ACCOUNT being worked
+# through from many machines, which is the shape credential stuffing actually
+# takes. An attacker with a thousand addresses stays under ten-a-minute from
+# every one of them while still making a thousand attempts a minute.
+#
+# Thresholds are deliberately forgiving at the start. Someone mistyping a
+# password they half-remember will burn several attempts legitimately, and
+# locking them out on the fourth is a worse experience than the attack is a
+# risk. The cost rises sharply after that, where the pattern stops looking like
+# a person.
+_LOCKOUT_THRESHOLDS: list[tuple[int, int]] = [
+    (5, 60),        # 5 failures  -> 1 minute
+    (8, 15 * 60),   # 8 failures  -> 15 minutes
+    (12, 60 * 60),  # 12 failures -> 1 hour
+]
+# Failures older than this stop counting, so a handful of forgotten-password
+# attempts spread over weeks never accumulate into a lockout.
+_LOCKOUT_FAILURE_WINDOW = timedelta(hours=12)
+
+
+async def _check_account_lock(cur, user_id: str) -> None:
+    """Raises 429 if this account is currently locked out.
+
+    Called BEFORE the password is verified. Checking afterwards would let an
+    attacker keep testing passwords against a locked account and learn from the
+    responses, which defeats the point of locking it.
+    """
+    await cur.execute(
+        "SELECT locked_until FROM ios_login_failures WHERE user_id = %s", (user_id,)
+    )
+    row = await cur.fetchone()
+    if not row or not row[0]:
+        return
+    locked_until = row[0]
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if locked_until > now:
+        remaining = int((locked_until - now).total_seconds())
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "Too many failed sign-in attempts for this account. "
+                f"Try again in {max(1, remaining // 60)} minute(s), or reset your password."
+            ),
+        )
+
+
+async def _record_login_failure(cur, user_id: str) -> None:
+    """Counts a failed attempt and locks the account once it crosses a threshold."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    await cur.execute(
+        "SELECT failure_count, first_failure_at FROM ios_login_failures WHERE user_id = %s",
+        (user_id,),
+    )
+    row = await cur.fetchone()
+
+    # A stale run of failures is not evidence about the present, so the count
+    # restarts rather than carrying forward forever.
+    if row and row[1] and (now - row[1]) <= _LOCKOUT_FAILURE_WINDOW:
+        count = row[0] + 1
+        first_at = row[1]
+    else:
+        count = 1
+        first_at = now
+
+    locked_until = None
+    for threshold, seconds in _LOCKOUT_THRESHOLDS:
+        if count >= threshold:
+            locked_until = now + timedelta(seconds=seconds)
+
+    await cur.execute(
+        """
+        INSERT INTO ios_login_failures
+            (user_id, failure_count, first_failure_at, last_failure_at, locked_until)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (user_id) DO UPDATE SET
+            failure_count = EXCLUDED.failure_count,
+            first_failure_at = EXCLUDED.first_failure_at,
+            last_failure_at = EXCLUDED.last_failure_at,
+            locked_until = EXCLUDED.locked_until
+        """,
+        (user_id, count, first_at, now, locked_until),
+    )
+    if locked_until is not None:
+        logger.warning("account locked after %d failed sign-ins: user %s until %s",
+                       count, user_id, locked_until)
+
+
+async def _clear_login_failures(cur, user_id: str) -> None:
+    """Called on a successful sign-in. A correct password is proof the owner is
+    here, so the slate is wiped rather than left to expire."""
+    await cur.execute("DELETE FROM ios_login_failures WHERE user_id = %s", (user_id,))
+
+
+# ---------------------------------------------------------------------------
+# New-device sign-in alerts
+# ---------------------------------------------------------------------------
+
+
+async def _note_device_and_alert_if_new(cur, user_id: str, device_name: str, request: Request) -> None:
+    """Records the device this sign-in came from, and tells the account owner
+    when it is one we have not seen before.
+
+    A stolen password is invisible to the person it was stolen from. Every other
+    protection here tries to stop the sign-in happening; this one accepts that
+    some will succeed and makes sure the only person who can tell a legitimate
+    session from a stolen one actually finds out it occurred.
+
+    Deliberately silent on the FIRST device ever seen: telling someone their own
+    first sign-in looks suspicious teaches them to ignore the alert, and an alert
+    people ignore protects nobody.
+    """
+    # Hashed, not stored. Equality is the only question asked of it, and a hash
+    # answers that exactly as well as the descriptor would — while being worth
+    # nothing to anyone who reaches the table. Salted with the user id so the
+    # same device on two accounts does not produce a linkable value.
+    descriptor = f"{user_id}|{(device_name or '').strip().lower()}"
+    device_hash = hashlib.sha256(descriptor.encode()).hexdigest()
+
+    await cur.execute(
+        "SELECT COUNT(*) FROM ios_known_devices WHERE user_id = %s", (user_id,)
+    )
+    known_count = (await cur.fetchone())[0]
+
+    await cur.execute(
+        "SELECT 1 FROM ios_known_devices WHERE user_id = %s AND device_hash = %s",
+        (user_id, device_hash),
+    )
+    seen_before = await cur.fetchone() is not None
+
+    await cur.execute(
+        """
+        INSERT INTO ios_known_devices (user_id, device_hash)
+        VALUES (%s, %s)
+        ON CONFLICT (user_id, device_hash) DO UPDATE SET last_seen_at = NOW()
+        """,
+        (user_id, device_hash),
+    )
+
+    if seen_before or known_count == 0:
+        return
+
+    safe_name = (device_name or "a new device").strip()[:60]
+    try:
+        await _create_notification(
+            cur,
+            user_id=user_id,
+            type_="security",
+            title="New sign-in",
+            body=f"Your account was signed in on {safe_name}. If this wasn't you, change your password.",
+            data={"kind": "new_device_sign_in", "device": safe_name},
+        )
+    except Exception:
+        # An alert failing must never fail the sign-in itself; the owner is
+        # already authenticated and blocking them helps no one.
+        logger.exception("could not create new-device alert for user %s", user_id)
+    await log_event("auth", "new_device_sign_in", user_id=user_id,
+                    message=f"sign-in from an unrecognised device: {safe_name}")
+
+
+# ---------------------------------------------------------------------------
+# Password strength
+# ---------------------------------------------------------------------------
+#
+# The most common passwords in every credential dump, plus the ones this app
+# invites specifically. A length rule alone does not stop "password", "123456"
+# or "lumisound" — all of which clear an eight-character minimum and are among
+# the first things any attacker tries.
+_WEAK_PASSWORDS = {
+    "password", "password1", "password123", "12345678", "123456789", "1234567890",
+    "qwerty", "qwerty123", "abc12345", "11111111", "00000000", "iloveyou",
+    "letmein", "welcome", "admin123", "sunshine", "princess", "football",
+    "baseball", "trustno1", "dragon123", "monkey123", "passw0rd", "p@ssword",
+    "lumisound", "lumisound1", "lumisound123", "music123", "spotify",
+}
+_MIN_PASSWORD_LENGTH = 8
+
+
+def _validate_password_strength(password: str, username: str = "") -> None:
+    """Raises 400 with something the user can act on.
+
+    Registration required six characters while changing a password required
+    eight, so the weakest password on an account was always the one it was
+    created with — the rule that mattered least was the one applied at the only
+    moment it was guaranteed to apply.
+    """
+    if len(password) < _MIN_PASSWORD_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password must be at least {_MIN_PASSWORD_LENGTH} characters",
+        )
+    lowered = password.lower()
+    if lowered in _WEAK_PASSWORDS:
+        raise HTTPException(
+            status_code=400,
+            detail="That password is among the most commonly used ones. Please choose another.",
+        )
+    if username and lowered == username.strip().lower():
+        raise HTTPException(
+            status_code=400, detail="Password must not be the same as your username"
+        )
+    # A single repeated character reaches any length requirement while carrying
+    # almost no entropy.
+    if len(set(password)) < 4:
+        raise HTTPException(
+            status_code=400, detail="Password must use at least 4 different characters"
+        )
+
+
 def _get_client_ip(request: Request) -> str:
     # The leftmost entry in X-Forwarded-For is attacker-controlled (the client
     # sets it directly); only the entry our own reverse proxy appended — the
@@ -1165,6 +1379,39 @@ app.add_middleware(
 # Compresses large JSON responses (e.g. /user/sync, /api/library/server,
 # /user/export) — pure win for mobile clients on cellular, no new dependency.
 app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    """Standard hardening headers on every response.
+
+    Most of this API is consumed by the app, where these matter little. They
+    matter for the parts a BROWSER reaches: the admin dashboard, the shared
+    playlist pages, the artwork and audio the proxy serves. Those are the
+    surfaces where a missing header turns a small bug into a real one.
+
+    `nosniff` is the one that earns its place here regardless of caller: this
+    server returns user-supplied bytes on several routes (uploaded artwork,
+    downloaded audio, imported lyrics), and content-type sniffing is precisely
+    how a file that claims to be an image gets executed as something else.
+    """
+    response = await call_next(request)
+    headers = response.headers
+    # setdefault, so a route that has deliberately chosen its own value — the
+    # shared-playlist pages set their own framing policy — is never overridden.
+    headers.setdefault("X-Content-Type-Options", "nosniff")
+    headers.setdefault("X-Frame-Options", "DENY")
+    headers.setdefault("Referrer-Policy", "no-referrer")
+    # Only meaningful over TLS, which is how the app reaches this (via the
+    # tunnel). Harmless over plain HTTP, where browsers ignore it.
+    headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    # This API serves data and media, never scripted documents of its own. The
+    # admin dashboard is the one HTML page here and it carries its own inline
+    # styles/scripts, so it is left to set its own policy rather than being
+    # broken by a blanket one.
+    if not request.url.path.startswith("/admin"):
+        headers.setdefault("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+    return response
 
 # Latency visibility: previously there was no per-request timing anywhere on
 # the server. Slow requests (>2s) are logged at WARNING so they show up
@@ -5979,8 +6226,11 @@ async def register(body: RegisterRequest, request: Request):
     username = body.username.strip()
     if len(username) < 3:
         raise HTTPException(status_code=400, detail="Username must be at least 3 characters")
-    if len(body.password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    # The same policy the change-password endpoint applies. Registration allowed
+    # six characters while a change required eight, so the weakest password an
+    # account could hold was always the one it was created with — the rule was
+    # absent at the only moment it was certain to be applied.
+    _validate_password_strength(body.password, username=username)
 
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -6075,7 +6325,17 @@ async def login(body: LoginRequest, request: Request):
         raise HTTPException(status_code=403, detail="Account is disabled")
 
     # Fix 1: run bcrypt off the event loop
+    # The account lock is checked BEFORE the password, so a locked account stops
+    # answering rather than continuing to reveal which guesses were wrong.
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await _check_account_lock(cur, user_id)
+
     if not await verify_password_async(body.password, password_hash):
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await _record_login_failure(cur, user_id)
         logger.warning("Failed password attempt for username: %r (user_id=%s)", username, user_id)
         await log_event("auth", "login_failed", user_id=user_id, level="warn",
                          message="incorrect password")
@@ -6111,6 +6371,12 @@ async def login(body: LoginRequest, request: Request):
                 "UPDATE ios_users SET last_login = NOW() WHERE id = %s",
                 (user_id,),
             )
+            # A correct password is proof the owner is here, so the failure
+            # count is wiped rather than left to age out — otherwise a user who
+            # fumbled four times and then succeeded would still be four-fifths
+            # of the way to a lockout for the next twelve hours.
+            await _clear_login_failures(cur, user_id)
+            await _note_device_and_alert_if_new(cur, user_id, device_name, request)
 
     token = create_token(user_id, token_id)
 
@@ -6385,8 +6651,7 @@ async def change_password(body: ChangePasswordRequest, payload: dict = Depends(g
     user_id = payload["sub"]
     current_token_id = payload.get("jti")
 
-    if len(body.new_password) < 8:
-        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+    _validate_password_strength(body.new_password)
 
     pool = await get_pool()
     async with pool.acquire() as conn:

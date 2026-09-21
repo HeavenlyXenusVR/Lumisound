@@ -77,23 +77,43 @@ final class LibraryManager: ObservableObject {
     /// process-wide.
     static var lastScanStartedAt: Date?
 
-    func beginScan() {
+    /// Whether any *user-visible* scan is running.
+    ///
+    /// Separate from `activeScanCount`, which counts every scan including the
+    /// automatic ones. `isScanning` gates real UI — the launch screen holds on
+    /// it, tabs show progress on it, Settings disables a button on it — so a
+    /// scan nobody asked for must not raise it. Automatic passes (the
+    /// auto-download check, the return-to-foreground refresh, pending-download
+    /// reconciliation) now run silently; only a scan the user actually asked
+    /// for, by pulling to refresh or tapping Refresh, shows anything.
+    ///
+    /// This is what "one long refresh that freezes everything" was: the work
+    /// itself is off the main actor and always was, but a single automatic scan
+    /// held the visible scanning state for its whole duration where several
+    /// short ones had at least let go in between.
+    var visibleScanCount: Int = 0
+
+    func beginScan(visible: Bool = true) {
+        if visible {
+            visibleScanCount += 1
+            if !isScanning { isScanning = true }
+        }
         activeScanCount += 1
-        // Assigned only on a real transition.
-        //
         // `@Published` fires `objectWillChange` on every assignment, whether or
-        // not the value differs — so re-asserting `true` while a scan was already
-        // running forced a full SwiftUI re-render across every view observing
-        // LibraryManager, for no change at all. With several scans overlapping
-        // (the auto-download pass used to run one per tracked playlist) that was
-        // a burst of app-wide re-renders every few seconds, which is what the
-        // freezing actually looked like from the outside.
-        if !isScanning { isScanning = true }
+        // not the value differs, so `isScanning` above is only ever assigned on a
+        // real transition — re-asserting `true` while a scan was already running
+        // forced a full SwiftUI re-render across every view observing
+        // LibraryManager for no change at all.
     }
 
-    func endScan() {
+    func endScan(visible: Bool = true) {
         activeScanCount = max(0, activeScanCount - 1)
-        if activeScanCount == 0, isScanning {
+        if visible {
+            visibleScanCount = max(0, visibleScanCount - 1)
+        }
+        // Cleared on the VISIBLE count, not the total: a background scan still
+        // running must not keep the launch screen up or a tab spinning.
+        if visibleScanCount == 0, isScanning {
             isScanning = false
         }
     }

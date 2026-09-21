@@ -251,7 +251,7 @@ final class TrackedPlaylistStore: ObservableObject {
         // `allSongs` is byte-for-byte what it already was, so re-scanning could not
         // change a single decision. Where something IS downloaded, the loop
         // re-scans before moving on (see the end of the loop).
-        await library.scanLocalDocumentsAsync()
+        await library.scanLocalDocumentsAsync(userInitiated: false)
 
         for pl in due {
             // A pass gets interrupted far more often than it completes on a
@@ -399,7 +399,7 @@ final class TrackedPlaylistStore: ObservableObject {
                 // The library genuinely changed, so the next playlist's dedup needs
                 // to see it. This is the only condition under which a mid-pass
                 // re-scan can affect any decision.
-                await library.scanLocalDocumentsAsync()
+                await library.scanLocalDocumentsAsync(userInitiated: false)
                 ToastCenter.shared.show("Auto-downloaded \(got) new track\(got == 1 ? "" : "s") from \"\(pl.name)\"",
                                         category: .download)
             }

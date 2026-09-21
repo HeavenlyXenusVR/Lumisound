@@ -1608,3 +1608,48 @@ CREATE TABLE IF NOT EXISTS ios_announcement_views (
 -- share_listening_activity, because an artist name is a specific thing they
 -- listen to. See _recommendation_reasons in main.py.
 ALTER TABLE ios_users ADD COLUMN IF NOT EXISTS discoverable_in_recommendations BOOLEAN DEFAULT TRUE;
+
+-- Feature: account security — per-account brute-force protection.
+--
+-- The existing throttle is per-IP (10 attempts a minute, see _check_auth_rate),
+-- which stops one machine hammering the login endpoint and does nothing about
+-- the attack that actually matters: the same account tried from many addresses.
+-- Credential stuffing is distributed by nature, so a per-IP counter never sees
+-- more than a handful of attempts from any single source while an account is
+-- being worked through thousands of leaked passwords.
+--
+-- Tracked on the account rather than in memory so a bridge restart cannot clear
+-- an attack in progress, and so the lock survives the process that observed it.
+CREATE TABLE IF NOT EXISTS ios_login_failures (
+    user_id VARCHAR(36) PRIMARY KEY,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    first_failure_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_failure_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    -- NULL when not locked. A lock is always temporary: a permanent one hands
+    -- an attacker a denial-of-service against any account whose username they
+    -- know, which is a worse outcome than the guessing it prevents.
+    locked_until TIMESTAMP NULL,
+    FOREIGN KEY (user_id) REFERENCES ios_users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS ios_login_failures_idx_locked ON ios_login_failures (locked_until);
+
+-- Feature: account security — which devices have signed in.
+--
+-- Exists so a sign-in from somewhere new can be recognised as new. Without any
+-- record of what "usual" looks like there is nothing to compare a fresh login
+-- against, and the account's owner is the only person able to say whether a
+-- session is theirs — so they have to be told it happened.
+--
+-- Deliberately stores a HASH of the device descriptor, never the descriptor
+-- itself: its only job is equality ("have we seen this before"), which a hash
+-- answers exactly as well, and a table of device names and OS versions is worth
+-- something to an attacker who reaches the database while a table of digests is
+-- not.
+CREATE TABLE IF NOT EXISTS ios_known_devices (
+    user_id VARCHAR(36) NOT NULL,
+    device_hash VARCHAR(64) NOT NULL,
+    first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, device_hash),
+    FOREIGN KEY (user_id) REFERENCES ios_users(id) ON DELETE CASCADE
+);

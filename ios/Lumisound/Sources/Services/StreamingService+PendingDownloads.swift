@@ -113,7 +113,7 @@ extension StreamingService {
 
         appLog("reconcilePendingDownloads: imported \(imported)/\(pending.count) pending job(s)", category: "network")
         if imported > 0 {
-            await LibraryManager.shared?.scanLocalDocumentsAsync()
+            await LibraryManager.shared?.scanLocalDocumentsAsync(userInitiated: false)
             let label = imported == 1 ? "1 download" : "\(imported) downloads"
             ToastCenter.shared.show("\(label) finished in the background", category: .download)
         }
