@@ -45,6 +45,19 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Bake the Whisper weights into the image rather than downloading them on first
+# use. The lazy path in lyrics_whisper._load_model works, but it would make the
+# very first transcription request pay a ~150 MB download, and would leave local
+# transcription silently dependent on Hugging Face being reachable at exactly
+# that moment. Kept in the same directory lyrics_whisper defaults to.
+ENV LUMISOUND_WHISPER_CACHE=/app/cache/whisper
+RUN python -c "\
+from faster_whisper import WhisperModel; \
+import os; \
+m = os.environ.get('LUMISOUND_WHISPER_MODEL', 'base.en'); \
+WhisperModel(m, device='cpu', compute_type='int8', download_root='/app/cache/whisper'); \
+print('whisper model', m, 'cached')"
+
 ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8002

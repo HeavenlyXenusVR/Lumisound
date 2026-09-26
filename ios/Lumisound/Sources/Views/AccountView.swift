@@ -51,6 +51,9 @@ struct AccountView: View {
 
     @State private var draftDOB = Date()
     @State private var isSavingDOB = false
+    @State private var isAddingEmail = false
+    @State private var draftEmail = ""
+    @State private var isSavingEmail = false
 
     var body: some View {
         ZStack {
@@ -410,6 +413,59 @@ struct AccountView: View {
                                 .multilineTextAlignment(.trailing)
                         }
                         .foregroundStyle(AppTheme.textPrimary)
+                    } else if isAddingEmail {
+                        // Accounts created before email was mandatory — and every
+                        // account auto-created by Discord sign-in before that flow
+                        // asked for the email scope — have nothing on file. This is
+                        // how they fill it in. Deliberately a prompt and not a
+                        // gate: nothing in the app is withheld until they do.
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Email")
+                                .font(AppTheme.bodyFont(size: 12))
+                                .foregroundStyle(AppTheme.textSecondary)
+                            TextField("you@example.com", text: $draftEmail)
+                                .textContentType(.emailAddress)
+                                .keyboardType(.emailAddress)
+                                .autocorrectionDisabled()
+                                .textInputAutocapitalization(.never)
+                                .font(AppTheme.bodyFont(size: 14))
+                                .foregroundStyle(AppTheme.textPrimary)
+                                .submitLabel(.done)
+                                .onSubmit { saveEmail() }
+                            HStack {
+                                if isSavingEmail {
+                                    ProgressView().tint(AppTheme.dynamicAccent)
+                                } else {
+                                    Button("Save") { saveEmail() }
+                                        .foregroundStyle(AppTheme.dynamicAccent)
+                                        .font(.subheadline.bold())
+                                    Button("Cancel") {
+                                        isAddingEmail = false
+                                        draftEmail = ""
+                                    }
+                                    .foregroundStyle(AppTheme.textSecondary)
+                                    .font(.subheadline)
+                                    .padding(.leading, 8)
+                                }
+                            }
+                        }
+                    } else {
+                        Button {
+                            isAddingEmail = true
+                        } label: {
+                            LabeledContent("Email") {
+                                Text("Add")
+                                    .font(AppTheme.bodyFont(size: 13))
+                                    .foregroundStyle(AppTheme.dynamicAccent)
+                            }
+                            .foregroundStyle(AppTheme.textPrimary)
+                        }
+                        .buttonStyle(.plain)
+                        if account.needsEmail {
+                            Text("Your account has no email address. Adding one is how you can be reached about your account — it isn't used for anything else.")
+                                .font(AppTheme.bodyFont(size: 11))
+                                .foregroundStyle(AppTheme.textSecondary)
+                        }
                     }
 
                     // Date of birth — show once set; show picker if not yet set
@@ -850,6 +906,23 @@ struct AccountView: View {
                 isPickingDOB = false
             }
             await account.setDateOfBirth(iso)
+        }
+    }
+
+    private func saveEmail() {
+        guard !isSavingEmail else { return }
+        isSavingEmail = true
+        let candidate = draftEmail
+        Task {
+            defer { isSavingEmail = false }
+            // The prompt stays open on failure so the typed address is still
+            // there to correct — the server rejects more than this client checks
+            // (undeliverable domain, disposable provider, already in use), and
+            // dismissing on those would silently discard what they entered.
+            if await account.setEmail(candidate) {
+                isAddingEmail = false
+                draftEmail = ""
+            }
         }
     }
 

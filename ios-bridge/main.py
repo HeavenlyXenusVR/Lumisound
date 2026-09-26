@@ -33,6 +33,7 @@ from typing import Optional
 from urllib.parse import urlencode, urlsplit
 import urllib.error
 
+import email_validator
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -72,6 +73,8 @@ from intelligence import (
     get_sonic_fingerprint,
     describe_sonic_match,
 )
+import lyrics_ai
+import lyrics_whisper
 from lyrics_ai import transcribe_lyrics
 
 # ---------------------------------------------------------------------------
@@ -1230,6 +1233,114 @@ def _validate_password_strength(password: str, username: str = "") -> None:
         raise HTTPException(
             status_code=400, detail="Password must use at least 4 different characters"
         )
+
+
+# Disposable/burner mailbox providers. An address here is syntactically perfect
+# and often even deliverable, so format validation alone never catches it — the
+# point of these domains is to be thrown away, which is exactly what an account
+# meant to be traceable to a person must not be built on. Deliberately a small,
+# curated list of the large well-known ones rather than an exhaustive blocklist:
+# a big list goes stale and starts rejecting real mail, and the goal here is to
+# raise the cost of casual burner signups, not to win an arms race.
+_DISPOSABLE_EMAIL_DOMAINS = frozenset({
+    "mailinator.com", "guerrillamail.com", "guerrillamail.net", "sharklasers.com",
+    "10minutemail.com", "10minutemail.net", "tempmail.com", "temp-mail.org",
+    "throwawaymail.com", "yopmail.com", "yopmail.net", "dispostable.com",
+    "trashmail.com", "trashmail.net", "getnada.com", "maildrop.cc",
+    "mailnesia.com", "mintemail.com", "spamgourmet.com", "fakeinbox.com",
+    "tempinbox.com", "mohmal.com", "emailondeck.com", "burnermail.io",
+    "mailcatch.com", "inboxbear.com", "tempr.email", "discard.email",
+    "grr.la", "spam4.me", "moakt.com", "harakirimail.com",
+})
+
+# The DB column is varchar(255); RFC 5321 caps a path at 254 characters anyway.
+_MAX_EMAIL_LENGTH = 254
+
+
+def _normalize_email(raw: Optional[str], *, field: str = "Email") -> str:
+    """Validates an address and returns it in canonical form, or raises 400.
+
+    The single place every account-creating and account-updating path runs an
+    address through, because registration used to do none of this: `email` was
+    `Optional[str]` written straight to the column with no format check at all.
+    The column therefore accepted plain non-addresses (a bare word with no
+    @-sign), and a copy-pasted address with a trailing space — the latter
+    silently defeating the uniqueness check, since that string is not equal to
+    the untrailed one.
+
+    Normalisation is part of validation here, not a cosmetic afterthought: the
+    stored form is what uniqueness is compared against, so if two spellings of
+    one mailbox can reach the column, the unique constraint is decorative. The
+    local part keeps its case (it is technically case-sensitive per RFC 5321)
+    while the domain is lowercased, which is what email_validator's `normalized`
+    gives us.
+    """
+    if raw is None or not raw.strip():
+        raise HTTPException(status_code=400, detail=f"{field} is required")
+
+    candidate = raw.strip()
+
+    # Checked before the library sees it, purely for the error message. Interior
+    # whitespace is the single most common paste artefact and "that address
+    # isn't valid" is a much worse thing to read than being told about the space.
+    if any(ch.isspace() for ch in candidate):
+        raise HTTPException(
+            status_code=400, detail=f"{field} must not contain spaces"
+        )
+    if len(candidate) > _MAX_EMAIL_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field} must be at most {_MAX_EMAIL_LENGTH} characters",
+        )
+
+    try:
+        # check_deliverability resolves the domain's MX records. That is the
+        # difference between "looks like an address" and "could actually receive
+        # mail", and it is what rejects a typo'd or invented domain that passes
+        # every syntax rule. It is a network call, so see the fail-open below.
+        info = email_validator.validate_email(candidate, check_deliverability=True)
+    except email_validator.EmailUndeliverableError as exc:
+        # A DNS *failure* is our problem, not the user's. Resolver timeouts and
+        # SERVFAILs must not become "your email is invalid" — that would turn a
+        # transient network blip into users being unable to sign up at all, the
+        # same class of mistake as treating a Gemini 503 as permanent. Only a
+        # domain that definitively does not accept mail is rejected.
+        message = str(exc).lower()
+        if "timeout" in message or "temporar" in message or "resolve" in message:
+            logger.warning(
+                "email validation: deliverability check inconclusive for %r (%s) — allowing",
+                candidate, exc,
+            )
+            try:
+                info = email_validator.validate_email(candidate, check_deliverability=False)
+            except email_validator.EmailNotValidError as inner:
+                raise HTTPException(status_code=400, detail=str(inner)) from inner
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="That email domain can't receive mail. Please check it for typos.",
+            ) from exc
+    except email_validator.EmailNotValidError as exc:
+        # The library's messages are already written for end users
+        # ("The part after the @-sign is not valid. It should have a period.").
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    normalized = info.normalized
+    domain = normalized.rsplit("@", 1)[-1].lower()
+    if domain in _DISPOSABLE_EMAIL_DOMAINS:
+        raise HTTPException(
+            status_code=400,
+            detail="Disposable email addresses aren't accepted. Please use a permanent address.",
+        )
+
+    # Re-checked after normalisation: IDN domains get punycode-encoded here and
+    # can come out longer than they went in, which would overflow the column.
+    if len(normalized) > _MAX_EMAIL_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field} must be at most {_MAX_EMAIL_LENGTH} characters",
+        )
+    return normalized
 
 
 def _get_client_ip(request: Request) -> str:
@@ -2677,6 +2788,10 @@ async def _channel_uploads_via_ytdlp(channel_id: str, max_results: int, user_id:
 class RegisterRequest(BaseModel):
     username: str
     password: str
+    # REQUIRED in practice — see register()'s _normalize_email call. Typed
+    # Optional only so that a client which omits it fails with a readable 400
+    # ("Email is required") instead of FastAPI's 422 validation payload, which
+    # older builds of the app surface to the user as an opaque error.
     email: Optional[str] = None
     display_name: Optional[str] = None
 
@@ -6226,6 +6341,14 @@ async def register(body: RegisterRequest, request: Request):
     username = body.username.strip()
     if len(username) < 3:
         raise HTTPException(status_code=400, detail="Username must be at least 3 characters")
+    # Every account must be reachable at a real address. This was optional and
+    # unvalidated, which is how the table ended up holding an address-shaped
+    # nothing and how an account could exist with no way to contact its owner at
+    # all. Validated before the password so a caller fixes the cheap mistake
+    # first, and deliberately NOT declared required on RegisterRequest: an older
+    # client that omits the field gets this readable 400 rather than FastAPI's
+    # raw 422 validation blob.
+    email = _normalize_email(body.email)
     # The same policy the change-password endpoint applies. Registration allowed
     # six characters while a change required eight, so the weakest password an
     # account could hold was always the one it was created with — the rule was
@@ -6242,13 +6365,17 @@ async def register(body: RegisterRequest, request: Request):
             if await cur.fetchone():
                 raise HTTPException(status_code=409, detail="Username already taken")
 
-            # Check email uniqueness if provided
-            if body.email:
-                await cur.execute(
-                    "SELECT id FROM ios_users WHERE email = %s", (body.email,)
-                )
-                if await cur.fetchone():
-                    raise HTTPException(status_code=409, detail="Email already registered")
+            # Compared case-insensitively. The unique constraint on the column is
+            # case-SENSITIVE, so `Someone@gmail.com` and `someone@gmail.com` were
+            # two separate accounts on one mailbox — a trivial way to mint
+            # duplicates past a check that looked like it prevented them.
+            # _normalize_email already lowercased the domain; lower() here covers
+            # the local part too, which is the half it deliberately preserves.
+            await cur.execute(
+                "SELECT id FROM ios_users WHERE lower(email) = lower(%s)", (email,)
+            )
+            if await cur.fetchone():
+                raise HTTPException(status_code=409, detail="Email already registered")
 
             user_id = str(uuid.uuid4())
             # Fix 1: run bcrypt off the event loop
@@ -6259,7 +6386,7 @@ async def register(body: RegisterRequest, request: Request):
                 INSERT INTO ios_users (id, username, email, password_hash, display_name)
                 VALUES (%s, %s, %s, %s, %s)
                 """,
-                (user_id, username, body.email, password_hash, body.display_name),
+                (user_id, username, email, password_hash, body.display_name),
             )
 
             # Create default settings row
@@ -6740,6 +6867,12 @@ async def me(payload: dict = Depends(get_current_user)):
 class UpdateMeRequest(BaseModel):
     display_name: Optional[str] = None
     date_of_birth: Optional[str] = None  # ISO format YYYY-MM-DD
+    # How an account created before email was mandatory — or via Discord
+    # sign-in, where the address comes from whatever scope the user granted —
+    # supplies one. Omitted (None) leaves the stored address untouched; this
+    # endpoint deliberately cannot clear it back to NULL, because every path
+    # that sets an address now requires a valid one.
+    email: Optional[str] = None
 
 
 @app.put("/auth/me")
@@ -6753,6 +6886,25 @@ async def update_me(body: UpdateMeRequest, payload: dict = Depends(get_current_u
                 "UPDATE ios_users SET display_name = %s WHERE id = %s AND is_active = TRUE",
                 (display_name if display_name else None, user_id),
             )
+
+            if body.email is not None:
+                new_email = _normalize_email(body.email)
+                # Excludes self, so re-submitting the address already on the
+                # account is a no-op rather than a spurious "already registered".
+                await cur.execute(
+                    "SELECT id FROM ios_users WHERE lower(email) = lower(%s) AND id <> %s",
+                    (new_email, user_id),
+                )
+                if await cur.fetchone():
+                    raise HTTPException(
+                        status_code=409, detail="That email is already registered to another account"
+                    )
+                await cur.execute(
+                    "UPDATE ios_users SET email = %s WHERE id = %s AND is_active = TRUE",
+                    (new_email, user_id),
+                )
+                await log_event("account", "email_updated", user_id=user_id,
+                                 message="account email set/changed")
 
             # DOB: immutable once set
             if body.date_of_birth:
@@ -7340,9 +7492,45 @@ async def _run_lyrics_transcription_job(
     job = _LYRICS_JOBS.setdefault(job_id, {})
     try:
         duration_seconds = await _probe_audio_duration(body, mime_type)
-        result = await transcribe_lyrics(
-            body, mime_type, title, artist, hint_lyrics, duration_seconds=duration_seconds
-        )
+
+        # Local ASR first, Gemini second.
+        #
+        # This order is the point of the whole local path. Whisper aligns its
+        # output to the audio, so its timestamps are measured; Gemini estimates
+        # them and drifts, which is why lyrics_ai carries a whole windowed-repair
+        # mechanism to contain the damage. Local is also quota-free, so the
+        # feature stops being rationed by a request allowance shared across every
+        # user of a deployment — and a 503 from an overloaded hosted model can no
+        # longer be the reason a user gets no lyrics at all.
+        #
+        # Gemini is still reached for, in two cases it remains better at: when
+        # local transcription is unavailable or yields nothing, and when the
+        # caller supplied candidate text to correct against (`hint_lyrics`), which
+        # an ASR model has no way to accept — see lyrics_whisper's docstring.
+        result = None
+        if lyrics_whisper.is_available() and not hint_lyrics:
+            result = await lyrics_whisper.transcribe_lyrics_local(
+                body, mime_type, title, artist, duration_seconds=duration_seconds
+            )
+            # Whisper's timings come from the audio, so the plausibility check
+            # that exists for Gemini's guesses is a formality here — but it is
+            # still applied rather than assumed, because a decoder that loops can
+            # emit timestamps past the end of the track.
+            if result is not None and result.get("lines"):
+                result["timings_ok"] = lyrics_ai.timings_are_plausible(
+                    result["lines"], duration_seconds
+                )
+                if not result["timings_ok"]:
+                    logger.warning(
+                        "lyrics-transcribe: local timings implausible for %r — falling back to Gemini",
+                        title,
+                    )
+                    result = None
+
+        if result is None:
+            result = await transcribe_lyrics(
+                body, mime_type, title, artist, hint_lyrics, duration_seconds=duration_seconds
+            )
         if result is None:
             job["status"] = "error"
             job["detail"] = "Lyrics transcription isn't available right now"
@@ -17674,7 +17862,18 @@ async def delete_discord_webhook(payload: dict = Depends(get_current_user)):
 # secret) before deep-linking back into the app.
 # ---------------------------------------------------------------------------
 
-_DISCORD_OAUTH_SCOPE = "identify"
+# "email" is requested alongside "identify" so that the sign-in flow, which
+# AUTO-CREATES accounts (see the else-branch in the callback below), can give
+# them a real address like every other account has. Without it that path was the
+# one hole in "every account has an email": it inserted a user row with no email
+# column at all, which is why most emailless accounts in the table came from
+# here. Discord returns the address on /users/@me as `email`, plus a `verified`
+# flag saying whether Discord itself confirmed it — both are used below.
+#
+# Adding a scope changes Discord's consent screen (it now mentions the email
+# address), so existing users re-consent on their next sign-in. That is the
+# expected, one-time cost of the change, not a bug.
+_DISCORD_OAUTH_SCOPE = "identify email"
 _DISCORD_OAUTH_AUTHORIZE_URL = "https://discord.com/api/oauth2/authorize"
 _DISCORD_OAUTH_TOKEN_URL = "https://discord.com/api/oauth2/token"
 _DISCORD_OAUTH_USER_URL = "https://discord.com/api/users/@me"
@@ -17800,7 +17999,9 @@ async def _unique_discord_username(cur, discord_username: str) -> str:
         candidate = f"{base}{suffix}"
 
 
-async def _complete_discord_login(discord_user_id: str, display_username: str) -> RedirectResponse:
+async def _complete_discord_login(
+    discord_user_id: str, display_username: str, discord_email: Optional[str] = None
+) -> RedirectResponse:
     """The sign-in-with-Discord counterpart to /auth/login — called once the
     OAuth2 code exchange below has already proven the caller owns this exact
     Discord account. Logs into the Lumisound account already linked to it
@@ -17836,6 +18037,26 @@ async def _complete_discord_login(discord_user_id: str, display_username: str) -
                     "UPDATE ios_discord_verifications SET discord_username = %s WHERE user_id = %s",
                     (display_username, user_id),
                 )
+                # Backfill, for the accounts this flow created before it asked
+                # for the email scope. Strictly additive: it only ever fills a
+                # NULL, so it can never overwrite an address the user chose
+                # themselves, and a collision with another account is skipped
+                # rather than raised — signing in must not start failing because
+                # of a data-quality repair.
+                if discord_email:
+                    try:
+                        backfill_email = _normalize_email(discord_email)
+                    except HTTPException:
+                        backfill_email = None
+                    if backfill_email:
+                        await cur.execute(
+                            "UPDATE ios_users SET email = %s "
+                            "WHERE id = %s AND email IS NULL AND NOT EXISTS ("
+                            "  SELECT 1 FROM ios_users o WHERE lower(o.email) = lower(%s) AND o.id <> %s)",
+                            (backfill_email, user_id, backfill_email, user_id),
+                        )
+                        if cur.rowcount:
+                            logger.info("discord sign-in: backfilled email for user %s", user_id)
                 if totp_enabled:
                     # Same as password login with 2FA on (/auth/login): the
                     # Discord identity alone isn't enough for an account that
@@ -17859,9 +18080,39 @@ async def _complete_discord_login(discord_user_id: str, display_username: str) -
                 # any time via this same Discord flow.
                 random_password_hash = await hash_password_async(secrets.token_urlsafe(32))
                 username = await _unique_discord_username(cur, display_username)
+                # Discord-verified address, stored so an auto-created account is
+                # as contactable as a hand-registered one. Run through the same
+                # validator as registration rather than trusted because it came
+                # from Discord: it still has to fit the column and must not
+                # collide with an existing account's address.
+                #
+                # Not fatal if unusable. Refusing to create the account would
+                # mean a user who declined the email scope, or whose Discord
+                # address already belongs to another Lumisound account, simply
+                # cannot sign in — a worse outcome than an account that gets
+                # prompted for an address in-app, which is the same state every
+                # pre-existing account is already in.
+                new_email: Optional[str] = None
+                if discord_email:
+                    try:
+                        candidate_email = _normalize_email(discord_email)
+                    except HTTPException as exc:
+                        logger.info("discord sign-in: unusable email from Discord (%s)", exc.detail)
+                    else:
+                        await cur.execute(
+                            "SELECT id FROM ios_users WHERE lower(email) = lower(%s)",
+                            (candidate_email,),
+                        )
+                        if await cur.fetchone():
+                            logger.info(
+                                "discord sign-in: Discord email already tied to another account; "
+                                "creating %r without one", username)
+                        else:
+                            new_email = candidate_email
                 await cur.execute(
-                    "INSERT INTO ios_users (id, username, password_hash, display_name) VALUES (%s, %s, %s, %s)",
-                    (user_id, username, random_password_hash, display_username),
+                    "INSERT INTO ios_users (id, username, email, password_hash, display_name) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    (user_id, username, new_email, random_password_hash, display_username),
                 )
                 await cur.execute("INSERT INTO ios_user_settings (user_id) VALUES (%s)", (user_id,))
                 await cur.execute(
@@ -17934,9 +18185,13 @@ async def discord_oauth_callback(
         f"{discord_username}#{discriminator}" if discriminator and discriminator != "0" else discord_username
     )
     avatar_hash = discord_user.get("avatar")
+    # Only an address Discord itself has confirmed is worth storing. An
+    # unverified one on a Discord account is just as unproven as a hand-typed
+    # string, and this whole change exists to stop storing those.
+    discord_email = discord_user.get("email") if discord_user.get("verified") else None
 
     if is_login_flow:
-        return await _complete_discord_login(discord_user_id, display_username)
+        return await _complete_discord_login(discord_user_id, display_username, discord_email)
 
     try:
         pool = await get_pool()

@@ -312,7 +312,7 @@ struct LoginView: View {
 
                                 // Email
                                 VStack(alignment: .leading, spacing: 6) {
-                                    Text("Email (optional)")
+                                    Text("Email")
                                         .font(AppTheme.bodyFont(size: 12))
                                         .foregroundStyle(AppTheme.textSecondary)
                                         .padding(.leading, 4)
@@ -394,8 +394,20 @@ struct LoginView: View {
                 localError = "Passwords do not match."
                 return
             }
-            guard password.count >= 6 else {
-                localError = "Password must be at least 6 characters."
+            // Eight, matching the server's _validate_password_strength. This
+            // said six while the bridge required eight, so a seven-character
+            // password passed this gate and was then rejected by the server —
+            // the client was promising something the backend would not honour.
+            guard password.count >= 8 else {
+                localError = "Password must be at least 8 characters."
+                return
+            }
+            // Email is mandatory now. Checked here so the obvious mistakes cost
+            // no round trip; the server still has the final say (it also checks
+            // the domain can actually receive mail and rejects disposable
+            // providers, which this deliberately does not try to replicate).
+            if let problem = AccountService.localEmailProblem(email) {
+                localError = problem
                 return
             }
         }
@@ -407,7 +419,11 @@ struct LoginView: View {
                 await account.register(
                     username: trimmedUsername,
                     password: password,
-                    email: email.isEmpty ? nil : email,
+                    // Trimmed, not passed raw: a copy-pasted address routinely
+                    // carries a trailing space, and that space used to be stored
+                    // verbatim — which silently defeated the uniqueness check,
+                    // since the trailing form is not equal to the untrailed one.
+                    email: email.trimmingCharacters(in: .whitespacesAndNewlines),
                     displayName: displayName.isEmpty ? nil : displayName
                 )
             } else {
