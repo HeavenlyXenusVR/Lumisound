@@ -923,6 +923,43 @@ CREATE TABLE IF NOT EXISTS ios_room_queue (
 );
 CREATE INDEX IF NOT EXISTS ios_room_queue_idx_room_votes ON ios_room_queue (room_id, votes);
 
+-- One vote per person per queue item.
+--
+-- `ios_room_queue.votes` was incremented with a bare `votes = votes + 1` and
+-- nothing recorded WHO voted, so a single member could hold the vote button and
+-- push any track to the top without limit. In a feature whose entire point is
+-- that the group decides the order, an unbounded vote is not a small gap — it
+-- makes the ordering meaningless. The primary key is what enforces it; the
+-- counter on ios_room_queue is kept as a denormalised total so the queue can
+-- still be ordered without a join per row.
+CREATE TABLE IF NOT EXISTS ios_room_queue_votes (
+    item_id VARCHAR(36) NOT NULL,
+    user_id VARCHAR(36) NOT NULL,
+    voted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (item_id, user_id),
+    FOREIGN KEY (item_id) REFERENCES ios_room_queue(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES ios_users(id) ON DELETE CASCADE
+);
+
+-- Who is currently in a listening room.
+--
+-- The room tables tracked the host's playback and the shared queue but never
+-- membership, so there was no way to answer "who is listening with me" — and no
+-- way for the server to know who to push a room update TO. Presence is by
+-- heartbeat (`last_seen_at`) rather than an explicit leave, because a phone that
+-- loses signal or is force-quit never sends one; a timestamp degrades correctly
+-- where a boolean would leave ghosts in the room forever.
+CREATE TABLE IF NOT EXISTS ios_room_participants (
+    room_id VARCHAR(36) NOT NULL,
+    user_id VARCHAR(36) NOT NULL,
+    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (room_id, user_id),
+    FOREIGN KEY (room_id) REFERENCES ios_listen_rooms(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES ios_users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS ios_room_participants_idx_seen ON ios_room_participants (room_id, last_seen_at);
+
 -- Feature: personalized history-based weekly mix (distinct from the existing
 -- static tempo-bucket ios_user_music_metadata-derived smart-playlists) —
 -- caches the generated track-id list per user, regenerated weekly by

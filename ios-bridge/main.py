@@ -1544,6 +1544,7 @@ async def lifespan(app: FastAPI):
     app_logs_janitor = asyncio.create_task(_app_logs_janitor())
     event_log_janitor = asyncio.create_task(_event_log_janitor())
     extra_logs_janitor = asyncio.create_task(_extra_logs_janitor())
+    rooms_janitor = asyncio.create_task(_rooms_janitor())
     subscription_poller = asyncio.create_task(_subscription_polling_loop())
     duplicate_scanner = asyncio.create_task(_duplicate_scan_loop())
     weekly_mix_generator = asyncio.create_task(_weekly_mix_loop())
@@ -1553,6 +1554,7 @@ async def lifespan(app: FastAPI):
     app_logs_janitor.cancel()
     event_log_janitor.cancel()
     extra_logs_janitor.cancel()
+    rooms_janitor.cancel()
     subscription_poller.cancel()
     duplicate_scanner.cancel()
     weekly_mix_generator.cancel()
@@ -13798,6 +13800,162 @@ def _generate_room_code() -> str:
     return "".join(secrets.choice(alphabet) for _ in range(6))
 
 
+# How long since a heartbeat before a member is treated as gone.
+#
+# Presence is a timestamp, not a flag, because a force-quit or a phone losing
+# signal never sends a leave — a flag would leave ghosts sitting in the room
+# forever. Generously longer than the client's heartbeat interval so one dropped
+# request doesn't blink somebody out of the room.
+_ROOM_PARTICIPANT_TTL_SECONDS = 90
+
+# A room with nobody in it and no host activity for this long is finished.
+# Without this, `ios_listen_rooms` accumulated a row per session ever started:
+# there was no close endpoint and no retention of any kind.
+_ROOM_IDLE_EXPIRY_HOURS = 12
+
+
+def _utc_iso(dt) -> Optional[str]:
+    """Serialises a DB timestamp as explicit UTC.
+
+    The room columns are `timestamp without time zone` and the database runs in
+    UTC, so the stored values ARE UTC — but a bare `.isoformat()` emits no offset,
+    and a client parsing "2026-09-26T21:10:19.874131" with a standard ISO-8601
+    parser reads it as LOCAL time. Everywhere else in this file that is harmless
+    because the timestamp is only displayed; here it is used arithmetically
+    against `server_time` to work out how stale a playback position is, so for a
+    listener in UTC+2 the drift would come out two hours wrong and the seek with
+    it. Marking the offset is the difference between a sync that works and one
+    that is silently wrong outside UTC.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
+
+async def _room_by_code(cur, room_code: str) -> Optional[tuple]:
+    """(id, host_user_id) for a room code, or None. Single place the
+    upper-casing happens, since every endpoint takes the code from a URL."""
+    await cur.execute(
+        "SELECT id, host_user_id FROM ios_listen_rooms WHERE room_code = %s",
+        (room_code.upper(),),
+    )
+    return await cur.fetchone()
+
+
+async def _active_room_participants(cur, room_id: str) -> list[dict]:
+    """Members seen within the presence window, host first.
+
+    Joined against ios_users so the client gets something displayable — the room
+    tables only ever held ids, which is also why chat was anonymous.
+    """
+    await cur.execute(
+        """
+        SELECT p.user_id, u.username, u.display_name, p.joined_at,
+               (p.user_id = r.host_user_id) AS is_host
+        FROM ios_room_participants p
+        JOIN ios_listen_rooms r ON r.id = p.room_id
+        LEFT JOIN ios_users u ON u.id = p.user_id
+        WHERE p.room_id = %s
+          AND p.last_seen_at > NOW() - make_interval(secs => %s)
+        ORDER BY is_host DESC, p.joined_at ASC
+        """,
+        (room_id, _ROOM_PARTICIPANT_TTL_SECONDS),
+    )
+    return [
+        {
+            "user_id": r[0],
+            "username": r[1],
+            "display_name": r[2],
+            "joined_at": _utc_iso(r[3]),
+            "is_host": bool(r[4]),
+        }
+        for r in await cur.fetchall()
+    ]
+
+
+async def _push_room_event(room_id: str, event: dict, exclude_user_id: Optional[str] = None) -> None:
+    """Fans a room event out over the existing live WebSocket channel.
+
+    This is what turns rooms from a polling feature into a real-time one. The
+    endpoints shipped with only `GET /rooms/{code}/events` to poll, while
+    `/ws/live` and `_push_live_event` already existed for notifications and
+    presence — so the transport was there and simply unused here. Polling a room
+    for chat and playback state means either noticeable lag or hammering the
+    bridge; pushing costs one frame to sockets that are already open.
+
+    Best-effort and fire-and-forget, exactly like `_push_live_event`: a member
+    with no socket open picks the state up from `GET /rooms/{code}` when they next
+    look, so a missed frame degrades to the old behaviour rather than breaking.
+    """
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                members = await _active_room_participants(cur, room_id)
+    except Exception:
+        logger.exception("room push: could not resolve participants for %s", room_id)
+        return
+    for member in members:
+        uid = member["user_id"]
+        if uid and uid != exclude_user_id:
+            asyncio.create_task(_push_live_event(uid, event))
+
+
+async def _touch_room_participant(cur, room_id: str, user_id: str) -> None:
+    """Records/refreshes presence. Called by join, heartbeat, chat and votes —
+    anything a member does is also proof they are still there, so presence stays
+    current without depending on the heartbeat alone."""
+    await cur.execute(
+        """
+        INSERT INTO ios_room_participants (room_id, user_id)
+        VALUES (%s, %s)
+        ON CONFLICT (room_id, user_id) DO UPDATE SET last_seen_at = NOW()
+        """,
+        (room_id, user_id),
+    )
+
+
+async def _rooms_janitor() -> None:
+    """Closes rooms nobody is in any more.
+
+    There is no way for a room to end on its own otherwise: the feature shipped
+    with no close endpoint and no retention, so every session ever started would
+    stay in the table indefinitely, still joinable by its code.
+    """
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    # `updated_at` is maintained by the trg_touch_updated_at
+                    # trigger on this table, so it genuinely tracks the host's
+                    # last playback update — idle means idle.
+                    await cur.execute(
+                        """
+                        DELETE FROM ios_listen_rooms
+                        WHERE updated_at < NOW() - make_interval(hours => %s)
+                        """,
+                        (_ROOM_IDLE_EXPIRY_HOURS,),
+                    )
+                    closed = cur.rowcount
+                    # Participant rows for live rooms whose owners wandered off.
+                    await cur.execute(
+                        """
+                        DELETE FROM ios_room_participants
+                        WHERE last_seen_at < NOW() - make_interval(hours => 1)
+                        """
+                    )
+                    stale = cur.rowcount
+            if closed or stale:
+                logger.info("rooms janitor: closed %d idle room(s), dropped %d stale membership(s)",
+                            closed, stale)
+        except Exception:
+            logger.exception("rooms janitor: cleanup failed")
+
+
 @app.post("/rooms", status_code=201)
 async def create_room(
     body: CreateRoomRequest,
@@ -13848,6 +14006,7 @@ async def get_room(room_code: str):
                 (room_code.upper(),),
             )
             row = await cur.fetchone()
+            members = await _active_room_participants(cur, row[0]) if row else []
 
     if not row:
         raise HTTPException(status_code=404, detail="Room not found")
@@ -13860,7 +14019,15 @@ async def get_room(room_code: str):
         "artist": row[5],
         "position_seconds": row[6],
         "is_playing": bool(row[7]),
-        "updated_at": row[8].isoformat() if row[8] else None,
+        # What `position_seconds` is relative to. Maintained by this table's
+        # trg_touch_updated_at trigger, so it really is when the host last
+        # reported — a follower needs both numbers to seek correctly, since a
+        # position with no "as of" could be seconds or hours old.
+        "updated_at": _utc_iso(row[8]),
+        # Sent so a client can measure its own clock offset against the server
+        # instead of trusting the two devices' clocks to agree.
+        "server_time": datetime.now(timezone.utc).isoformat(),
+        "participants": members,
     }
 
 
@@ -13917,7 +14084,168 @@ async def update_room(
                     (room_id, user_id, body.title or prev_title, body.artist or prev_artist),
                 )
 
+            # The host posting state is also proof the host is present, so their
+            # own membership stays current without a separate heartbeat.
+            await _touch_room_participant(cur, room_id, user_id)
+
+    # Pushed to everyone else in the room rather than waiting for them to poll.
+    # `position_seconds` is sent with the server's own timestamp so a follower can
+    # correct for transit and for however long ago this was reported — a bare
+    # position with no "as of" is unusable for seeking.
+    asyncio.create_task(_push_room_event(room_id, {
+        "type": "room_state",
+        "room_code": room_code.upper(),
+        "track_url": body.track_url,
+        "title": body.title if body.title is not None else prev_title,
+        "artist": body.artist if body.artist is not None else prev_artist,
+        "position_seconds": body.position_seconds,
+        "is_playing": body.is_playing,
+        "as_of": datetime.now(timezone.utc).isoformat(),
+    }, exclude_user_id=user_id))
     return {"status": "updated"}
+
+
+@app.post("/rooms/{room_code}/join")
+async def join_room(room_code: str, payload: dict = Depends(get_current_user)):
+    """Joins a room and returns its current state plus who else is in it.
+
+    Membership did not exist before this: the room tables tracked the host's
+    playback and the shared queue, but nothing recorded who was listening — so
+    the app could not show a member list, and the server had nobody to push
+    updates TO (see `_push_room_event`).
+    """
+    user_id = payload["sub"]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            room = await _room_by_code(cur, room_code)
+            if not room:
+                raise HTTPException(status_code=404, detail="Room not found")
+            room_id, host_user_id = room
+
+            await cur.execute(
+                "SELECT 1 FROM ios_room_participants WHERE room_id = %s AND user_id = %s "
+                "AND last_seen_at > NOW() - make_interval(secs => %s)",
+                (room_id, user_id, _ROOM_PARTICIPANT_TTL_SECONDS),
+            )
+            was_present = await cur.fetchone() is not None
+            await _touch_room_participant(cur, room_id, user_id)
+
+            # A join event is only logged when somebody actually arrives — a
+            # reconnect after a dropped socket would otherwise spam the history
+            # with joins for a person who never left.
+            if not was_present:
+                await cur.execute(
+                    "INSERT INTO ios_room_events (room_id, user_id, event_type, message) "
+                    "VALUES (%s, %s, 'join', %s)",
+                    (room_id, user_id, "joined the room"),
+                )
+
+            await cur.execute(
+                """
+                SELECT track_url, title, artist, position_seconds, is_playing, updated_at
+                FROM ios_listen_rooms WHERE id = %s
+                """,
+                (room_id,),
+            )
+            state = await cur.fetchone()
+            members = await _active_room_participants(cur, room_id)
+
+    if not was_present:
+        asyncio.create_task(_push_room_event(room_id, {
+            "type": "room_members", "room_code": room_code.upper(),
+        }, exclude_user_id=user_id))
+
+    return {
+        "room_code": room_code.upper(),
+        "is_host": host_user_id == user_id,
+        "track_url": state[0], "title": state[1], "artist": state[2],
+        "position_seconds": state[3], "is_playing": bool(state[4]),
+        # What the position is relative to. Without this a follower cannot tell a
+        # position reported one second ago from one reported ten minutes ago.
+        "updated_at": _utc_iso(state[5]),
+        "server_time": datetime.now(timezone.utc).isoformat(),
+        "participants": members,
+    }
+
+
+@app.post("/rooms/{room_code}/heartbeat")
+async def room_heartbeat(room_code: str, payload: dict = Depends(get_current_user)):
+    """Keeps this member visible in the room and returns the live member list.
+
+    Deliberately cheap — one upsert and one select — because every member calls it
+    on an interval. Doubles as the member-list refresh so a follower needs one
+    request per tick rather than two.
+    """
+    user_id = payload["sub"]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            room = await _room_by_code(cur, room_code)
+            if not room:
+                raise HTTPException(status_code=404, detail="Room not found")
+            room_id, _ = room
+            await _touch_room_participant(cur, room_id, user_id)
+            members = await _active_room_participants(cur, room_id)
+    return {"participants": members, "server_time": datetime.now(timezone.utc).isoformat()}
+
+
+@app.post("/rooms/{room_code}/leave", status_code=204)
+async def leave_room(room_code: str, payload: dict = Depends(get_current_user)):
+    """Leaves a room. Presence would time out on its own, but an explicit leave
+    means the member list is right immediately instead of up to the TTL later."""
+    user_id = payload["sub"]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            room = await _room_by_code(cur, room_code)
+            if not room:
+                return Response(status_code=204)
+            room_id, _ = room
+            await cur.execute(
+                "DELETE FROM ios_room_participants WHERE room_id = %s AND user_id = %s",
+                (room_id, user_id),
+            )
+            if cur.rowcount:
+                await cur.execute(
+                    "INSERT INTO ios_room_events (room_id, user_id, event_type, message) "
+                    "VALUES (%s, %s, 'leave', %s)",
+                    (room_id, user_id, "left the room"),
+                )
+    asyncio.create_task(_push_room_event(room_id, {
+        "type": "room_members", "room_code": room_code.upper(),
+    }, exclude_user_id=user_id))
+    return Response(status_code=204)
+
+
+@app.delete("/rooms/{room_code}", status_code=204)
+async def close_room(room_code: str, payload: dict = Depends(get_current_user)):
+    """Ends a room. Host only.
+
+    There was no way to end a room at all before this — every session ever started
+    stayed in the table, still joinable by its code forever. Members are told
+    before the row goes, so their app can leave the session rather than sitting on
+    a room that has silently stopped existing.
+    """
+    user_id = payload["sub"]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            room = await _room_by_code(cur, room_code)
+            if not room:
+                raise HTTPException(status_code=404, detail="Room not found")
+            room_id, host_user_id = room
+            if host_user_id != user_id:
+                raise HTTPException(status_code=403, detail="Only the host can close this room")
+            # Pushed BEFORE the delete: _push_room_event resolves the member list
+            # from the participants table, and the ON DELETE CASCADE would take
+            # those rows with the room, leaving nobody to notify.
+            await _push_room_event(room_id, {
+                "type": "room_closed", "room_code": room_code.upper(),
+            }, exclude_user_id=user_id)
+            # Cascades to participants, events and queue (see schema.sql).
+            await cur.execute("DELETE FROM ios_listen_rooms WHERE id = %s", (room_id,))
+    return Response(status_code=204)
 
 
 @app.get("/rooms/{room_code}/events")
@@ -13939,12 +14267,18 @@ async def get_room_events(
                 raise HTTPException(status_code=404, detail="Room not found")
             room_id = row[0]
 
+            # Joined to ios_users so a chat line can say WHO said it. The table
+            # always held user_id; this endpoint just never returned it, which made
+            # every message in the room history anonymous and the chat unusable as
+            # a conversation.
             await cur.execute(
                 """
-                SELECT event_type, title, artist, message, created_at
-                FROM ios_room_events
-                WHERE room_id = %s
-                ORDER BY created_at DESC
+                SELECT e.event_type, e.title, e.artist, e.message, e.created_at,
+                       e.user_id, u.username, u.display_name
+                FROM ios_room_events e
+                LEFT JOIN ios_users u ON u.id = e.user_id
+                WHERE e.room_id = %s
+                ORDER BY e.created_at DESC
                 LIMIT %s
                 """,
                 (room_id, limit),
@@ -13957,7 +14291,12 @@ async def get_room_events(
             "title": r[1],
             "artist": r[2],
             "message": r[3],
-            "created_at": r[4].isoformat() if r[4] else None,
+            "created_at": _utc_iso(r[4]),
+            "user_id": r[5],
+            "username": r[6],
+            # Falls back to the username so the client always has something to
+            # show without repeating this coalesce at every call site.
+            "display_name": r[7] or r[6],
         }
         for r in rows
     ]
@@ -13985,12 +14324,29 @@ async def post_room_chat(
                 raise HTTPException(status_code=404, detail="Room not found")
             room_id = row[0]
 
+            message = body.message.strip()[:1000]
             await cur.execute(
                 "INSERT INTO ios_room_events (room_id, user_id, event_type, message) "
                 "VALUES (%s, %s, 'chat', %s)",
-                (room_id, user_id, body.message.strip()[:1000]),
+                (room_id, user_id, message),
             )
+            # Posting is proof of presence.
+            await _touch_room_participant(cur, room_id, user_id)
+            await cur.execute(
+                "SELECT username, display_name FROM ios_users WHERE id = %s", (user_id,))
+            who = await cur.fetchone()
 
+    # Delivered live rather than waiting for the next events poll — a chat that
+    # arrives on a poll interval is not a chat.
+    asyncio.create_task(_push_room_event(room_id, {
+        "type": "room_chat",
+        "room_code": room_code.upper(),
+        "user_id": user_id,
+        "username": who[0] if who else None,
+        "display_name": (who[1] or who[0]) if who else None,
+        "message": message,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }, exclude_user_id=user_id))
     return {"status": "posted"}
 
 
@@ -14059,32 +14415,79 @@ async def add_room_queue_item(
                 "VALUES (%s, %s, %s, %s, %s, %s)",
                 (item_id, room_id, user_id, body.track_url, body.title, body.artist),
             )
+            await _touch_room_participant(cur, room_id, user_id)
 
+    asyncio.create_task(_push_room_event(room_id, {
+        "type": "room_queue", "room_code": room_code.upper(),
+        "added": {"item_id": item_id, "title": body.title, "artist": body.artist},
+    }, exclude_user_id=user_id))
     return {"id": item_id}
 
 
 @app.post("/rooms/{room_code}/queue/{item_id}/vote")
 async def vote_room_queue_item(room_code: str, item_id: str, payload: dict = Depends(get_current_user)):
-    """Upvotes a suggested track in a shared listening room's collaborative
-    queue. One vote per call (the client debounces repeat taps); does not
-    track per-user vote state, so this is a lightweight "how popular is this
-    suggestion" signal rather than a strict one-vote-per-user tally."""
+    """Toggles this user's vote on a suggested track. One vote per person.
+
+    This used to be a bare `votes = votes + 1` with no record of who voted,
+    documented as a deliberate "lightweight popularity signal" that relied on the
+    client debouncing repeat taps. That does not hold: the endpoint is reachable
+    directly, and a retry or a client bug double-counts. In a feature whose point
+    is that the GROUP decides the play order, an unbounded vote makes the ordering
+    meaningless — so it is now enforced in the schema by
+    `ios_room_queue_votes`'s primary key.
+
+    A toggle rather than an error on repeat: tapping again to take a vote back is
+    what people expect from a vote button, and it makes the call idempotent in
+    both directions instead of leaving the client to track its own state.
+    """
+    user_id = payload["sub"]
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
+            # Scoped through the room so an item id from another room can't be
+            # voted on by code alone.
             await cur.execute(
                 """
-                UPDATE ios_room_queue q
-                SET votes = q.votes + 1
-                FROM ios_listen_rooms r
-                WHERE r.id = q.room_id AND q.id = %s AND r.room_code = %s
+                SELECT q.id, q.room_id FROM ios_room_queue q
+                JOIN ios_listen_rooms r ON r.id = q.room_id
+                WHERE q.id = %s AND r.room_code = %s
                 """,
                 (item_id, room_code.upper()),
             )
-            if cur.rowcount == 0:
+            row = await cur.fetchone()
+            if not row:
                 raise HTTPException(status_code=404, detail="Queue item not found")
+            room_id = row[1]
 
-    return {"status": "voted"}
+            await cur.execute(
+                "DELETE FROM ios_room_queue_votes WHERE item_id = %s AND user_id = %s",
+                (item_id, user_id),
+            )
+            voted = cur.rowcount == 0
+            if voted:
+                await cur.execute(
+                    "INSERT INTO ios_room_queue_votes (item_id, user_id) VALUES (%s, %s) "
+                    "ON CONFLICT (item_id, user_id) DO NOTHING",
+                    (item_id, user_id),
+                )
+
+            # Recomputed from the votes table rather than incremented, so the
+            # denormalised counter cannot drift out of step with the real tally —
+            # which is the usual failure of keeping a count beside its rows.
+            await cur.execute(
+                "UPDATE ios_room_queue SET votes = "
+                "(SELECT count(*) FROM ios_room_queue_votes WHERE item_id = %s) "
+                "WHERE id = %s RETURNING votes",
+                (item_id, item_id),
+            )
+            total = (await cur.fetchone())[0]
+            await _touch_room_participant(cur, room_id, user_id)
+
+    asyncio.create_task(_push_room_event(room_id, {
+        "type": "room_queue", "room_code": room_code.upper(),
+        "item_id": item_id, "votes": total,
+    }))
+    return {"status": "voted" if voted else "unvoted", "votes": total}
 
 
 @app.delete("/rooms/{room_code}/queue/{item_id}", status_code=204)
