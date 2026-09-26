@@ -132,8 +132,13 @@ enum BackgroundRefreshService {
         // Reconcile first, for the same reason as the launch and foreground
         // paths: a job the bridge already finished is a track the resume pass
         // must see as owned, or it asks for it again.
-        await streaming.reconcilePendingDownloads()
-        await TrackedPlaylistStore.shared.runAutoDownloads(streaming: streaming, library: library)
+        // Marked as granted background time so the local-documents scan that
+        // importing a finished download triggers is allowed to run — see
+        // BackgroundExecutionContext.
+        await BackgroundExecutionContext.shared.withGrantedBackgroundTime {
+            await streaming.reconcilePendingDownloads()
+            await TrackedPlaylistStore.shared.runAutoDownloads(streaming: streaming, library: library)
+        }
     }
 
     private static func handle(task: BGAppRefreshTask) {
@@ -171,8 +176,11 @@ enum BackgroundRefreshService {
         // — done first and cheaply (a single GET when there's nothing
         // pending), so it isn't starved by runAutoDownloads below if this
         // task's tight execution budget runs out first.
-        await streaming.reconcilePendingDownloads()
-
-        await TrackedPlaylistStore.shared.runAutoDownloads(streaming: streaming, library: library)
+        // Same reasoning as runDownloadCatchUp: this is OS-granted background
+        // time, so the scan behind an import is legitimate here.
+        await BackgroundExecutionContext.shared.withGrantedBackgroundTime {
+            await streaming.reconcilePendingDownloads()
+            await TrackedPlaylistStore.shared.runAutoDownloads(streaming: streaming, library: library)
+        }
     }
 }

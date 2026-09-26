@@ -11,6 +11,23 @@ extension LibraryManager {
         let artists: [String]
         let albums: [String]
         let genres: [String]
+        /// The locally-imported subset, persisted separately from `songs`.
+        ///
+        /// `songs` is the COMBINED list (media library + imported) that the UI
+        /// renders, and restoring it was enough to make the library appear
+        /// instantly — which is why the gap here went unnoticed. But
+        /// `performLocalDocumentsScan` diffs against `importedSongs`, not
+        /// `allSongs`, so leaving this unrestored meant `existingURLs` was empty
+        /// on every launch and the scan's entire "only process files we haven't
+        /// seen before" optimisation never engaged: all ~3,500 files were treated
+        /// as new, every launch, and the full main-actor merge plus index rebuild
+        /// ran each time. Field telemetry showed it plainly — `librarySize: 0`
+        /// alongside `newSongs: 3546` on every single scan.
+        ///
+        /// Optional so a snapshot written by an older build still decodes; those
+        /// simply fall back to the previous behaviour for one launch, until the
+        /// next persist writes the field.
+        let importedSongs: [Song]?
     }
 
     private static let snapshotURL: URL = {
@@ -53,6 +70,16 @@ extension LibraryManager {
         artists = snapshot.artists
         albums = snapshot.albums
         genres = snapshot.genres
+        // Restored only if the scan hasn't already populated it. Both this and
+        // the launch scan are kicked off around the same moment, and this one
+        // awaits a file read plus a JSON decode, so it can easily land second —
+        // overwriting a freshly-scanned library with a stale snapshot would turn
+        // a missed optimisation into actual data loss.
+        if let imported = snapshot.importedSongs, importedSongs.isEmpty {
+            importedSongs = imported
+            appLog("Restored \(imported.count) imported song(s) from snapshot — scan will diff against these rather than treating every file as new",
+                   category: "library")
+        }
         appLog("Loaded cached library snapshot: \(snapshot.songs.count) song(s)", category: "library")
     }
 
@@ -76,7 +103,13 @@ extension LibraryManager {
         pendingSnapshotPersistTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
             guard let self, !Task.isCancelled, !self.isScanning else { return }
-            let snapshot = LibrarySnapshot(songs: self.allSongs, artists: self.artists, albums: self.albums, genres: self.genres)
+            let snapshot = LibrarySnapshot(
+                songs: self.allSongs,
+                artists: self.artists,
+                albums: self.albums,
+                genres: self.genres,
+                importedSongs: self.importedSongs
+            )
             let destination = Self.snapshotURL
             await Task.detached(priority: .utility) {
                 guard let data = try? JSONEncoder().encode(snapshot) else { return }

@@ -54,6 +54,10 @@ struct LumisoundApp: App {
         BackgroundRefreshService.register()
         LumisoundTrackVaultService.register()
         PerformanceMonitorService.start()
+        // Started here, in init, because a launch-time stall is one of the
+        // freezes worth catching and a View's .task would begin watching only
+        // after the very work it needs to observe has already run.
+        MainThreadHangMonitor.shared.start()
     }
 
     var body: some Scene {
@@ -155,6 +159,15 @@ struct LumisoundApp: App {
                     // app was suspended (its main-run-loop timer doesn't fire
                     // there). No-op unless a full interval has elapsed.
                     DiagnosticsSnapshotService.noteDidBecomeActive()
+                    // Run any library scan that was deferred because its trigger
+                    // (a finished download, a playlist sync) fired while the app
+                    // was backgrounded — scans are no longer started in the
+                    // background, since doing so is what the 0x8BADF00D
+                    // scene-update watchdog kills were. Deferring without this
+                    // would silently swallow the change that asked for the scan.
+                    Task { @MainActor in
+                        await LibraryManager.shared?.runDeferredScanIfNeeded()
+                    }
                     // Catch-all safety net for background downloads: covers
                     // both "silent push never arrived" (Apple doesn't
                     // guarantee delivery/timing) and jobs that finished

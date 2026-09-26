@@ -119,7 +119,57 @@ extension LibraryManager {
     /// an immediate re-read, not a share of whatever else is in flight.
     private static var inFlightScanTask: Task<Void, Never>?
 
+    /// Set when a scan was skipped for being in the background, so the next
+    /// foreground transition can run the scan that was deferred instead of
+    /// silently dropping whatever change triggered it.
+    private static var scanDeferredWhileBackgrounded = false
+
+    /// Whether a deferred background scan is waiting to run on next activation.
+    static var hasDeferredBackgroundScan: Bool { scanDeferredWhileBackgrounded }
+
+    static func clearDeferredBackgroundScan() { scanDeferredWhileBackgrounded = false }
+
     func performLocalDocumentsScan(force: Bool = false) async {
+        // Never start an automatic scan while backgrounded.
+        //
+        // This is what the 0x8BADF00D crashes were. A scan costs 3-4 seconds in
+        // the foreground; field telemetry measured the SAME scan over the same
+        // ~3,500 files taking 27 and 77 seconds when the app was backgrounded
+        // partway through, because iOS throttles background CPU hard. The
+        // scene-update watchdog allows 10 seconds of wall clock, so a scan that
+        // straddles backgrounding blows that budget and the OS kills the app —
+        // reported as "scene-update watchdog transgression ... exhausted real
+        // (wall clock) time allowance of 10.00 seconds", with ProcessVisibility
+        // Background and ~10s of app CPU burned. It is not a thermal or memory
+        // problem: thermal was nominal and resident memory ~120 MB.
+        //
+        // A `force` scan is exempt because it is a direct user action (the
+        // Library Refresh button), which means the app is by definition
+        // foreground and visible at the moment it is requested.
+        //
+        // Work inside an OS-granted background window is also exempt: a
+        // BGAppRefreshTask importing a download that finished while the app was
+        // away legitimately needs to scan, and iOS has explicitly granted it time
+        // to do so. Blocking that would trade the crash for silently never
+        // importing background-completed downloads — see
+        // `BackgroundExecutionContext`.
+        //
+        // Deliberately a DEFER, not a drop: the trigger (a finished download, a
+        // playlist sync) still represents a real change, so the work is
+        // remembered and run on next activation — see `runDeferredScanIfNeeded`.
+        if !force,
+           UIApplication.shared.applicationState != .active,
+           !BackgroundExecutionContext.shared.isGrantedBackgroundTime {
+            Self.scanDeferredWhileBackgrounded = true
+            appLog("performLocalDocumentsScan: app is not active — deferring scan to next foreground rather than risking a background watchdog kill",
+                   category: "library")
+            RemoteLogger.log(
+                category: "library", event: "local_scan_deferred_background",
+                message: "scan deferred until foreground"
+            )
+            return
+        }
+
         if !force, let existing = Self.inFlightScanTask {
             appLog("performLocalDocumentsScan: already in flight, joining existing call instead of racing it", category: "library")
             await existing.value
@@ -142,13 +192,58 @@ extension LibraryManager {
             appLog("performLocalDocumentsScan(force): waiting for in-flight regular scan to finish first, rather than racing it", category: "library")
             await existing.value
         }
+        // A scan that has already started must be allowed to FINISH even if the
+        // user leaves the app mid-way. Without an assertion iOS suspends the
+        // process partway through, the scan's wall clock keeps running while it
+        // is throttled, and that is the other half of the watchdog story above.
+        // A background task assertion buys real execution time instead, so the
+        // scan completes in something close to its foreground cost.
+        //
+        // The expiration handler only ends the assertion; it deliberately does
+        // NOT cancel the scan. A scan interrupted halfway leaves `importedSongs`
+        // holding a partial library, and the next scan is what repairs that —
+        // whereas ending the assertion twice, or leaking it, is a guaranteed
+        // problem. UIKit terminates the app if an assertion is never ended.
+        var assertionID: UIBackgroundTaskIdentifier = .invalid
+        assertionID = UIApplication.shared.beginBackgroundTask(withName: "LumisoundLocalScan") {
+            if assertionID != .invalid {
+                UIApplication.shared.endBackgroundTask(assertionID)
+                assertionID = .invalid
+            }
+        }
+
         let task = Task { await self.runLocalDocumentsScan(force: force) }
         if !force { Self.inFlightScanTask = task }
         await task.value
         if !force { Self.inFlightScanTask = nil }
+
+        if assertionID != .invalid {
+            UIApplication.shared.endBackgroundTask(assertionID)
+            assertionID = .invalid
+        }
+    }
+
+    /// Runs a scan that was deferred because the app was backgrounded when its
+    /// trigger fired. Call on foreground activation.
+    ///
+    /// Without this, deferring would silently swallow the change that asked for
+    /// the scan — a download that finished while the user was in another app
+    /// would never appear until something else happened to trigger a scan.
+    func runDeferredScanIfNeeded() async {
+        guard Self.hasDeferredBackgroundScan else { return }
+        Self.clearDeferredBackgroundScan()
+        appLog("Running library scan deferred from background", category: "library")
+        await performLocalDocumentsScan()
     }
 
     private func runLocalDocumentsScan(force: Bool) async {
+        // Let the snapshot restore land first, so the diff below has a library to
+        // compare against instead of starting from empty. See
+        // `LibraryManager.snapshotLoadTask`.
+        if let snapshotLoad = Self.snapshotLoadTask {
+            await snapshotLoad.value
+            Self.snapshotLoadTask = nil
+        }
         appLog("Scanning local documents directory (force: \(force))", category: "library")
         // Instrumented because this path was the cause of the visible freezing
         // and nothing recorded how often it ran or what it cost. The frequency

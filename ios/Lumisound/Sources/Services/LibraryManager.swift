@@ -94,6 +94,7 @@ final class LibraryManager: ObservableObject {
     var visibleScanCount: Int = 0
 
     func beginScan(visible: Bool = true) {
+        ScanActivityIndicator.shared.began()
         if visible {
             visibleScanCount += 1
             if !isScanning { isScanning = true }
@@ -107,6 +108,7 @@ final class LibraryManager: ObservableObject {
     }
 
     func endScan(visible: Bool = true) {
+        ScanActivityIndicator.shared.ended()
         activeScanCount = max(0, activeScanCount - 1)
         if visible {
             visibleScanCount = max(0, visibleScanCount - 1)
@@ -120,6 +122,21 @@ final class LibraryManager: ObservableObject {
 
     var mediaSongs: [Song] = []
     var importedSongs: [Song] = []
+
+    /// The in-flight restore of the on-disk library snapshot, awaited by the
+    /// first local-documents scan.
+    ///
+    /// Both are started within moments of each other at launch, and the restore
+    /// has to read and JSON-decode a file first, so the scan usually wins the
+    /// race. That ordering is the difference between a scan that diffs against a
+    /// known library and one that sees `importedSongs` empty and therefore treats
+    /// every file on disk as new — which is what field telemetry recorded on
+    /// every single launch (`librarySize: 0`, `newSongs: 3546`), and what made
+    /// the full main-actor merge and index rebuild run each time.
+    ///
+    /// Awaiting it costs the scan the snapshot decode's remaining time exactly
+    /// once per launch, and saves re-merging the entire library.
+    static var snapshotLoadTask: Task<Void, Never>?
 
     // MARK: Indexed lookups (rebuilt alongside `allSongs` in `rebuildAllSongs()`)
     //
@@ -182,7 +199,9 @@ final class LibraryManager: ObservableObject {
         // scans below always run afterward and overwrite this with fresh
         // data; this just removes the "empty list for several seconds"
         // window for users with big libraries (1000+ songs).
-        Task { [weak self] in await self?.loadPersistedSnapshot() }
+        // Held so the first local scan can await it — see
+        // `snapshotLoadTask`'s declaration for why that ordering matters.
+        Self.snapshotLoadTask = Task { [weak self] in await self?.loadPersistedSnapshot() }
         // Re-scan local documents whenever the app returns to the foreground so
         // that files the user added via the Files app while Lumisound was
         // backgrounded are picked up without requiring a manual refresh.

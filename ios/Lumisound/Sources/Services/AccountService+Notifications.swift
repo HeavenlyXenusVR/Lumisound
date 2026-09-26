@@ -62,19 +62,61 @@ extension AccountService {
     }
 
     private static let deviceTokenKey = "apns_device_token_hex"
+    private static let lastRegisteredTokenKey = "apns_last_registered_token"
+    private static let lastRegisteredUserKey = "apns_last_registered_user_id"
+    private static let lastRegisteredAtKey = "apns_last_registered_at"
+
+    /// How long a successful registration is trusted before it is refreshed
+    /// anyway. Bounded rather than permanent so a token the server lost — a
+    /// restore, a row pruned, a failed write — is re-established within a day
+    /// instead of never, which is the failure this dedupe could otherwise cause.
+    private static let registrationTTL: TimeInterval = 24 * 60 * 60
 
     /// Registers this device's APNs token for push notifications. Also
     /// remembered locally (not tied to a session) so `logout()` can
     /// unregister it without needing a fresh callback from the OS.
+    ///
+    /// Skips the network call when this exact token has already been registered
+    /// for this exact user within `registrationTTL`.
+    ///
+    /// Without that check this posted on **every foreground return**:
+    /// `NotificationService` re-checks OS authorization on
+    /// `didBecomeActiveNotification` and calls `registerForRemoteNotifications()`
+    /// whenever authorized, the OS answers with the same device token, and
+    /// `AppDelegate` funnels that straight back here. Re-registering with the OS
+    /// genuinely is a free no-op, but the resulting POST is not — field telemetry
+    /// recorded 29 `push_token_registered` events in six hours from a single
+    /// device. That is a request per app switch, and enough repeated noise to
+    /// bury real events in the log it shares.
     func registerPushToken(_ deviceToken: String) async {
         UserDefaults.standard.set(deviceToken, forKey: Self.deviceTokenKey)
         guard isLoggedIn else { return }
+
+        let defaults = UserDefaults.standard
+        let currentUserID = currentUser?.id
+        // Keyed on the user too, so switching accounts on one device always
+        // re-registers — otherwise the new account would never receive pushes
+        // while the old account's registration looked current.
+        if defaults.string(forKey: Self.lastRegisteredTokenKey) == deviceToken,
+           defaults.string(forKey: Self.lastRegisteredUserKey) == currentUserID,
+           currentUserID != nil {
+            let registeredAt = defaults.double(forKey: Self.lastRegisteredAtKey)
+            if registeredAt > 0, Date().timeIntervalSince1970 - registeredAt < Self.registrationTTL {
+                return
+            }
+        }
+
         struct Body: Encodable { let device_token: String; let platform: String; let device_name: String }
         do {
             _ = try await makeRequest(
                 "/user/push-token", method: "POST",
                 body: Body(device_token: deviceToken, platform: "ios", device_name: UIDevice.current.name)
             )
+            // Recorded only on success, so a failed attempt retries rather than
+            // being suppressed for a day by its own failure.
+            defaults.set(deviceToken, forKey: Self.lastRegisteredTokenKey)
+            defaults.set(currentUserID, forKey: Self.lastRegisteredUserKey)
+            defaults.set(Date().timeIntervalSince1970, forKey: Self.lastRegisteredAtKey)
         } catch {
             // Best-effort; will retry on next launch.
         }
@@ -82,6 +124,15 @@ extension AccountService {
 
     /// Unregisters this device's APNs token (e.g. on logout).
     func unregisterPushToken(_ deviceToken: String) async {
+        // Cleared unconditionally and FIRST, so the dedupe in
+        // `registerPushToken` cannot suppress the re-registration that follows a
+        // logout/login cycle. Doing this only on a successful DELETE would leave
+        // a device that failed to unregister also unable to re-register.
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: Self.lastRegisteredTokenKey)
+        defaults.removeObject(forKey: Self.lastRegisteredUserKey)
+        defaults.removeObject(forKey: Self.lastRegisteredAtKey)
+
         guard isLoggedIn else { return }
         do {
             _ = try await makeRequest("/user/push-token/\(deviceToken)", method: "DELETE")
