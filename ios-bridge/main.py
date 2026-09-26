@@ -1411,10 +1411,16 @@ async def _app_logs_janitor() -> None:
             pool = await get_pool()
             async with pool.acquire() as conn:
                 async with conn.cursor() as cur:
-                    deleted = await cur.execute(
+                    await cur.execute(
                         "DELETE FROM ios_app_logs WHERE created_at < NOW() - make_interval(days => %s)",
                         (_APP_LOGS_RETENTION_DAYS,),
                     )
+                    # `cur.rowcount`, not execute()'s return value: aiopg's
+                    # execute() returns None, so the previous `deleted = await
+                    # cur.execute(...)` was always None and this line never once
+                    # logged. The prune itself always worked; only the record of
+                    # it was missing, which is why nothing looked wrong.
+                    deleted = cur.rowcount
             if deleted:
                 logger.info("app logs janitor: pruned %d rows older than %d days", deleted, _APP_LOGS_RETENTION_DAYS)
         except Exception:
@@ -1436,14 +1442,98 @@ async def _event_log_janitor() -> None:
             pool = await get_pool()
             async with pool.acquire() as conn:
                 async with conn.cursor() as cur:
-                    deleted = await cur.execute(
+                    await cur.execute(
                         "DELETE FROM ios_app_event_log WHERE created_at < NOW() - make_interval(days => %s)",
                         (_EVENT_LOG_RETENTION_DAYS,),
                     )
+                    deleted = cur.rowcount  # see _app_logs_janitor
             if deleted:
                 logger.info("event log janitor: pruned %d rows older than %d days", deleted, _EVENT_LOG_RETENTION_DAYS)
         except Exception:
             logger.exception("event log janitor: prune failed")
+
+
+# Everything else that accumulates a row per event and had no retention at all.
+#
+# `_app_logs_janitor` and `_event_log_janitor` above covered two tables; these
+# five were growing from the deployment's first day. Measured before this was
+# added: ios_download_log 78,526 rows / 25 MB, ios_notifications 29,290 / 17 MB,
+# ios_sync_log 9,773, ios_search_log 2,458, ios_stream_log 1,394 — all with their
+# oldest row still from day one.
+#
+# Windows differ by what the data is FOR, not by size:
+#  - notifications are read within minutes or never; a read one has served its
+#    purpose, so those go sooner than unread ones.
+#  - download/stream/sync logs are operational forensics — long enough to
+#    investigate a report from last month, no longer.
+#  - search history is the most privacy-sensitive of the five and the least
+#    useful old, so it gets the shortest window.
+#
+# `ios_play_history` is deliberately NOT here: it is user-facing listening
+# history and feeds stats/recommendations, so it is data, not a log.
+_EXTRA_LOG_RETENTION = (
+    ("ios_download_log", "created_at", 60),
+    ("ios_sync_log", "created_at", 30),
+    ("ios_stream_log", "created_at", 30),
+    ("ios_search_log", "searched_at", 30),
+)
+
+_NOTIFICATION_READ_RETENTION_DAYS = 14
+_NOTIFICATION_UNREAD_RETENTION_DAYS = 90
+
+
+async def _extra_logs_janitor() -> None:
+    """Prunes the log-like tables that had no retention policy at all.
+
+    Each table is pruned in its own statement and its own try block: one table
+    failing (a lock, a permissions problem on a single relation) must not stop the
+    others from being cleaned, which is exactly what a single combined
+    transaction would do.
+    """
+    while True:
+        await asyncio.sleep(86400)  # once a day, same cadence as the janitors above
+        for table, column, days in _EXTRA_LOG_RETENTION:
+            try:
+                pool = await get_pool()
+                async with pool.acquire() as conn:
+                    async with conn.cursor() as cur:
+                        # Table/column names are from the module-level constant
+                        # above, never from a request, so interpolating them is
+                        # safe here — the retention window stays parameterised.
+                        await cur.execute(
+                            f"DELETE FROM {table} WHERE {column} < NOW() - make_interval(days => %s)",
+                            (days,),
+                        )
+                        deleted = cur.rowcount
+                if deleted:
+                    logger.info("logs janitor: pruned %d rows from %s older than %d days",
+                                deleted, table, days)
+            except Exception:
+                logger.exception("logs janitor: prune failed for %s", table)
+
+        # Notifications, split by whether they were ever read.
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "DELETE FROM ios_notifications "
+                        "WHERE read_at IS NOT NULL AND read_at < NOW() - make_interval(days => %s)",
+                        (_NOTIFICATION_READ_RETENTION_DAYS,),
+                    )
+                    deleted = cur.rowcount
+                    if deleted:
+                        logger.info("logs janitor: pruned %d read notification(s)", deleted)
+                    await cur.execute(
+                        "DELETE FROM ios_notifications "
+                        "WHERE read_at IS NULL AND created_at < NOW() - make_interval(days => %s)",
+                        (_NOTIFICATION_UNREAD_RETENTION_DAYS,),
+                    )
+                    deleted = cur.rowcount
+                    if deleted:
+                        logger.info("logs janitor: pruned %d stale unread notification(s)", deleted)
+        except Exception:
+            logger.exception("logs janitor: notification prune failed")
 
 
 @asynccontextmanager
@@ -1453,6 +1543,7 @@ async def lifespan(app: FastAPI):
     janitor = asyncio.create_task(_auth_attempts_janitor())
     app_logs_janitor = asyncio.create_task(_app_logs_janitor())
     event_log_janitor = asyncio.create_task(_event_log_janitor())
+    extra_logs_janitor = asyncio.create_task(_extra_logs_janitor())
     subscription_poller = asyncio.create_task(_subscription_polling_loop())
     duplicate_scanner = asyncio.create_task(_duplicate_scan_loop())
     weekly_mix_generator = asyncio.create_task(_weekly_mix_loop())
@@ -1461,6 +1552,7 @@ async def lifespan(app: FastAPI):
     janitor.cancel()
     app_logs_janitor.cancel()
     event_log_janitor.cancel()
+    extra_logs_janitor.cancel()
     subscription_poller.cancel()
     duplicate_scanner.cancel()
     weekly_mix_generator.cancel()
@@ -5195,12 +5287,13 @@ async def _do_download_job(
                 pool = await get_pool()
                 async with pool.acquire() as conn:
                     async with conn.cursor() as cur:
-                        await _create_notification(
-                            cur, user_id, "download_ready",
-                            title="Download Ready",
-                            body=f"“{display_title}” is ready to add to your library",
-                            data={"job_id": job_id, "source_track_id": f"{source}:{id}"},
-                            content_available=True,
+                        # Coalesced rather than one row per track — see
+                        # _notify_download_ready_coalesced for why.
+                        await _notify_download_ready_coalesced(
+                            cur, user_id,
+                            display_title=display_title,
+                            job_id=job_id,
+                            source_track_id=f"{source}:{id}",
                         )
                 logger.info("_notify_download_ready: job=%s user=%s notification sent (APNs best-effort)", job_id, user_id)
             except Exception:
@@ -5974,6 +6067,19 @@ def _write_links_file(source_url: str, content: str) -> pathlib.Path:
 
 _BATCH_JOBS: dict[str, dict] = {}
 
+# Longer than the lyrics window: a batch download of a large playlist runs for
+# many minutes, and the progress dict is what the client polls throughout.
+_BATCH_JOB_MAX_AGE = 3600  # seconds
+
+
+def _sweep_stale_batch_jobs() -> None:
+    """Same gap as `_sweep_stale_lyrics_jobs` — see that function.
+
+    Safe against long-running work because `_sweep_jobs` only collects jobs in a
+    terminal state (plus a hard-age backstop for wedged ones), and a batch
+    download can legitimately sit in progress for a long time."""
+    _sweep_jobs(_BATCH_JOBS, _BATCH_JOB_MAX_AGE, "batch jobs")
+
 
 async def _build_download_archive(music_dir: pathlib.Path) -> pathlib.Path:
     """Rebuilds the per-user yt-dlp download archive from the LUMISOUND_ID tags
@@ -6056,6 +6162,7 @@ async def batch_download(
     links_content = "".join(item["url"] + "\n" for item in items)
     links_path = _write_links_file(url, links_content)
 
+    _sweep_stale_batch_jobs()
     job_id = uuid.uuid4().hex
     _BATCH_JOBS[job_id] = {
         "status": "pending", "total": len(items), "completed": 0,
@@ -7413,6 +7520,72 @@ async def aria_cloud_cleanup(user: dict = Depends(get_current_user)):
 
 _LYRICS_JOBS: dict[str, dict] = {}
 
+# How long a finished transcription's result stays fetchable before being swept.
+# Generous relative to how long the client takes to poll (seconds), because the
+# cost of sweeping too early is a user losing a transcript that succeeded.
+_LYRICS_JOB_MAX_AGE = 900  # seconds
+
+# Ceiling on transcriptions one account may have queued or running at once.
+#
+# This used to be enforced by accident. Transcription was a hosted-model call
+# against a request allowance measured in tens per day, so nobody could queue
+# many — the quota WAS the rate limit. Local transcription removed that cost
+# entirely, and with it the only thing bounding this: a client looping over a
+# few thousand tracks would otherwise enqueue a few thousand jobs, each holding
+# its full audio body in a pending task and its full result text in
+# `_LYRICS_JOBS` forever. The work is serialised (see lyrics_whisper's
+# semaphore), so a deep queue buys nothing anyway — it just converts patience
+# into memory.
+_LYRICS_MAX_JOBS_PER_USER = 3
+
+
+# Absolute ceiling, regardless of state. Catches a job wedged in "running"
+# forever (a task killed mid-await, an exception path that never set a terminal
+# status): without this, one such job would hold its slot against the per-user
+# cap permanently and never be collected.
+_JOB_HARD_MAX_AGE = 6 * 3600  # seconds
+
+_TERMINAL_JOB_STATUSES = frozenset({"done", "error", "cancelled", "failed"})
+
+
+def _sweep_jobs(jobs: dict[str, dict], max_age: float, label: str) -> None:
+    """Drops finished jobs whose results have gone unfetched.
+
+    Only removes jobs in a TERMINAL state, plus anything past
+    `_JOB_HARD_MAX_AGE` whatever its state. Sweeping purely on age would delete
+    a job that is legitimately still working — a large batch download runs for
+    far longer than any sensible result-retention window — and the client's next
+    poll would then 404 on work that was actually fine.
+
+    Called opportunistically from the request paths rather than on a timer,
+    matching `_sweep_stale_download_jobs`: no job exists without a request having
+    created it, so an idle process has nothing to clean.
+    """
+    now = time.monotonic()
+    stale = []
+    for jid, job in jobs.items():
+        age = now - job.get("created", now)
+        if age > _JOB_HARD_MAX_AGE:
+            stale.append(jid)
+        elif age > max_age and job.get("status") in _TERMINAL_JOB_STATUSES:
+            stale.append(jid)
+    for jid in stale:
+        jobs.pop(jid, None)
+    if stale:
+        logger.info("%s janitor: swept %d finished job(s)", label, len(stale))
+
+
+def _sweep_stale_lyrics_jobs() -> None:
+    """`_LYRICS_JOBS` was never pruned.
+
+    Every transcription ever run stayed in memory for the lifetime of the
+    process, holding its full LRC text — and the `created` timestamp was already
+    being recorded for exactly this sweep, which was then never written.
+    `_DOWNLOAD_JOBS` has had one all along (`_sweep_stale_download_jobs`); this is
+    the same thing for the same reason, and `_BATCH_JOBS` now gets it too.
+    """
+    _sweep_jobs(_LYRICS_JOBS, _LYRICS_JOB_MAX_AGE, "lyrics jobs")
+
 
 @app.post("/user/intelligence/lyrics-transcribe")
 async def aria_transcribe_lyrics(
@@ -7446,8 +7619,33 @@ async def aria_transcribe_lyrics(
         raise HTTPException(status_code=413, detail="Audio too large for transcription (max 20 MB)")
 
     mime_type = request.headers.get("content-type") or "audio/mpeg"
+
+    # Swept here, before the cap is counted, so jobs the user has finished with
+    # don't count against their own limit.
+    _sweep_stale_lyrics_jobs()
+
+    user_id = user.get("sub")
+    in_flight = sum(
+        1 for job in _LYRICS_JOBS.values()
+        if job.get("user_id") == user_id and job.get("status") in ("pending", "running")
+    )
+    if in_flight >= _LYRICS_MAX_JOBS_PER_USER:
+        # 429 with Retry-After rather than a queue, because the work is
+        # serialised anyway — accepting the job would only promise something that
+        # still has to wait, while holding its audio in memory meanwhile.
+        raise HTTPException(
+            status_code=429,
+            detail=f"Already transcribing {in_flight} track(s). Let those finish first.",
+            headers={"Retry-After": "30"},
+        )
+
     job_id = uuid.uuid4().hex
-    _LYRICS_JOBS[job_id] = {"status": "pending", "created": time.monotonic()}
+    _LYRICS_JOBS[job_id] = {
+        "status": "pending",
+        "created": time.monotonic(),
+        # Recorded so the per-user cap above can be counted without a DB lookup.
+        "user_id": user_id,
+    }
     asyncio.create_task(_run_lyrics_transcription_job(job_id, body, mime_type, title, artist, hint_lyrics))
     return JSONResponse({"job_id": job_id}, status_code=202)
 
@@ -7490,6 +7688,9 @@ async def _run_lyrics_transcription_job(
     job_id: str, body: bytes, mime_type: str, title: str, artist: str, hint_lyrics: Optional[str]
 ) -> None:
     job = _LYRICS_JOBS.setdefault(job_id, {})
+    # Reflects reality for the polling client, and keeps the per-user cap
+    # counting this job while it actually runs rather than only while queued.
+    job["status"] = "running"
     try:
         duration_seconds = await _probe_audio_duration(body, mime_type)
 
@@ -7660,10 +7861,13 @@ async def aria_transcribe_lyrics_status(job_id: str = Query(...), user: dict = D
     job = _LYRICS_JOBS.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Lyrics transcription job not found")
-    # Not popped on poll (a lost/retried response would otherwise strand the
-    # client on a 404 after Aria already finished) — same "small in-memory
-    # dict, no explicit sweep" tradeoff _BATCH_JOBS/_DOWNLOAD_JOBS already
-    # make elsewhere in this file.
+    # Not popped on poll: a lost or retried response would otherwise strand the
+    # client on a 404 after Aria had already finished. Collected by
+    # `_sweep_stale_lyrics_jobs` instead, once the result has gone unfetched long
+    # enough. (This comment used to claim `_BATCH_JOBS`/`_DOWNLOAD_JOBS` made the
+    # same "no explicit sweep" tradeoff — `_DOWNLOAD_JOBS` never did, it has had
+    # `_sweep_stale_download_jobs` all along, and citing it as precedent is what
+    # let this dict grow unbounded for the life of the process.)
     return {
         "status": job.get("status"),
         "detail": job.get("detail"),
@@ -7755,6 +7959,137 @@ async def ai_dj_transition(
 # ---------------------------------------------------------------------------
 
 
+# Longest-edge ceilings for stored profile imagery.
+#
+# Avatars render at circle sizes measured in tens of points; 512 leaves ample
+# headroom for a @3x retina render and for the larger profile-header presentation.
+# Animated GIFs get a tighter ceiling because every frame pays the pixel cost, so
+# dimension multiplies by frame count in a way a still image's does not.
+_AVATAR_MAX_EDGE = 512
+_AVATAR_MAX_EDGE_GIF = 256
+
+# Re-encode is skipped entirely below this, so an already-reasonable upload is
+# stored byte-for-byte rather than being put through a lossy round trip for no
+# reason. Sized well above what a correctly-scaled avatar weighs.
+_AVATAR_REENCODE_THRESHOLD = 400 * 1024
+
+
+async def _downscale_profile_image(data: bytes, *, is_gif: bool) -> bytes:
+    """Shrinks an oversized avatar/banner, returning the original on any failure.
+
+    Uploads were accepted at up to 15 MB and stored byte-for-byte, inline in
+    Postgres, with no re-encode — one avatar in the field is 6.9 MB, and ten
+    stored images totalled 12.4 MB. Every render of a 64-point circle therefore
+    pulled megabytes out of the database and back through the tunnel.
+
+    Failure is never fatal: if ffmpeg is unavailable, times out, or produces
+    something larger than what it was given, the original bytes are stored. A
+    user's upload must not be lost to an optimisation.
+    """
+    if len(data) <= _AVATAR_REENCODE_THRESHOLD:
+        return data
+
+    max_edge = _AVATAR_MAX_EDGE_GIF if is_gif else _AVATAR_MAX_EDGE
+    suffix = ".gif" if is_gif else ".jpg"
+    tmp_dir = pathlib.Path(tempfile.mkdtemp(prefix="avatar-"))
+    src = tmp_dir / f"in{suffix}"
+    dst = tmp_dir / f"out{suffix}"
+    try:
+        src.write_bytes(data)
+        # `force_original_aspect_ratio=decrease` with min() on both axes means
+        # this only ever shrinks — an image already inside the ceiling passes
+        # through at its own size rather than being upscaled into blur.
+        scale = (
+            f"scale='min({max_edge},iw)':'min({max_edge},ih)'"
+            ":force_original_aspect_ratio=decrease"
+        )
+        if is_gif:
+            # Animation is preserved. The palettegen/paletteuse pair is what keeps
+            # a scaled GIF from banding badly; `-loop 0` keeps it looping, which
+            # ffmpeg otherwise drops.
+            vf = f"{scale},split[a][b];[a]palettegen[p];[b][p]paletteuse"
+            cmd = ["ffmpeg", "-y", "-i", str(src), "-vf", vf, "-loop", "0", str(dst)]
+        else:
+            cmd = ["ffmpeg", "-y", "-i", str(src), "-vf", scale, "-q:v", "4", str(dst)]
+
+        # GIF re-encoding is markedly heavier than a single JPEG, and this host is
+        # CPU-constrained, so the animated path gets a longer leash before it is
+        # abandoned in favour of storing the original.
+        if not await _run_ffmpeg(cmd, timeout=90.0 if is_gif else 30.0):
+            logger.warning("avatar downscale: ffmpeg failed; storing original (%d bytes)", len(data))
+            return data
+        if not dst.exists():
+            return data
+        out = dst.read_bytes()
+        # A "smaller" image that is actually bigger is not an improvement — this
+        # happens with GIF palette re-encoding often enough to be worth checking.
+        if not out or len(out) >= len(data):
+            logger.info("avatar downscale: re-encode was not smaller (%d -> %d); keeping original",
+                        len(data), len(out))
+            return data
+        logger.info("avatar downscale: %d -> %d bytes (%.0f%% smaller)",
+                    len(data), len(out), 100 * (1 - len(out) / len(data)))
+        return out
+    except Exception:
+        logger.exception("avatar downscale raised; storing original")
+        return data
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _if_none_match_matches(header: Optional[str], etag: str) -> bool:
+    """RFC 7232 weak comparison of an `If-None-Match` header against one ETag.
+
+    A plain `header == etag` does NOT work here, and testing against the real
+    deployment is what caught it: the response goes out through Cloudflare, which
+    hands the client back `W/"<hash>"` — a weak validator — so the value that
+    comes back on the next request never equals the strong `"<hash>"` this server
+    generated, and the 304 branch could never be reached. The caching was
+    therefore doing nothing at all while looking correct in code review.
+
+    Handles the three things the header can legitimately be: `*`, a
+    comma-separated list, and entries carrying the `W/` prefix. Weak comparison
+    (ignoring the prefix) is what the spec requires for `If-None-Match`
+    specifically — unlike `If-Range`, which demands strong.
+    """
+    if not header:
+        return False
+    candidate = header.strip()
+    if candidate == "*":
+        return True
+    target = etag[2:] if etag.startswith("W/") else etag
+    for part in candidate.split(","):
+        value = part.strip()
+        if value.startswith("W/"):
+            value = value[2:]
+        if value == target:
+            return True
+    return False
+
+
+def _image_response(data: bytes, request: Request) -> Response:
+    """Serves stored image bytes with validation caching.
+
+    These endpoints previously returned the raw blob with no `ETag` and no
+    `Cache-Control`, so every single render re-fetched the whole image — for the
+    largest stored avatar, ~7 MB, repeatedly, for a picture that changes maybe
+    once a year.
+
+    `must-revalidate` with a short max-age rather than a long immutable TTL: the
+    URL is keyed on user id, not on content, so it has to stay correct the moment
+    someone changes their picture. The `ETag` is what makes that cheap — an
+    unchanged image costs a 304 with no body.
+    """
+    etag = '"' + hashlib.md5(data).hexdigest() + '"'
+    if _if_none_match_matches(request.headers.get("if-none-match"), etag):
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "private, max-age=300, must-revalidate"})
+    return Response(
+        content=data,
+        media_type="image/gif" if _is_gif_bytes(data) else "image/jpeg",
+        headers={"ETag": etag, "Cache-Control": "private, max-age=300, must-revalidate"},
+    )
+
+
 def _is_gif_bytes(body: bytes) -> bool:
     """Sniffs for a GIF87a/GIF89a header — same signature `isGIFData(_:)`
     checks client-side. Used both to accept GIF uploads (Social Ecosystem:
@@ -7776,6 +8111,11 @@ async def upload_avatar(request: Request, user: dict = Depends(get_current_user)
             raise HTTPException(status_code=413, detail="Avatar must be under 15MB")
         if not body.startswith(b"\xff\xd8\xff"):  # JPEG magic bytes (SOI + APPn/marker)
             raise HTTPException(status_code=400, detail="Avatar must be a JPEG or GIF image")
+    # Shrunk before storage rather than at serve time: this column is read far
+    # more often than it is written, and re-scaling per request would pay the cost
+    # on the wrong side. Returns the original unchanged if it is already small
+    # enough or if the re-encode does not help.
+    body = await _downscale_profile_image(body, is_gif=is_gif)
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -7783,13 +8123,13 @@ async def upload_avatar(request: Request, user: dict = Depends(get_current_user)
                 "UPDATE ios_users SET avatar_data = %s WHERE id = %s",
                 (body, user["sub"]),
             )
-    return {"ok": True}
+    return {"ok": True, "stored_bytes": len(body)}
 
 
 @app.get("/user/avatar/{user_id}")
-async def get_avatar(user_id: str):
-    """Returns raw avatar bytes (JPEG or GIF, sniffed from the stored bytes
-    themselves) or 404."""
+async def get_avatar(user_id: str, request: Request):
+    """Returns avatar bytes (JPEG or GIF, sniffed from the stored bytes
+    themselves) or 404, with an ETag so an unchanged picture costs a 304."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -7799,9 +8139,7 @@ async def get_avatar(user_id: str):
             row = await cur.fetchone()
     if not row or not row[0]:
         raise HTTPException(status_code=404, detail="No avatar set")
-    data = bytes(row[0])
-    from fastapi.responses import Response
-    return Response(content=data, media_type="image/gif" if _is_gif_bytes(data) else "image/jpeg")
+    return _image_response(bytes(row[0]), request)
 
 
 # ---------------------------------------------------------------------------
@@ -14789,6 +15127,91 @@ async def _create_notification(
     return notif_id
 
 
+# Window within which finished downloads collapse into one notification.
+_DOWNLOAD_NOTIFY_COALESCE_SECONDS = 600
+
+# Minimum gap between silent wake-up pushes for downloads, per user.
+#
+# The push is functional, not decorative — `content_available` wakes the client so
+# it can fetch. But the client's fetch (`reconcilePendingDownloads`) collects
+# EVERY pending download in one pass, so a second push inside the same minute
+# tells it nothing it isn't already about to do. It also has a foreground pass and
+# a BGAppRefreshTask, so a throttled push is never the only path.
+_DOWNLOAD_PUSH_MIN_INTERVAL = 60.0
+_last_download_push_at: dict[str, float] = {}
+
+
+async def _notify_download_ready_coalesced(
+    cur, user_id: str, display_title: str, job_id: str, source_track_id: str
+) -> None:
+    """One rolling "downloads ready" notification per user instead of one per track.
+
+    A notification per finished download is how `ios_notifications` reached 29,290
+    rows and 17 MB for **two** users — around 14,600 each — making the table a
+    second copy of `ios_download_log` with a push attached. Nobody reads 14,600
+    notifications; the useful information is "your downloads are ready", plus how
+    many.
+
+    So within `_DOWNLOAD_NOTIFY_COALESCE_SECONDS` the existing unread row is
+    rewritten and its count incremented, and `created_at` is bumped so it still
+    sorts to the top of the list as new activity. Only the first of a burst
+    inserts a row.
+    """
+    await cur.execute(
+        """
+        SELECT id, data_json FROM ios_notifications
+        WHERE user_id = %s AND type = 'download_ready' AND read_at IS NULL
+          AND created_at > NOW() - make_interval(secs => %s)
+        ORDER BY created_at DESC LIMIT 1
+        """,
+        (user_id, _DOWNLOAD_NOTIFY_COALESCE_SECONDS),
+    )
+    existing = await cur.fetchone()
+
+    now = time.monotonic()
+    may_push = now - _last_download_push_at.get(user_id, 0.0) >= _DOWNLOAD_PUSH_MIN_INTERVAL
+    if may_push:
+        _last_download_push_at[user_id] = now
+
+    if existing:
+        notif_id, raw = existing
+        try:
+            data = raw if isinstance(raw, dict) else json.loads(raw or "{}")
+        except (ValueError, TypeError):
+            data = {}
+        count = int(data.get("count") or 1) + 1
+        # The most recent title is kept alongside the count, so the row still says
+        # something concrete rather than only a number.
+        data.update({"count": count, "job_id": job_id,
+                     "source_track_id": source_track_id, "latest_title": display_title})
+        body = f"“{display_title}” and {count - 1} more are ready to add to your library"
+        await cur.execute(
+            "UPDATE ios_notifications SET title = %s, body = %s, data_json = %s, created_at = NOW() "
+            "WHERE id = %s",
+            (f"{count} Downloads Ready", body, json.dumps(data), notif_id),
+        )
+        if may_push:
+            asyncio.create_task(_send_push_best_effort(
+                user_id, "download_ready", f"{count} Downloads Ready", body, data, True))
+        # The live event always fires: it is a cheap WebSocket frame to an app that
+        # is already open and watching, and it is what keeps the in-app list
+        # accurate in real time. Only the APNs push is throttled.
+        asyncio.create_task(_push_live_event(user_id, {
+            "type": "notification", "notification_id": notif_id,
+            "notification_type": "download_ready", "title": f"{count} Downloads Ready",
+            "body": body,
+        }))
+        return
+
+    await _create_notification(
+        cur, user_id, "download_ready",
+        title="Download Ready",
+        body=f"“{display_title}” is ready to add to your library",
+        data={"job_id": job_id, "source_track_id": source_track_id, "count": 1},
+        content_available=may_push,
+    )
+
+
 async def _playlist_role(cur, playlist_id: str, user_id: str) -> Optional[str]:
     """Returns 'owner', 'editor', 'viewer', or None for *user_id*'s relationship
     to *playlist_id*. Caller owns the cursor."""
@@ -19346,6 +19769,10 @@ async def upload_profile_banner(request: Request, payload: dict = Depends(get_cu
         if not body.startswith(b"\xff\xd8\xff"):
             raise HTTPException(status_code=400, detail="Banner must be a JPEG or GIF image")
 
+    # Same treatment as an avatar — see _downscale_profile_image. Banners were the
+    # other inline-blob column with no cap beyond the 15MB accept limit.
+    body = await _downscale_profile_image(body, is_gif=is_gif)
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -19376,10 +19803,11 @@ async def remove_profile_banner(payload: dict = Depends(get_current_user)):
 
 
 @app.get("/api/social/profile/banner/{user_id}")
-async def get_profile_banner(user_id: str):
-    """Returns raw banner bytes (JPEG or GIF) or 404 — public, no auth
-    required, matching GET /user/avatar/{user_id}'s existing security model
-    (a profile banner is exactly as public as the profile itself)."""
+async def get_profile_banner(user_id: str, request: Request):
+    """Returns banner bytes (JPEG or GIF) or 404 — public, no auth required,
+    matching GET /user/avatar/{user_id}'s existing security model (a profile
+    banner is exactly as public as the profile itself). ETag'd, so an unchanged
+    banner costs a 304 rather than re-sending the image."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -19389,9 +19817,7 @@ async def get_profile_banner(user_id: str):
             row = await cur.fetchone()
     if not row or not row[0]:
         raise HTTPException(status_code=404, detail="No banner set")
-    data = bytes(row[0])
-    from fastapi.responses import Response
-    return Response(content=data, media_type="image/gif" if _is_gif_bytes(data) else "image/jpeg")
+    return _image_response(bytes(row[0]), request)
 
 
 @app.put("/api/social/profile/pinned-tracks")
