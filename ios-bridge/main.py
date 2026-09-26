@@ -7503,14 +7503,20 @@ async def _run_lyrics_transcription_job(
         # user of a deployment — and a 503 from an overloaded hosted model can no
         # longer be the reason a user gets no lyrics at all.
         #
-        # Gemini is still reached for, in two cases it remains better at: when
-        # local transcription is unavailable or yields nothing, and when the
-        # caller supplied candidate text to correct against (`hint_lyrics`), which
-        # an ASR model has no way to accept — see lyrics_whisper's docstring.
+        # Candidate text (`hint_lyrics`) now goes down the local path too, rather
+        # than straight to Gemini. That case — the words are already known from a
+        # lyrics database or the user's own import, and only the timing is
+        # missing — is the one where local does best: the text is returned
+        # verbatim with timestamps measured off the audio, instead of Gemini
+        # being asked to re-derive words it already has and estimate times it
+        # cannot measure. If too little of the candidate text matches what was
+        # actually heard, lyrics_whisper abandons the alignment on its own and
+        # this falls through to Gemini below.
         result = None
-        if lyrics_whisper.is_available() and not hint_lyrics:
+        if lyrics_whisper.is_available():
             result = await lyrics_whisper.transcribe_lyrics_local(
-                body, mime_type, title, artist, duration_seconds=duration_seconds
+                body, mime_type, title, artist,
+                duration_seconds=duration_seconds, hint_lyrics=hint_lyrics,
             )
             # Whisper's timings come from the audio, so the plausibility check
             # that exists for Gemini's guesses is a formality here — but it is

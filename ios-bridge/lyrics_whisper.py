@@ -274,7 +274,148 @@ def _group_words_into_lines(words) -> list[dict]:
     return lines
 
 
-def _transcribe_sync(path: str, language: str | None) -> dict | None:
+# --- Aligning known-correct lyrics to measured timings -----------------------
+#
+# The best possible input this feature ever gets is a track where the WORDS are
+# already known — fetched from a lyrics database or imported by the user — and
+# only the timing is missing. Neither engine alone handles that well: Gemini has
+# the words but invents the timing, and Whisper measures the timing but may
+# mishear the words. Aligning one against the other takes the good half of each.
+#
+# The matching is done on a normalised token stream (case and punctuation
+# removed) with difflib, which finds the matching blocks between two sequences
+# that differ by insertions, deletions and substitutions — exactly the shape of
+# the difference between real lyrics and an ASR transcript of them.
+
+_PUNCT_STRIP = str.maketrans("", "", ".,!?;:\"'’‘“”()[]{}-–—…*")
+
+# Below these, the alignment is not trustworthy enough to present as synced.
+# A low match rate means the transcript and the candidate text are not really
+# the same words — a wrong-language hint, the wrong song's lyrics, or audio too
+# noisy to transcribe — and inventing timings for text that was never matched is
+# the exact failure this whole module exists to avoid.
+_MIN_ALIGNED_LINE_FRACTION = 0.5
+
+# The token ratio is the check that actually discriminates, and the line count
+# alone is not enough: feeding an unrelated song's lyrics against a real
+# transcript still anchored half the lines, purely on incidental matches of
+# common words ("a", "that"), and was accepted. One shared filler word is not
+# evidence that a line was heard. Requiring a large share of ALL candidate
+# tokens to match makes an unrelated text fail clearly, because unrelated lyrics
+# share only function words, while a genuine hint matches most of its content.
+_MIN_TOKEN_MATCH_RATIO = 0.45
+
+
+def _normalise_tokens(text: str) -> list[str]:
+    return [t for t in text.lower().translate(_PUNCT_STRIP).split() if t]
+
+
+def _align_hint_lines(hint_lyrics: str, words) -> list[dict] | None:
+    """Times the caller's own lyric lines using Whisper's word timestamps.
+
+    Returns the candidate text unchanged, each line carrying the measured start
+    time of its first word that could be matched in the audio, or None when too
+    little matched to be believable.
+    """
+    import difflib
+
+    raw_lines = [ln.strip() for ln in hint_lyrics.splitlines()]
+    raw_lines = [ln for ln in raw_lines if ln and not _is_annotation(ln)]
+    if not raw_lines:
+        return None
+
+    # Flatten the candidate text to a token stream while remembering, for every
+    # token, which line it came from — that mapping is what turns a token-level
+    # alignment back into per-line timestamps.
+    hint_tokens: list[str] = []
+    token_line: list[int] = []
+    for idx, line in enumerate(raw_lines):
+        for tok in _normalise_tokens(line):
+            hint_tokens.append(tok)
+            token_line.append(idx)
+    if not hint_tokens:
+        return None
+
+    heard_tokens: list[str] = []
+    heard_times: list[float] = []
+    for w in words:
+        for tok in _normalise_tokens(w.word or ""):
+            heard_tokens.append(tok)
+            heard_times.append(float(w.start))
+    if not heard_tokens:
+        return None
+
+    # autojunk=False matters: on long inputs difflib otherwise treats frequent
+    # tokens as junk and skips them, and in lyrics the frequent tokens are
+    # exactly the ones that repeat across a chorus — the alignment would drop
+    # precisely the material it most needs to anchor.
+    matcher = difflib.SequenceMatcher(None, hint_tokens, heard_tokens, autojunk=False)
+
+    # Earliest measured time seen for each line, taken from matched tokens only.
+    line_time: dict[int, float] = {}
+    matched_tokens = 0
+    for h_start, a_start, size in matcher.get_matching_blocks():
+        matched_tokens += size
+        for offset in range(size):
+            line_idx = token_line[h_start + offset]
+            t = heard_times[a_start + offset]
+            if line_idx not in line_time or t < line_time[line_idx]:
+                line_time[line_idx] = t
+
+    token_ratio = matched_tokens / len(hint_tokens)
+    enough_lines = len(line_time) >= max(1, len(raw_lines) * _MIN_ALIGNED_LINE_FRACTION)
+    if token_ratio < _MIN_TOKEN_MATCH_RATIO or not enough_lines:
+        logger.info(
+            "whisper: candidate text doesn't match the audio well enough to align "
+            "(%d/%d lines anchored, %.0f%% of words matched) — transcribing instead",
+            len(line_time), len(raw_lines), token_ratio * 100,
+        )
+        return None
+
+    # Unmatched lines are interpolated between their nearest matched neighbours
+    # rather than dropped: a line the model misheard entirely is still a real
+    # lyric that belongs on screen, and an evenly-spaced guess between two
+    # measured anchors is close enough to read correctly.
+    anchors = sorted(line_time)
+    out: list[dict] = []
+    for idx, line in enumerate(raw_lines):
+        if idx in line_time:
+            t = line_time[idx]
+        else:
+            prev = max((a for a in anchors if a < idx), default=None)
+            nxt = min((a for a in anchors if a > idx), default=None)
+            if prev is None and nxt is None:
+                continue
+            if prev is None:
+                # Before the first anchor: back off from it, without going
+                # negative, rather than pinning every leading line to 0.0.
+                t = max(0.0, line_time[nxt] - (nxt - idx) * 2.0)
+            elif nxt is None:
+                t = line_time[prev] + (idx - prev) * 2.0
+            else:
+                span = line_time[nxt] - line_time[prev]
+                t = line_time[prev] + span * ((idx - prev) / (nxt - prev))
+        out.append({"time_seconds": round(max(0.0, t), 2), "text": line})
+
+    # Whisper can report a later word as starting fractionally before an earlier
+    # one, and interpolation across such a pair would invert two lines. Clamped
+    # so the sequence can only ever move forward — a display that jumps backwards
+    # is visibly broken in a way a slightly-off timestamp is not.
+    last = 0.0
+    for entry in out:
+        if entry["time_seconds"] < last:
+            entry["time_seconds"] = last
+        last = entry["time_seconds"]
+
+    logger.info(
+        "whisper: aligned %d candidate line(s), %d anchored directly to the audio",
+        len(out), len(line_time),
+    )
+    return out
+
+
+def _transcribe_sync(path: str, language: str | None,
+                     hint_lyrics: str | None = None) -> dict | None:
     model = _load_model()
     # vad_filter drops silence and non-vocal stretches before the model sees
     # them, which on music both speeds things up and — more importantly — stops
@@ -312,7 +453,15 @@ def _transcribe_sync(path: str, language: str | None) -> dict | None:
         return {"instrumental": True, "confidence": "high", "lines": [],
                 "engine": "whisper", "language": getattr(info, "language", None)}
 
-    lines = _group_words_into_lines(words)
+    # Candidate text present: the words are already known and correct (fetched
+    # from a lyrics database or imported by the user), so re-deriving them from
+    # what the model thought it heard would be strictly worse. Only the TIMING
+    # is missing, and that is what the audio can supply — see _align_hint_lines.
+    aligned = None
+    if hint_lyrics:
+        aligned = _align_hint_lines(hint_lyrics, words)
+
+    lines = aligned if aligned else _group_words_into_lines(words)
     if not lines:
         return None
 
@@ -331,7 +480,7 @@ def _transcribe_sync(path: str, language: str | None) -> dict | None:
         "instrumental": False,
         "confidence": confidence,
         "lines": lines,
-        "engine": "whisper",
+        "engine": "whisper-aligned" if aligned else "whisper",
         "language": getattr(info, "language", None),
         "mean_logprob": round(mean_logprob, 3),
     }
@@ -343,14 +492,18 @@ async def transcribe_lyrics_local(
     title: str,
     artist: str,
     duration_seconds: float | None = None,
+    hint_lyrics: str | None = None,
 ) -> dict | None:
     """Local counterpart to lyrics_ai.transcribe_lyrics, same return shape.
 
-    `hint_lyrics` is deliberately NOT a parameter. Gemini can be handed candidate
-    text and asked to correct itself against it; an ASR model has no such input —
-    it reports what it heard. Re-timing known-correct text against Whisper's
-    output is a real thing worth doing, but it is a text-alignment problem rather
-    than a transcription one, so it does not belong in here.
+    When `hint_lyrics` is supplied the words are taken as given and only timed
+    against the audio (see `_align_hint_lines`) — that path returns the caller's
+    own text verbatim with measured timestamps, which is strictly better than
+    either engine alone: the words are already known to be right, and the timing
+    is measured rather than estimated. If too little of that text can be matched
+    to what was actually heard, alignment is abandoned and the ordinary
+    transcription is returned instead, so a mismatched hint degrades rather than
+    corrupting the result.
     """
     if not is_available():
         return None
@@ -374,7 +527,8 @@ async def transcribe_lyrics_local(
 
         language = None if not _MODEL_NAME.endswith(".en") else "en"
         async with _SEMAPHORE:
-            result = await asyncio.to_thread(_transcribe_sync, tmp_path, language)
+            result = await asyncio.to_thread(
+                _transcribe_sync, tmp_path, language, hint_lyrics)
 
         elapsed = time.monotonic() - started
         if result is None:

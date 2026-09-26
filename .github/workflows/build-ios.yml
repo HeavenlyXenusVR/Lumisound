@@ -17,6 +17,10 @@ on:
 
 permissions:
   contents: write
+  # Needed by the "Cut the release for the new tag" step, which dispatches
+  # release-ios.yml — see that step's comment for why a tag push alone cannot
+  # trigger it.
+  actions: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -158,16 +162,81 @@ jobs:
       # A successful release build is the single source of truth for tags.
       # Creating the tag only after archive/package steps complete prevents a
       # broken main build from triggering the release workflow.
+      #
+      # The version is derived from the latest EXISTING tag, not from
+      # `MARKETING_VERSION` in ios/project.yml. That field is not bumped per
+      # release — it sat at 1.9.0.37 while tags advanced past 1.9.0.57 — so this
+      # step computed an already-taken tag every single time, hit the
+      # "already exists" branch below, and created nothing. Every release for
+      # dozens of versions had to be tagged by hand as a result. The tag is the
+      # real version of record (release-ios.yml names the IPA from it), so the
+      # tag list is what the next version is counted from.
       - name: Tag successful release build
+        id: tag
         if: success() && steps.config.outputs.configuration == 'Release' && github.ref == 'refs/heads/main'
         run: |
-          VERSION=$(grep 'MARKETING_VERSION' ios/project.yml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          set -euo pipefail
+          # Read tags from the remote rather than the checkout: actions/checkout
+          # fetches shallow and without tags by default, so a local `git tag -l`
+          # here would see nothing and restart versioning from scratch.
+          LATEST=$(git ls-remote --tags --refs origin 'refs/tags/ios/v*' \
+            | sed 's#.*refs/tags/ios/v##' \
+            | sort -V \
+            | tail -1)
+
+          if [ -z "$LATEST" ]; then
+            echo "No existing ios/v* tag found; refusing to invent a starting version." >&2
+            exit 1
+          fi
+
+          # Bump the last dotted component. Deliberately arithmetic on that field
+          # only: major/minor/patch are product decisions, while this counter is
+          # just "the next build", which is exactly how the tag series has been
+          # used in practice.
+          PREFIX="${LATEST%.*}"
+          LAST="${LATEST##*.}"
+          case "$LAST" in
+            ''|*[!0-9]*)
+              echo "Latest tag ios/v$LATEST does not end in a numeric component; not guessing." >&2
+              exit 1
+              ;;
+          esac
+          VERSION="${PREFIX}.$((LAST + 1))"
           TAG="ios/v${VERSION}"
+
           if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
             echo "Tag $TAG already exists; leaving it unchanged."
+            echo "created=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
+          echo "Latest released tag: ios/v${LATEST} -> new tag: $TAG"
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
           git tag -a "$TAG" -m "Release Lumisound iOS v${VERSION}" "$GITHUB_SHA"
           git push origin "$TAG"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      # Pushing the tag above is NOT enough to cut a release.
+      #
+      # GitHub deliberately does not let a push authored by the built-in
+      # GITHUB_TOKEN trigger further workflows (loop prevention), so
+      # release-ios.yml's `on: push: tags: ios/v*` never fires for a tag created
+      # by the step above — the tag just appears with no release behind it. A
+      # tag pushed from a developer's own credentials does fire it, which is why
+      # hand-tagging has always worked and automation silently did not.
+      #
+      # workflow_dispatch is the documented exception: dispatching via the API
+      # works with GITHUB_TOKEN. So the release is requested explicitly rather
+      # than hoped for. This is why `actions: write` is in this workflow's
+      # permissions block.
+      - name: Cut the release for the new tag
+        if: success() && steps.tag.outputs.created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          echo "Dispatching Release iOS IPA at $TAG"
+          gh workflow run "Release iOS IPA" --repo "$GITHUB_REPOSITORY" --ref "$TAG"

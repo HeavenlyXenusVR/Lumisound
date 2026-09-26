@@ -447,6 +447,18 @@ struct ContentView: View {
             }
             .animation(.spring(response: 0.4, dampingFraction: 0.8), value: toastCenter.current)
             .allowsHitTesting(false)
+
+            // MARK: "Add an email address" prompt for accounts created before one
+            // was required. Separate layer from the toasts above because it is
+            // interactive — those are `.allowsHitTesting(false)`, which would
+            // swallow this banner's own Add/Later buttons. Hides itself entirely
+            // when the account has an address or the prompt is snoozed.
+            VStack {
+                EmailPromptBanner()
+                    .padding(.top, 56)
+                Spacer()
+            }
+            .animation(.spring(response: 0.4, dampingFraction: 0.85), value: account.needsEmail)
         }
         .acoustIDConfirmSheet()
         .clipMakerSheet()
