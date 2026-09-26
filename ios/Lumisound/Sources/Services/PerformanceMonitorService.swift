@@ -93,7 +93,10 @@ private final class CPUSampler {
     }
 }
 
-private extension ProcessInfo.ThermalState {
+// Internal, not fileprivate: `MainThreadHangMonitor` reports the thermal state
+// alongside each stall too, and a second copy of this switch would be one more
+// place for the strings to drift apart — they are compared across events.
+extension ProcessInfo.ThermalState {
     var lumisoundDescription: String {
         switch self {
         case .nominal: return "nominal"
