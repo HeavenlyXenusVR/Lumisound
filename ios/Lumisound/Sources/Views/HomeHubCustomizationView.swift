@@ -11,6 +11,60 @@ import SwiftUI
 // it reuses `AccentColorPickerView`/`SocialAccentPalette` purely as UI/color
 // components, with entirely separate storage keys.
 
+// MARK: - Zones
+//
+// The hub grew to ~20 shelves in one flat list, with five single-row teaser
+// cards stacked above the first piece of actual music. Zones group those
+// shelves by *intent* — what the user came to Home to do — so the default
+// order reads as five coherent blocks instead of a feature inventory, and the
+// filter chips under the quick actions can narrow Home to one of them.
+
+enum HubZone: String, CaseIterable, Identifiable {
+    /// Resume something: recent tracks, pinned collections, a half-heard podcast.
+    case jumpBackIn
+    /// Picked or generated for the user rather than taken from their own shelves.
+    case forYou
+    /// Different cuts through the user's own library.
+    case library
+    /// Things the user liked once and hasn't heard lately.
+    case rediscover
+    /// Numbers about the user's listening, and other people's.
+    case statsAndSocial
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .jumpBackIn:     return "Jump Back In"
+        case .forYou:         return "Made For You"
+        case .library:        return "Your Library"
+        case .rediscover:     return "Rediscover"
+        case .statsAndSocial: return "Stats & Social"
+        }
+    }
+
+    /// Shorter label for the filter chips.
+    var chipTitle: String {
+        switch self {
+        case .jumpBackIn:     return "Recent"
+        case .forYou:         return "For You"
+        case .library:        return "Library"
+        case .rediscover:     return "Rediscover"
+        case .statsAndSocial: return "Social"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .jumpBackIn:     return "arrow.uturn.backward"
+        case .forYou:         return "sparkles"
+        case .library:        return "music.note.house"
+        case .rediscover:     return "clock.arrow.circlepath"
+        case .statsAndSocial: return "person.2"
+        }
+    }
+}
+
 // MARK: - Section identifiers
 
 /// Every reorderable/hideable content shelf in `LibraryHubView.hubContent`
@@ -43,6 +97,11 @@ enum HubSectionKind: String, CaseIterable, Codable, Identifiable {
     case continueListeningPodcasts
     /// One AI-picked track/day with a short reason — see `/user/aria/daily-pick`.
     case ariaDailyPick
+    // 2026-09 Home restructure. `stations` was pinned under the quick
+    // actions and could be neither moved nor hidden; `jumpBackIn` is a
+    // compact grid of the last few tracks, for one-tap resume.
+    case jumpBackIn
+    case stations
 
     var id: String { rawValue }
 
@@ -67,6 +126,8 @@ enum HubSectionKind: String, CaseIterable, Codable, Identifiable {
         case .deeperCuts:         return "Deeper Cuts"
         case .continueListeningPodcasts: return "Continue Listening"
         case .ariaDailyPick:      return "Aria's Daily Pick"
+        case .jumpBackIn:         return "Jump Back In"
+        case .stations:           return "Suggestions"
         }
     }
 
@@ -94,19 +155,45 @@ enum HubSectionKind: String, CaseIterable, Codable, Identifiable {
         case .deeperCuts:         return "waveform.badge.magnifyingglass"
         case .continueListeningPodcasts: return "headphones"
         case .ariaDailyPick:      return "sparkle"
+        case .jumpBackIn:         return "arrow.uturn.backward.circle.fill"
+        case .stations:           return "sparkles"
         }
     }
 
-    /// The hub's original hardcoded sequence, preserved as the default so a
-    /// user who never opens the customization sheet sees exactly the same
-    /// layout as before this feature existed. New 2026-07-20 sections are
-    /// interleaved into sensible spots rather than only appended, so a
-    /// first-run user (no saved order yet) sees them somewhere natural
-    /// rather than all dumped at the very end.
+    var zone: HubZone {
+        switch self {
+        case .jumpBackIn, .speedDial, .recentlyPlayed, .continueListeningPodcasts:
+            return .jumpBackIn
+        case .ariaDailyPick, .stations, .weeklyMix, .mixes, .similarListeners:
+            return .forYou
+        case .recentlyAdded, .onRepeat, .topArtists, .genres, .decades, .moods:
+            return .library
+        case .onThisDay, .forgottenFavorites, .deeperCuts:
+            return .rediscover
+        case .weeklyRecap, .achievements, .friendsActivity:
+            return .statsAndSocial
+        }
+    }
+
+    /// Zone by zone, in `HubZone.allCases` order: resume first (the most
+    /// common reason to open Home is to carry on), then new things picked
+    /// for the user, then their own library, then rediscovery, with stats
+    /// and social last. A user who has saved their own order keeps it — see
+    /// `HomeHubLayoutStore.decodeOrder` — and can adopt this one with
+    /// "Reset Layout" in the customization sheet.
+    ///
+    /// Must list every case: `decodeOrder` reconciles saved orders against it.
     static let defaultOrder: [HubSectionKind] = [
-        .ariaDailyPick, .onThisDay, .continueListeningPodcasts, .achievements, .weeklyRecap, .speedDial, .weeklyMix, .mixes,
-        .recentlyAdded, .onRepeat, .recentlyPlayed, .topArtists, .genres, .decades,
-        .forgottenFavorites, .deeperCuts, .moods, .friendsActivity, .similarListeners,
+        // Jump Back In
+        .jumpBackIn, .continueListeningPodcasts, .speedDial, .recentlyPlayed,
+        // Made For You
+        .ariaDailyPick, .stations, .weeklyMix, .mixes, .similarListeners,
+        // Your Library
+        .recentlyAdded, .onRepeat, .topArtists, .moods, .genres, .decades,
+        // Rediscover
+        .onThisDay, .forgottenFavorites, .deeperCuts,
+        // Stats & Social
+        .weeklyRecap, .achievements, .friendsActivity,
     ]
 }
 
@@ -127,7 +214,10 @@ enum HomeHubLayoutStore {
     /// Also reconciles against the current `HubSectionKind` case list both
     /// ways: unknown/stale raw values (e.g. a section removed in a later
     /// update) are dropped, and any *new* case missing from an older saved
-    /// order is appended at the end rather than silently never appearing.
+    /// order is slotted in right after its nearest default-order predecessor
+    /// that the saved order does have. Appending at the end would send a
+    /// section that used to be pinned near the top (Suggestions) to the very
+    /// bottom for everyone who had ever reordered anything.
     static func decodeOrder(_ json: String) -> [HubSectionKind] {
         var seen = Set<HubSectionKind>()
         var result: [HubSectionKind] = []
@@ -138,11 +228,51 @@ enum HomeHubLayoutStore {
                 result.append(kind)
             }
         }
-        for kind in HubSectionKind.defaultOrder where !seen.contains(kind) {
-            result.append(kind)
+        let defaults = HubSectionKind.defaultOrder
+        for (index, kind) in defaults.enumerated() where !seen.contains(kind) {
+            if let predecessor = defaults[..<index].last(where: { seen.contains($0) }),
+               let at = result.firstIndex(of: predecessor) {
+                result.insert(kind, at: at + 1)
+            } else {
+                result.insert(kind, at: 0)
+            }
             seen.insert(kind)
         }
         return result
+    }
+
+    /// The order Home actually uses: the saved one if the user has ever
+    /// reordered, otherwise `defaultOrder(forHour:)`. Only the un-customized
+    /// default moves with the clock — a hand-arranged Home never changes
+    /// under the user.
+    static func resolvedOrder(_ json: String, hour: Int) -> [HubSectionKind] {
+        json.isEmpty ? defaultOrder(forHour: hour) : decodeOrder(json)
+    }
+
+    /// `HubSectionKind.defaultOrder` nudged for the time of day. Whole zones
+    /// move, and sections only move within their zone, so the zone headings
+    /// on Home still hold.
+    ///   - Morning (5–11): Made For You goes first — start the day with
+    ///     something new rather than yesterday's queue.
+    ///   - Evening and night (20–4): Moods leads Your Library, where the
+    ///     Chill and Sleep buckets are one tap away.
+    static func defaultOrder(forHour hour: Int) -> [HubSectionKind] {
+        var zones = HubZone.allCases
+        var byZone = Dictionary(grouping: HubSectionKind.defaultOrder, by: \.zone)
+
+        switch hour {
+        case 5..<12:
+            zones.removeAll { $0 == .forYou }
+            zones.insert(.forYou, at: 0)
+        case 20..<24, 0..<5:
+            if var library = byZone[.library], let moods = library.firstIndex(of: .moods) {
+                library.insert(library.remove(at: moods), at: 0)
+                byZone[.library] = library
+            }
+        default:
+            break
+        }
+        return zones.flatMap { byZone[$0] ?? [] }
     }
 
     static func encodeOrder(_ order: [HubSectionKind]) -> String {
@@ -187,6 +317,7 @@ struct HomeHubCustomizationView: View {
     @AppStorage("home_hub_accent_hex") private var accentHex: String?
 
     @State private var order: [HubSectionKind] = []
+    private var currentHour: Int { Calendar.current.component(.hour, from: Date()) }
     @State private var hidden: Set<HubSectionKind> = []
 
     private var accentColor: Color {
@@ -229,9 +360,14 @@ struct HomeHubCustomizationView: View {
                             Image(systemName: kind.icon)
                                 .foregroundStyle(hidden.contains(kind) ? AppTheme.textSecondary : accentColor)
                                 .frame(width: 22)
-                            Text(kind.title)
-                                .foregroundStyle(AppTheme.textPrimary)
-                                .opacity(hidden.contains(kind) ? 0.5 : 1)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(kind.title)
+                                    .foregroundStyle(AppTheme.textPrimary)
+                                Text(kind.zone.title)
+                                    .font(.caption2)
+                                    .foregroundStyle(AppTheme.textSecondary)
+                            }
+                            .opacity(hidden.contains(kind) ? 0.5 : 1)
                             Spacer()
                             Toggle("Show \(kind.title)", isOn: showBinding(for: kind))
                                 .labelsHidden()
@@ -242,7 +378,21 @@ struct HomeHubCustomizationView: View {
                 } header: {
                     Text("Sections")
                 } footer: {
-                    Text("Drag to reorder. Toggle a section off to hide it — it still only ever appears when it actually has content.")
+                    Text("Drag to reorder. Toggle a section off to hide it — it still only ever appears when it actually has content. Group headings show on Home while each group's sections stay together. Until you reorder, Home adjusts the order to the time of day.")
+                }
+
+                Section {
+                    Button("Reset Layout") {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                            order = HomeHubLayoutStore.defaultOrder(forHour: currentHour)
+                            hidden = []
+                        }
+                        orderRaw = ""
+                        hiddenRaw = ""
+                    }
+                    .disabled(orderRaw.isEmpty && hiddenRaw.isEmpty)
+                } footer: {
+                    Text("Restores the default section order and shows every section again. Your greeting and accent color are kept.")
                 }
             }
             .environment(\.editMode, .constant(.active))
@@ -256,7 +406,7 @@ struct HomeHubCustomizationView: View {
             }
         }
         .onAppear {
-            order = HomeHubLayoutStore.decodeOrder(orderRaw)
+            order = HomeHubLayoutStore.resolvedOrder(orderRaw, hour: currentHour)
             hidden = HomeHubLayoutStore.decodeHidden(hiddenRaw)
         }
     }

@@ -20,6 +20,11 @@ import UIKit
 //     themselves), a Recently Added shelf, an On Repeat (most played) shelf,
 //     a Forgotten Favorites shelf, and a Moods shelf if `MoodPlaylistService`
 //     has classified anything yet.
+//
+// 2026-09 restructure: every shelf now belongs to a `HubZone` (Jump Back In,
+// Made For You, Your Library, Rediscover, Stats & Social). The default order
+// runs zone by zone under small zone headings, and a chip row under the quick
+// actions narrows Home to a single zone.
 struct LibraryHubView: View {
     @EnvironmentObject private var library: LibraryManager
     @EnvironmentObject private var player: AudioPlayerManager
@@ -46,6 +51,18 @@ struct LibraryHubView: View {
     @State private var recentlyPlayed: [Song] = []
     @State private var genreGroups: [(genre: String, songs: [Song])] = []
     @State private var hasLoadedOnce = false
+    /// Snapshotted rather than computed in `body`: `songsPlayedTodayCount()`
+    /// walks the whole library, and this view re-renders on every `player`
+    /// publish. Refreshed by `reload()` and on each track change.
+    @State private var songsPlayedToday = 0
+    /// `nil` = "All". Not persisted: coming back to a Home narrowed to one
+    /// zone without remembering why is more confusing than helpful.
+    @State private var selectedZone: HubZone? = nil
+    /// Hour the default order was picked for (see
+    /// `HomeHubLayoutStore.defaultOrder(forHour:)`). Re-read on appear rather
+    /// than in `body`, so sections never reshuffle mid-scroll when the clock
+    /// crosses a boundary.
+    @State private var layoutHour = Calendar.current.component(.hour, from: Date())
     /// `allSongs.count` as of the last completed `reload()` — see that
     /// `.task(id:)`'s guard for why this exists.
     @State private var lastReloadedSongCount: Int? = nil
@@ -112,6 +129,7 @@ struct LibraryHubView: View {
             // fix (clears MiniPlayerBar + tab bar).
             .padding(.bottom, 190)
             .animation(.easeInOut(duration: 0.35), value: hasLoadedOnce)
+            .animation(.easeInOut(duration: 0.25), value: player.isPlaying)
         }
         .background(Color.clear.ignoresSafeArea())
         .task(id: library.allSongs.count) {
@@ -152,6 +170,12 @@ struct LibraryHubView: View {
         .task {
             await loadServerExtras()
         }
+        .onAppear {
+            layoutHour = Calendar.current.component(.hour, from: Date())
+        }
+        .onChange(of: player.currentSong?.id) { _ in
+            songsPlayedToday = library.songsPlayedTodayCount()
+        }
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
@@ -189,7 +213,7 @@ struct LibraryHubView: View {
         // or hideable (see `HubSectionKind`'s doc comment).
         HubGreetingHeader(
             displayName: account.currentUser?.displayName ?? account.currentUser?.username,
-            songsPlayedToday: library.songsPlayedTodayCount(),
+            songsPlayedToday: songsPlayedToday,
             customGreeting: customGreeting,
             accent: resolvedAccent
         )
@@ -202,9 +226,24 @@ struct LibraryHubView: View {
             onNameThatTune: { showNameThatTune = true }
         )
 
-        // Contextual stations use the same server-side signal fusion as
-        // Auto-Radio, but without a current-track seed on Home.
-        StationSuggestionsSection(accent: resolvedAccent)
+        // Pinned, not a section: it only exists while something is paused,
+        // and when it does it is the likeliest thing to tap.
+        if let paused = player.currentSong, !player.isPlaying {
+            HubResumeCard(song: paused, accent: resolvedAccent)
+                .transition(.move(edge: .top).combined(with: .opacity))
+        }
+
+        let sections = visibleSections
+        let zones = zonesPresent(in: sections)
+        let activeZone = selectedZone.flatMap { zones.contains($0) ? $0 : nil }
+        let displayed = activeZone.map { zone in sections.filter { $0.zone == zone } } ?? sections
+        // Headings only make sense while each zone is one unbroken run; a
+        // custom order that interleaves zones would repeat them.
+        let showsZoneHeadings = activeZone == nil && zones.count > 1 && isZoneContiguous(sections)
+
+        if zones.count > 1 {
+            HubZoneFilterBar(zones: zones, selection: $selectedZone, activeZone: activeZone, accent: resolvedAccent)
+        }
 
         // Everything below is data-driven: the persisted order (see
         // `HomeHubLayoutStore`) filtered to sections that are both not
@@ -212,18 +251,59 @@ struct LibraryHubView: View {
         // "only show if non-empty" guard lives in `sectionHasContent`
         // rather than inline `if`s here, since the sequence itself is no
         // longer hardcoded.
-        ForEach(visibleSections) { kind in
-            sectionContent(for: kind)
+        ForEach(Array(displayed.enumerated()), id: \.element) { index, kind in
+            VStack(alignment: .leading, spacing: 14) {
+                if showsZoneHeadings, index == 0 || displayed[index - 1].zone != kind.zone {
+                    HubZoneHeading(zone: kind.zone)
+                }
+                sectionContent(for: kind)
+            }
         }
     }
 
     /// The user's chosen order (falling back to `HubSectionKind.defaultOrder`
-    /// — the hub's original hardcoded sequence — on first run), filtered
-    /// down to sections that are both visible and non-empty.
+    /// on first run), filtered down to sections that are both visible and
+    /// non-empty.
     private var visibleSections: [HubSectionKind] {
-        let order = HomeHubLayoutStore.decodeOrder(sectionOrderRaw)
-        let hidden = HomeHubLayoutStore.decodeHidden(hiddenSectionsRaw)
+        let order = HomeHubLayoutStore.resolvedOrder(sectionOrderRaw, hour: layoutHour)
+        let hidden = hiddenSections
         return order.filter { !hidden.contains($0) && sectionHasContent($0) }
+    }
+
+    private var hiddenSections: Set<HubSectionKind> {
+        HomeHubLayoutStore.decodeHidden(hiddenSectionsRaw)
+    }
+
+    /// Zones with at least one section on screen, in `HubZone.allCases` order
+    /// so the chips stay put however the sections themselves are ordered.
+    private func zonesPresent(in sections: [HubSectionKind]) -> [HubZone] {
+        let present = Set(sections.map(\.zone))
+        return HubZone.allCases.filter { present.contains($0) }
+    }
+
+    private func isZoneContiguous(_ sections: [HubSectionKind]) -> Bool {
+        var finished = Set<HubZone>()
+        var current: HubZone? = nil
+        for kind in sections where kind.zone != current {
+            if let current { finished.insert(current) }
+            if finished.contains(kind.zone) { return false }
+            current = kind.zone
+        }
+        return true
+    }
+
+    // MARK: Jump Back In / Recently Played split
+
+    private static let jumpBackInLimit = 6
+
+    private var jumpBackInSongs: [Song] {
+        Array(recentlyPlayed.prefix(Self.jumpBackInLimit))
+    }
+
+    /// While Jump Back In is on, the Recently Played carousel continues where
+    /// the grid stops instead of repeating its first six tracks.
+    private var recentlyPlayedCarouselSongs: [Song] {
+        hiddenSections.contains(.jumpBackIn) ? recentlyPlayed : Array(recentlyPlayed.dropFirst(Self.jumpBackInLimit))
     }
 
     /// Mirrors each section's original inline `if !x.isEmpty` guard from
@@ -237,7 +317,11 @@ struct LibraryHubView: View {
         case .mixes:              return !smartPlaylistStore.playlists.isEmpty
         case .recentlyAdded:      return !recentlyAdded.isEmpty
         case .onRepeat:           return !mostPlayed.isEmpty
-        case .recentlyPlayed:     return !recentlyPlayed.isEmpty
+        case .recentlyPlayed:     return !recentlyPlayedCarouselSongs.isEmpty
+        case .jumpBackIn:         return !recentlyPlayed.isEmpty
+        // `StationSuggestionsSection` loads its own data and collapses to
+        // nothing when there are no suggestions, so only gate on sign-in.
+        case .stations:           return account.isLoggedIn
         case .genres:             return !genreGroups.isEmpty
         case .forgottenFavorites: return !forgottenFavorites.isEmpty
         case .moods:              return !moodBucketsWithSongs.isEmpty
@@ -287,8 +371,16 @@ struct LibraryHubView: View {
         case .recentlyPlayed:
             HubSongCarousel(
                 title: "Recently Played", icon: "clock.arrow.circlepath",
-                songs: recentlyPlayed, seeAllTab: .songs, selectedTab: $selectedTab, accent: resolvedAccent
+                songs: recentlyPlayedCarouselSongs, seeAllTab: .songs, selectedTab: $selectedTab, accent: resolvedAccent
             )
+
+        case .jumpBackIn:
+            HubJumpBackInGrid(songs: jumpBackInSongs, queue: recentlyPlayed, accent: resolvedAccent)
+
+        case .stations:
+            // Contextual stations use the same server-side signal fusion as
+            // Auto-Radio, but without a current-track seed on Home.
+            StationSuggestionsSection(accent: resolvedAccent)
 
         case .genres:
             HubGenresCarousel(groups: genreGroups, accent: resolvedAccent)
@@ -531,6 +623,7 @@ struct LibraryHubView: View {
         deeperCutsSongs = library.deeperCutsSongs(limit: 20)
         await Task.yield()
         weeklyRecap = library.weeklyRecap()
+        songsPlayedToday = library.songsPlayedTodayCount()
         if !hasLoadedOnce {
             withAnimation(.easeInOut(duration: 0.35)) { hasLoadedOnce = true }
         }
@@ -920,6 +1013,211 @@ private struct HubSongCarousel: View {
                 .background(AppTheme.dynamicAccent, in: Circle())
                 .padding(6)
         }
+    }
+}
+
+// MARK: - Resume card
+
+/// Shown while a track is loaded but paused: the play button resumes in
+/// place, the rest of the card opens Now Playing.
+private struct HubResumeCard: View {
+    let song: Song
+    var accent: Color = AppTheme.dynamicAccent
+
+    @EnvironmentObject private var player: AudioPlayerManager
+    /// `ContentView`'s tab selection; 1 is Now Playing (the mini player
+    /// uses the same value).
+    @AppStorage("selected_tab") private var selectedAppTab = 0
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button {
+                selectedAppTab = 1
+            } label: {
+                HStack(spacing: 12) {
+                    ArtworkThumbnail(song: song, size: 52)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Paused")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(accent)
+                        Text(song.displayName)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.textPrimary)
+                            .lineLimit(1)
+                        Text(song.artistName)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.textSecondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Opens Now Playing")
+
+            Button {
+                player.togglePlayPause()
+            } label: {
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: 34))
+                    .foregroundStyle(accent)
+            }
+            .buttonStyle(PressableButtonStyle())
+            .accessibilityLabel("Resume \(song.displayName)")
+        }
+        .padding(10)
+        .adaptiveGlass(
+            tint: accent.opacity(0.1),
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous),
+            fallback: AppTheme.surface
+        )
+        .padding(.horizontal, 16)
+    }
+}
+
+// MARK: - Zone filter chips
+
+/// "All" plus one chip per zone that currently has content. Tapping the
+/// active chip again goes back to All.
+private struct HubZoneFilterBar: View {
+    let zones: [HubZone]
+    @Binding var selection: HubZone?
+    /// `selection` resolved against `zones` — a remembered zone whose last
+    /// section just emptied out reads as All rather than an invisible chip.
+    let activeZone: HubZone?
+    var accent: Color = AppTheme.dynamicAccent
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                chip(title: "All", icon: nil, isSelected: activeZone == nil) {
+                    selection = nil
+                }
+                ForEach(zones) { zone in
+                    chip(title: zone.chipTitle, icon: zone.icon, isSelected: activeZone == zone) {
+                        selection = activeZone == zone ? nil : zone
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 2)
+        }
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: activeZone)
+    }
+
+    private func chip(title: String, icon: String?, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.25)) { action() }
+        } label: {
+            HStack(spacing: 5) {
+                if let icon { Image(systemName: icon) }
+                Text(title)
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(isSelected ? Color.white : AppTheme.textPrimary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background {
+                if isSelected {
+                    Capsule().fill(accent)
+                } else {
+                    Capsule().fill(AppTheme.surface)
+                }
+            }
+        }
+        .buttonStyle(PressableButtonStyle())
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+// MARK: - Zone heading
+
+/// A quiet small-caps label above the first section of each zone — lighter
+/// than `HubSectionHeader` so it reads as grouping, not as another shelf.
+private struct HubZoneHeading: View {
+    let zone: HubZone
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(zone.title.uppercased())
+                .font(.caption.weight(.heavy))
+                .tracking(1.2)
+                .foregroundStyle(AppTheme.textSecondary)
+            Rectangle()
+                .fill(AppTheme.textSecondary.opacity(0.2))
+                .frame(height: 1)
+        }
+        .padding(.horizontal, 16)
+        .accessibilityAddTraits(.isHeader)
+    }
+}
+
+// MARK: - Jump Back In grid
+
+/// The last few tracks as a dense two-column grid — six resumable tracks in
+/// roughly the height of one carousel row, so "carry on where I left off"
+/// is one tap from the top of Home without any sideways scrolling.
+private struct HubJumpBackInGrid: View {
+    let songs: [Song]
+    /// Queue for playback — the full recently-played list, so playing one
+    /// tile carries on into the tracks after it rather than stopping at six.
+    let queue: [Song]
+    var accent: Color = AppTheme.dynamicAccent
+
+    @EnvironmentObject private var player: AudioPlayerManager
+
+    private let columns = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HubSectionHeader(title: "Jump Back In", icon: "arrow.uturn.backward.circle.fill", accent: accent)
+                .padding(.horizontal, 16)
+
+            LazyVGrid(columns: columns, spacing: 10) {
+                ForEach(songs) { song in
+                    Button {
+                        player.play(song: song, in: queue)
+                    } label: {
+                        tile(for: song)
+                    }
+                    .buttonStyle(PressableButtonStyle())
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+    }
+
+    private func tile(for song: Song) -> some View {
+        HStack(spacing: 10) {
+            ArtworkThumbnail(song: song, size: 48)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(song.displayName)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.textPrimary)
+                    .lineLimit(1)
+                Text(song.artistName)
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            if player.currentSong?.id == song.id {
+                Image(systemName: "waveform")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(accent)
+                    .padding(.trailing, 4)
+            }
+        }
+        .padding(6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .adaptiveGlass(
+            tint: accent.opacity(0.08),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous),
+            fallback: AppTheme.surface
+        )
     }
 }
 
