@@ -26,6 +26,13 @@ enum LibraryTab: String, CaseIterable {
     case playlists = "Playlists"
     case favorites = "Favorites"
     case moods     = "Moods"
+    // Promoted to a first-class library section rather than staying a tile in
+    // AccountView's grid. Podcasts are a content TYPE — the same kind of thing as
+    // Songs, Albums and Playlists — and the feature had zero subscriptions across
+    // the whole user base while its only entry point was one of ten equal tiles
+    // inside a settings screen. Somewhere nobody looks for content is the wrong
+    // place to keep content.
+    case podcasts  = "Podcasts"
 
     var icon: String {
         switch self {
@@ -39,6 +46,7 @@ enum LibraryTab: String, CaseIterable {
         case .playlists:  return "music.note.list"
         case .favorites:  return "heart"
         case .moods:      return "theatermasks"
+        case .podcasts:   return "mic.square"
         }
     }
 }
@@ -367,6 +375,8 @@ struct LibraryView: View {
         case .moods:
             MoodPlaylistsView()
                 .environmentObject(moodService)
+        case .podcasts:
+            PodcastsView()
         }
     }
 

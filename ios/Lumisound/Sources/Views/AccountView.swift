@@ -350,7 +350,6 @@ struct AccountView: View {
                         gridLink(destination: TimeCapsulesView(), title: "Time Capsules", icon: "shippingbox")
                         gridLink(destination: ConstellationView(), title: "Constellation", icon: "sparkles")
                         gridLink(destination: ListeningHeatmapView(), title: "Heatmap", icon: "calendar")
-                        gridLink(destination: ScrobblingView(), title: "Scrobbling", icon: "waveform.path.ecg")
                         gridLink(
                             destination: NotificationsView(),
                             title: "Notifications",
@@ -757,6 +756,13 @@ struct AccountView: View {
                 // matching the Library section's redesign above.
                 Section {
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                        // Moved here from the Library grid above. Scrobbling is
+                        // an external ACCOUNT CONNECTION (Last.fm / Libre.fm), not
+                        // a way to browse your own music, and it had zero uptake
+                        // while it sat among "Your Rewind", "Achievements" and
+                        // "Heatmap" — nobody looking to link an outside account
+                        // would think to search a list of listening stats for it.
+                        gridLink(destination: ScrobblingView(), title: "Scrobbling", icon: "waveform.path.ecg")
                         gridLink(destination: DiscordRichPresenceView(), title: "Rich Presence", icon: "key.viewfinder")
                         gridLink(destination: DiscordWebhookView(), title: "Now Playing Webhook", icon: "message")
                         gridLink(destination: YoutubeApiKeyView(), title: "YouTube API Key", icon: "key")
@@ -767,7 +773,7 @@ struct AccountView: View {
                 } header: {
                     sectionHeader("Integrations")
                 } footer: {
-                    Text("Discord Rich Presence shows what you're playing on your profile; the webhook posts \"Now Playing\" messages to a channel. Add your own YouTube Data API v3 key so full playlists (beyond ~205 tracks) resolve completely, and a cookies.txt export to authenticate downloads as your own session.")
+                    Text("Scrobbling logs every track you play to Last.fm or Libre.fm. Discord Rich Presence shows what you're playing on your profile; the webhook posts \"Now Playing\" messages to a channel. Add your own YouTube Data API v3 key so full playlists (beyond ~205 tracks) resolve completely, and a cookies.txt export to authenticate downloads as your own session.")
                         .font(AppTheme.bodyFont(size: 12))
                         .foregroundStyle(AppTheme.textSecondary)
                 }
