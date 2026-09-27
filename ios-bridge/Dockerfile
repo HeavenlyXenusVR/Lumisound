@@ -54,7 +54,7 @@ ENV LUMISOUND_WHISPER_CACHE=/app/cache/whisper
 RUN python -c "\
 from faster_whisper import WhisperModel; \
 import os; \
-m = os.environ.get('LUMISOUND_WHISPER_MODEL', 'base.en'); \
+m = os.environ.get('LUMISOUND_WHISPER_MODEL', 'base'); \
 WhisperModel(m, device='cpu', compute_type='int8', download_root='/app/cache/whisper'); \
 print('whisper model', m, 'cached')"
 

@@ -21,12 +21,15 @@ quota, no 429, no 503. A hosted model's request allowance is finite and shared
 across everyone using a deployment, which is what made a per-track transcription
 budget something that had to be reasoned about at all.
 
-Measured on a modest 4-core CPU with no GPU, using `base.en` at int8: roughly
-6-15x realtime, i.e. a three-and-a-half minute track in well under a minute,
-holding ~200 MB resident. A deployment like that is typically sharing its cores
-with other latency-sensitive work, so the model size, thread count and
-concurrency below are all deliberately conservative and all env-overridable —
-raise them if the host has room.
+Measured on a modest 4-core CPU with no GPU, using multilingual `base` at int8
+against real uploaded tracks: a three-to-four minute song takes roughly 40-70
+seconds, holding ~200 MB resident. Earlier versions of this file claimed 6-15x
+realtime; that figure came from measuring SPOKEN dialogue with a speech VAD
+stripping most of the audio, and it does not describe transcribing actual music,
+which is the job. A deployment like this is typically sharing its cores with
+other latency-sensitive work, so the model size, thread count and concurrency
+below are all deliberately conservative and all env-overridable — raise them if
+the host has room.
 
 Same failure contract as lyrics_ai.transcribe_lyrics: returns None on any
 failure, and every caller already treats "no AI lyrics for this track" as a
@@ -42,13 +45,19 @@ import time
 
 logger = logging.getLogger("ios-bridge.lyrics_whisper")
 
-# `base.en` is the default because it is the smallest model that transcribed a
-# real track correctly in testing, and because English is what the lyrics
-# database fallbacks (LRCLIB/lyrics.ovh) cover best anyway. Set to `base` or
-# `small` for multilingual material — `.en` variants refuse non-English and will
-# produce confident nonsense rather than failing, so the multilingual model is
-# the right call for a non-English library even though it is slower.
-_MODEL_NAME = os.getenv("LUMISOUND_WHISPER_MODEL", "base.en")
+# Multilingual `base`, NOT `base.en`.
+#
+# Measured on real uploaded tracks rather than assumed. An `.en` model does not
+# "produce confident nonsense" on other languages, which is what a comment here
+# used to claim — it produces NOTHING: a Japanese track returned zero segments
+# from `base.en` and 10 segments / 135 words from multilingual `base`, with the
+# language correctly detected at p=0.96. On an English track the two were
+# comparable (263 words vs 249) and the multilingual model was actually FASTER
+# (41s vs 72s), so there is no English-side cost to trade away.
+#
+# That matters for any library that is not exclusively English: a track with
+# Japanese vocals is the case where `.en` silently returned nothing at all.
+_MODEL_NAME = os.getenv("LUMISOUND_WHISPER_MODEL", "base")
 
 # int8 roughly halves both memory and time versus float32 on CPU for a quality
 # difference that did not show up in side-by-side transcripts of real audio.
@@ -69,6 +78,27 @@ _DOWNLOAD_ROOT = os.getenv("LUMISOUND_WHISPER_CACHE", "/app/cache/whisper")
 # doubling the memory and the CPU pressure on a box that cannot afford either.
 _SEMAPHORE = asyncio.Semaphore(1)
 
+# --- Instrumental detection ------------------------------------------------
+#
+# Word density, in words per minute of audio. This is the signal that actually
+# separates a sung track from an instrumental one, measured across real uploads:
+#
+#     a sung track with dense vocals   70.4 words/min
+#     a sung track with sparser vocals  34.4 words/min
+#     a verified instrumental            2.3 words/min
+#
+# A ~15x gap with nothing in between, so the threshold sits comfortably clear of
+# both sides. What an instrumental produces is not silence but a handful of
+# hallucinated words spread over minutes, which is exactly what a density test
+# catches and a per-segment test does not.
+#
+# Explicitly NOT `no_speech_prob`, which was the obvious candidate and does not
+# work: it came out at 0.58 and 0.60 on the two vocal tracks against 0.785 on the
+# instrumental — far too close to divide on, and high for everything, because sung
+# audio over instrumentation does not look like clean speech to the model either.
+_INSTRUMENTAL_MAX_WORDS_PER_MIN = float(
+    os.getenv("LUMISOUND_WHISPER_INSTRUMENTAL_WPM", "8"))
+
 # --- Line grouping -----------------------------------------------------------
 #
 # Whisper emits segments that are far too coarse for a synced-lyrics display:
@@ -85,6 +115,11 @@ _LINE_GAP_SECONDS = float(os.getenv("LUMISOUND_WHISPER_LINE_GAP", "0.9"))
 
 # Hard ceilings so one unbroken melisma or a missing pause cannot produce a
 # single line that fills the whole screen.
+#
+# Measured in DISPLAY width, not characters — see `_display_width`. A CJK glyph
+# occupies roughly two Latin character cells and carries far more content, so
+# counting raw characters let Japanese lines render about twice as wide as the
+# English ones they sit beside.
 _MAX_LINE_CHARS = 52
 _MAX_LINE_SECONDS = 9.0
 
@@ -169,8 +204,81 @@ def is_available() -> bool:
     return True
 
 
+# Punctuation that attaches to the word BEFORE it, so no space is inserted.
+_CLINGS_LEFT = frozenset(",.!?;:)]}\u2019\u201d%\u2026")
+# ...and punctuation that attaches to the word AFTER it.
+_CLINGS_RIGHT = frozenset("([{\u2018\u201c$\u00a3\u20ac")
+
+
+def _display_width(text: str) -> int:
+    """Approximate rendered width, counting wide glyphs as two cells.
+
+    Line length is a layout constraint, and `len()` is the wrong measure of it for
+    anything but Latin script: a 21-character run of CJK renders about as wide as
+    42 Latin ones, so a character-counted ceiling produced CJK lyric lines roughly
+    twice the intended width.
+    """
+    return sum(2 if _is_cjk(ch) else 1 for ch in text)
+
+
+def _is_cjk(ch: str) -> bool:
+    """CJK ideographs, kana, and Hangul — scripts written without spaces."""
+    o = ord(ch)
+    return (
+        0x3040 <= o <= 0x30FF      # hiragana + katakana
+        or 0x3400 <= o <= 0x4DBF   # CJK ext A
+        or 0x4E00 <= o <= 0x9FFF   # CJK unified
+        or 0xF900 <= o <= 0xFAFF   # compatibility ideographs
+        or 0xAC00 <= o <= 0xD7AF   # Hangul syllables
+        or 0xFF66 <= o <= 0xFF9F   # halfwidth katakana
+    )
+
+
 def _phrase_text(chunk) -> str:
-    return " ".join(" ".join((w.word or "").strip() for w in chunk).split())
+    """Joins word tokens back into a readable line.
+
+    Not a plain `" ".join`, which is what this was and which produced visibly
+    broken lyrics on real tracks:
+      - CJK came out with a space between every glyph, because Whisper tokenises
+        it roughly per character and those scripts are not written with spaces at
+        all — space-joining mangles every non-Latin lyric.
+      - English punctuation came out detached: "Up to 5 ,000 ,000." because the
+        decoder emits "5", ",", "000" as separate tokens.
+
+    So spacing is decided per boundary rather than applied uniformly: omitted
+    around CJK, before left-clinging punctuation, and after right-clinging
+    punctuation.
+    """
+    parts = [(w.word or "").strip() for w in chunk]
+    parts = [t for t in parts if t]
+    if not parts:
+        return ""
+    out = parts[0]
+    for token in parts[1:]:
+        prev_char = out[-1]
+        next_char = token[0]
+        # A comma or period BETWEEN digits is a separator inside one number, not
+        # the end of a clause: "5", ",", "000" must rejoin as "5,000". Requires a
+        # digit on BOTH sides, so an ordinary pause before a number ("wait, 5
+        # more") still gets its space.
+        numeric_separator = (
+            prev_char in ",."
+            and next_char.isdigit()
+            and len(out) >= 2
+            and out[-2].isdigit()
+        )
+        need_space = not (
+            numeric_separator
+            or next_char in _CLINGS_LEFT
+            or prev_char in _CLINGS_RIGHT
+            # One CJK side is enough: a Latin word next to a CJK one (a band name
+            # inside a Japanese lyric) also reads correctly unspaced, which is how
+            # it is typeset in practice.
+            or _is_cjk(prev_char)
+            or _is_cjk(next_char)
+        )
+        out += (" " if need_space else "") + token
+    return " ".join(out.split())
 
 
 def _split_overlong(chunk: list) -> list[list]:
@@ -216,7 +324,7 @@ def _split_overlong(chunk: list) -> list[list]:
     # Recursive so a very long run (a rapped verse with no punctuation at all)
     # is broken as many times as it needs, not just once.
     for half in (left, right):
-        if len(_phrase_text(half)) > _MAX_LINE_CHARS and len(half) >= 4:
+        if _display_width(_phrase_text(half)) > _MAX_LINE_CHARS and len(half) >= 4:
             out.extend(_split_overlong(half))
         else:
             out.append(half)
@@ -261,7 +369,7 @@ def _group_words_into_lines(words) -> list[dict]:
 
     lines: list[dict] = []
     for phrase in phrases:
-        chunks = ([phrase] if len(_phrase_text(phrase)) <= _MAX_LINE_CHARS
+        chunks = ([phrase] if _display_width(_phrase_text(phrase)) <= _MAX_LINE_CHARS
                   else _split_overlong(phrase))
         for chunk in chunks:
             text = _phrase_text(chunk)
@@ -417,14 +525,30 @@ def _align_hint_lines(hint_lyrics: str, words) -> list[dict] | None:
 def _transcribe_sync(path: str, language: str | None,
                      hint_lyrics: str | None = None) -> dict | None:
     model = _load_model()
-    # vad_filter drops silence and non-vocal stretches before the model sees
-    # them, which on music both speeds things up and — more importantly — stops
-    # Whisper from inventing words over an instrumental passage, its single most
-    # common failure on this kind of audio.
+    # vad_filter is OFF, and turning it on is the single worst thing that can be
+    # done to this feature.
+    #
+    # It was on, with a comment claiming it stopped Whisper inventing words over
+    # instrumental passages. Measured against real uploaded tracks, what it
+    # actually did was delete the vocals:
+    #
+    #   sung track A   vad=True:   0 words  ->  vad=False: 148 words
+    #   sung track B   vad=True:   4 words  ->  vad=False: 250 words
+    #                  (and avg_logprob improved from -1.25 to -0.53)
+    #
+    # Silero VAD is trained to find SPEECH. Singing over a dense instrumental mix
+    # does not look like speech to it, so it strips the very thing being
+    # transcribed. Worse, it made the failure invisible: with everything removed,
+    # a song full of vocals came back reported as an instrumental — confidently
+    # wrong rather than merely empty.
+    #
+    # The cost of turning it off is real and accepted: a 3-4 minute track now
+    # takes 40-70s instead of 2-10s, because it is actually being transcribed
+    # rather than mostly skipped. That is what the job/poll design exists for.
     segments, info = model.transcribe(
         path,
         language=language,
-        vad_filter=True,
+        vad_filter=False,
         word_timestamps=True,
         beam_size=5,
         # Whisper's decoder can fall into repeating one phrase forever on
@@ -445,11 +569,23 @@ def _transcribe_sync(path: str, language: str | None,
         for w in (seg.words or []):
             words.append(w)
 
-    if not any_segment or annotation_only or not words:
-        # Nothing sung. Reported as a genuine instrumental rather than as a
-        # failure, because that is a real and useful answer for the client — and
-        # it is the answer a verified instrumental track actually produced here.
-        logger.info("whisper: no vocals detected — reporting instrumental")
+    # Instrumental is decided by word DENSITY, not by emptiness.
+    #
+    # With the VAD gone, an instrumental no longer yields silence — it yields a
+    # few hallucinated words scattered over minutes. Measured: 2.3 words/min on a
+    # verified instrumental against 34.4 and 70.4 on sung tracks. Emptiness alone
+    # would now classify almost nothing, and `no_speech_prob` does not separate
+    # these at all (see _INSTRUMENTAL_MAX_WORDS_PER_MIN).
+    duration = getattr(info, "duration", None) or 0.0
+    words_per_min = (len(words) / (duration / 60.0)) if duration > 0 else None
+    sparse = words_per_min is not None and words_per_min < _INSTRUMENTAL_MAX_WORDS_PER_MIN
+
+    if not any_segment or annotation_only or not words or sparse:
+        logger.info(
+            "whisper: no vocals detected — reporting instrumental (%s words over %.0fs, %s/min)",
+            len(words), duration,
+            f"{words_per_min:.1f}" if words_per_min is not None else "n/a",
+        )
         return {"instrumental": True, "confidence": "high", "lines": [],
                 "engine": "whisper", "language": getattr(info, "language", None)}
 
@@ -525,6 +661,10 @@ async def transcribe_lyrics_local(
             fh.write(audio_bytes)
             tmp_path = fh.name
 
+        # None means auto-detect, which is what the multilingual default wants —
+        # it identified Japanese at p=0.96 on a real track that the `.en` model
+        # returned nothing for. Only pinned when an `.en` model is configured,
+        # where the language is not in question.
         language = None if not _MODEL_NAME.endswith(".en") else "en"
         async with _SEMAPHORE:
             result = await asyncio.to_thread(
