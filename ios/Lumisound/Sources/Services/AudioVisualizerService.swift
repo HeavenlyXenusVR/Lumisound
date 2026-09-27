@@ -200,6 +200,13 @@ final class AudioVisualizerService: ObservableObject {
         // live signal (levels tracking what's playing) rather than silently
         // stuck at 0 for every active reason — throttled so it's readable
         // instead of one line per buffer.
+        //
+        // `localOnly`: this fires every few seconds for as long as anything is
+        // playing, which made it the single largest source of rows in the shared
+        // server log table — 78,601 in one retention window, about 14% of
+        // everything, for a line whose only use is watching one device analyse one
+        // track. It stays in the console and in bug-report context, where it is
+        // actually read, and no longer travels.
         let now = Date()
         if now.timeIntervalSince(lastLevelLogTime) >= levelLogInterval {
             lastLevelLogTime = now
@@ -208,7 +215,8 @@ final class AudioVisualizerService: ObservableObject {
                     format: "AudioVisualizerService: levels bass=%.2f mid=%.2f treble=%.2f overall=%.2f (reasons: %@)",
                     bassLevel, midLevel, trebleLevel, overallLevel, "\(activeReasons)"
                 ),
-                category: "audio"
+                category: "audio",
+                localOnly: true
             )
         }
     }

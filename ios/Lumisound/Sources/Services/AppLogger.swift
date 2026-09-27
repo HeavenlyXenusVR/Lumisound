@@ -31,6 +31,16 @@ final class AppLogger: ObservableObject {
         var osVersion: String = DeviceInfo.osVersion
         var appVersion: String = DeviceInfo.appVersion
         var userId: String? = nil
+        /// Kept on the device: written to the console and to the bug-report
+        /// buffer, never uploaded. For high-frequency proof-of-life traces that
+        /// are useful while looking at one device and pure noise in a shared
+        /// table. Not encoded — the server has no column for it and no use for it.
+        var localOnly: Bool = false
+
+        enum CodingKeys: String, CodingKey {
+            case level, category, message, file, line, timestamp, extra
+            case deviceModel, osVersion, appVersion, userId
+        }
     }
 
     // MARK: - Private state (all @MainActor)
@@ -153,12 +163,14 @@ final class AppLogger: ObservableObject {
         category: String = "general",
         file: String = #file,
         line: Int = #line,
-        extra: [String: String] = [:]
+        extra: [String: String] = [:],
+        localOnly: Bool = false
     ) {
         let shortFile = URL(fileURLWithPath: file).lastPathComponent
         let ts = Self.preciseISO8601Now()
         let entry = LogEntry(level: level, category: category, message: message,
-                             file: shortFile, line: line, timestamp: ts, extra: extra)
+                             file: shortFile, line: line, timestamp: ts, extra: extra,
+                             localOnly: localOnly)
         Task { @MainActor [weak self] in self?._append(entry) }
     }
 
@@ -205,6 +217,72 @@ final class AppLogger: ObservableObject {
 
     // MARK: - Private
 
+    // MARK: Repeat collapsing
+    //
+    // A handful of message shapes accounted for most of the server-side log
+    // table. Measured over one 14-day retention window: an audio "proof of life"
+    // trace at 78,601 rows, a tag-write failure warning at 32,787, another at
+    // 32,640, and download poll-status lines in the tens of thousands — out of
+    // ~523,000 rows total for a few dozen users.
+    //
+    // None of those are more informative at 30,000 copies than at one with a
+    // count beside it. Rather than picking off each call site (and waiting for the
+    // next chatty one to be added), identical repeats are collapsed here, where
+    // every log line already passes through.
+    //
+    // Deliberately NOT a level filter. Dropping `info` wholesale would take the
+    // one-off lines that make a timeline readable along with the noise, and the
+    // noise is repetition, not severity — two of the worst offenders are warnings.
+    private struct RepeatKey: Hashable {
+        let level: String
+        let category: String
+        let message: String
+    }
+    private var repeatFirstSeen: [RepeatKey: Date] = [:]
+    private var repeatSuppressed: [RepeatKey: Int] = [:]
+
+    /// Identical entries inside this window collapse into the first one.
+    private let repeatWindow: TimeInterval = 60
+
+    /// Digits are normalised out before comparing, so lines that differ only by a
+    /// job id, a level reading or a byte count still count as the same message —
+    /// which is exactly the shape of the high-volume offenders.
+    private static func repeatSignature(_ message: String) -> String {
+        String(message.map { $0.isNumber ? "#" : $0 }).prefix(120).description
+    }
+
+    /// True when this entry should be dropped as a repeat. Emits a summary line
+    /// for the ones it swallowed when the window closes, so the count is never
+    /// silently lost.
+    private func shouldCollapse(_ entry: LogEntry, now: Date) -> Bool {
+        let key = RepeatKey(level: entry.level, category: entry.category,
+                            message: Self.repeatSignature(entry.message))
+        guard let firstSeen = repeatFirstSeen[key] else {
+            repeatFirstSeen[key] = now
+            return false
+        }
+        if now.timeIntervalSince(firstSeen) < repeatWindow {
+            repeatSuppressed[key, default: 0] += 1
+            return true
+        }
+        // Window closed. If anything was swallowed, say how much before starting
+        // the next window with this entry as its first occurrence.
+        let suppressed = repeatSuppressed.removeValue(forKey: key) ?? 0
+        repeatFirstSeen[key] = now
+        // `!entry.localOnly` matters: without it, collapsing a device-local trace
+        // would still push its "repeated Nx" summary into the upload buffer —
+        // reintroducing, in smaller form, exactly the traffic localOnly exists to
+        // prevent.
+        if suppressed > 0 && !entry.localOnly {
+            buffer.append(LogEntry(
+                level: entry.level, category: entry.category,
+                message: "(repeated \(suppressed)x in the last \(Int(repeatWindow))s) \(entry.message)",
+                file: entry.file, line: entry.line,
+                timestamp: Self.preciseISO8601Now(), extra: entry.extra))
+        }
+        return false
+    }
+
     private func _append(_ entry: LogEntry) {
         var entry = entry
         // Read at append time (MainActor) rather than at the nonisolated call
@@ -212,9 +290,16 @@ final class AppLogger: ObservableObject {
         // value at flush time would tag entries with whoever is logged in
         // *now* rather than who triggered them.
         entry.userId = AccountService.shared?.currentUser?.id
-        buffer.append(entry)
-        if buffer.count > maxBuffer {
-            buffer.removeFirst(buffer.count - maxBuffer)
+
+        // `recentEntries` (bug-report context) and the DEBUG console below always
+        // get the entry; only the upload buffer is filtered. A local diagnostic is
+        // still worth having on the device that produced it.
+        let collapsed = shouldCollapse(entry, now: Date())
+        if !entry.localOnly && !collapsed {
+            buffer.append(entry)
+            if buffer.count > maxBuffer {
+                buffer.removeFirst(buffer.count - maxBuffer)
+            }
         }
 
         recentEntries.append(entry)
@@ -283,10 +368,14 @@ final class AppLogger: ObservableObject {
 // MARK: - Global convenience shims (callable without referencing the shared instance)
 
 /// Logs an info-level message from any context. File/line captured at call site.
+/// `localOnly: true` keeps the line on this device — console and bug-report
+/// context only, never uploaded. For high-frequency traces that are useful while
+/// watching one device and pure noise in a shared table.
 func appLog(_ message: String, category: String = "general",
             file: String = #file, line: Int = #line,
-            extra: [String: String] = [:]) {
-    AppLogger.shared.log(message, level: "info", category: category, file: file, line: line, extra: extra)
+            extra: [String: String] = [:], localOnly: Bool = false) {
+    AppLogger.shared.log(message, level: "info", category: category, file: file,
+                         line: line, extra: extra, localOnly: localOnly)
 }
 
 func appWarn(_ message: String, category: String = "general",
