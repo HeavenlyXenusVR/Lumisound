@@ -56,4 +56,32 @@ final class HomeHubLayoutStoreTests: XCTestCase {
         XCTAssertEqual(decoded.filter { $0 == .speedDial }.count, 1)
         XCTAssertEqual(Set(decoded), Set(HubSectionKind.allCases))
     }
+
+    func testTimeOfDayOrdersKeepEveryCaseAndZoneRuns() {
+        for hour in 0..<24 {
+            let order = HomeHubLayoutStore.defaultOrder(forHour: hour)
+            XCTAssertEqual(order.count, HubSectionKind.allCases.count, "hour \(hour)")
+            XCTAssertEqual(Set(order), Set(HubSectionKind.allCases), "hour \(hour)")
+            var seen: [HubZone] = []
+            for zone in order.map(\.zone) where seen.last != zone {
+                XCTAssertFalse(seen.contains(zone), "\(zone) is split at hour \(hour)")
+                seen.append(zone)
+            }
+        }
+    }
+
+    func testMorningLeadsWithMadeForYou() {
+        XCTAssertEqual(HomeHubLayoutStore.defaultOrder(forHour: 8).first?.zone, .forYou)
+        XCTAssertEqual(HomeHubLayoutStore.defaultOrder(forHour: 14), HubSectionKind.defaultOrder)
+    }
+
+    func testNightLeadsLibraryWithMoods() {
+        let order = HomeHubLayoutStore.defaultOrder(forHour: 23)
+        XCTAssertEqual(order.first { $0.zone == .library }, .moods)
+    }
+
+    func testSavedOrderIgnoresTimeOfDay() {
+        let json = HomeHubLayoutStore.encodeOrder(HubSectionKind.defaultOrder)
+        XCTAssertEqual(HomeHubLayoutStore.resolvedOrder(json, hour: 8), HubSectionKind.defaultOrder)
+    }
 }

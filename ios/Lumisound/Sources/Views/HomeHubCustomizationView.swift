@@ -241,6 +241,40 @@ enum HomeHubLayoutStore {
         return result
     }
 
+    /// The order Home actually uses: the saved one if the user has ever
+    /// reordered, otherwise `defaultOrder(forHour:)`. Only the un-customized
+    /// default moves with the clock — a hand-arranged Home never changes
+    /// under the user.
+    static func resolvedOrder(_ json: String, hour: Int) -> [HubSectionKind] {
+        json.isEmpty ? defaultOrder(forHour: hour) : decodeOrder(json)
+    }
+
+    /// `HubSectionKind.defaultOrder` nudged for the time of day. Whole zones
+    /// move, and sections only move within their zone, so the zone headings
+    /// on Home still hold.
+    ///   - Morning (5–11): Made For You goes first — start the day with
+    ///     something new rather than yesterday's queue.
+    ///   - Evening and night (20–4): Moods leads Your Library, where the
+    ///     Chill and Sleep buckets are one tap away.
+    static func defaultOrder(forHour hour: Int) -> [HubSectionKind] {
+        var zones = HubZone.allCases
+        var byZone = Dictionary(grouping: HubSectionKind.defaultOrder, by: \.zone)
+
+        switch hour {
+        case 5..<12:
+            zones.removeAll { $0 == .forYou }
+            zones.insert(.forYou, at: 0)
+        case 20..<24, 0..<5:
+            if var library = byZone[.library], let moods = library.firstIndex(of: .moods) {
+                library.insert(library.remove(at: moods), at: 0)
+                byZone[.library] = library
+            }
+        default:
+            break
+        }
+        return zones.flatMap { byZone[$0] ?? [] }
+    }
+
     static func encodeOrder(_ order: [HubSectionKind]) -> String {
         encode(order.map { $0.rawValue })
     }
@@ -283,6 +317,7 @@ struct HomeHubCustomizationView: View {
     @AppStorage("home_hub_accent_hex") private var accentHex: String?
 
     @State private var order: [HubSectionKind] = []
+    private var currentHour: Int { Calendar.current.component(.hour, from: Date()) }
     @State private var hidden: Set<HubSectionKind> = []
 
     private var accentColor: Color {
@@ -343,13 +378,13 @@ struct HomeHubCustomizationView: View {
                 } header: {
                     Text("Sections")
                 } footer: {
-                    Text("Drag to reorder. Toggle a section off to hide it — it still only ever appears when it actually has content. Group headings show on Home while each group's sections stay together.")
+                    Text("Drag to reorder. Toggle a section off to hide it — it still only ever appears when it actually has content. Group headings show on Home while each group's sections stay together. Until you reorder, Home adjusts the order to the time of day.")
                 }
 
                 Section {
                     Button("Reset Layout") {
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
-                            order = HubSectionKind.defaultOrder
+                            order = HomeHubLayoutStore.defaultOrder(forHour: currentHour)
                             hidden = []
                         }
                         orderRaw = ""
@@ -371,7 +406,7 @@ struct HomeHubCustomizationView: View {
             }
         }
         .onAppear {
-            order = HomeHubLayoutStore.decodeOrder(orderRaw)
+            order = HomeHubLayoutStore.resolvedOrder(orderRaw, hour: currentHour)
             hidden = HomeHubLayoutStore.decodeHidden(hiddenRaw)
         }
     }

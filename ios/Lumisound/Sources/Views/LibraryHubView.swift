@@ -58,6 +58,11 @@ struct LibraryHubView: View {
     /// `nil` = "All". Not persisted: coming back to a Home narrowed to one
     /// zone without remembering why is more confusing than helpful.
     @State private var selectedZone: HubZone? = nil
+    /// Hour the default order was picked for (see
+    /// `HomeHubLayoutStore.defaultOrder(forHour:)`). Re-read on appear rather
+    /// than in `body`, so sections never reshuffle mid-scroll when the clock
+    /// crosses a boundary.
+    @State private var layoutHour = Calendar.current.component(.hour, from: Date())
     /// `allSongs.count` as of the last completed `reload()` — see that
     /// `.task(id:)`'s guard for why this exists.
     @State private var lastReloadedSongCount: Int? = nil
@@ -124,6 +129,7 @@ struct LibraryHubView: View {
             // fix (clears MiniPlayerBar + tab bar).
             .padding(.bottom, 190)
             .animation(.easeInOut(duration: 0.35), value: hasLoadedOnce)
+            .animation(.easeInOut(duration: 0.25), value: player.isPlaying)
         }
         .background(Color.clear.ignoresSafeArea())
         .task(id: library.allSongs.count) {
@@ -163,6 +169,9 @@ struct LibraryHubView: View {
         }
         .task {
             await loadServerExtras()
+        }
+        .onAppear {
+            layoutHour = Calendar.current.component(.hour, from: Date())
         }
         .onChange(of: player.currentSong?.id) { _ in
             songsPlayedToday = library.songsPlayedTodayCount()
@@ -217,6 +226,13 @@ struct LibraryHubView: View {
             onNameThatTune: { showNameThatTune = true }
         )
 
+        // Pinned, not a section: it only exists while something is paused,
+        // and when it does it is the likeliest thing to tap.
+        if let paused = player.currentSong, !player.isPlaying {
+            HubResumeCard(song: paused, accent: resolvedAccent)
+                .transition(.move(edge: .top).combined(with: .opacity))
+        }
+
         let sections = visibleSections
         let zones = zonesPresent(in: sections)
         let activeZone = selectedZone.flatMap { zones.contains($0) ? $0 : nil }
@@ -249,7 +265,7 @@ struct LibraryHubView: View {
     /// on first run), filtered down to sections that are both visible and
     /// non-empty.
     private var visibleSections: [HubSectionKind] {
-        let order = HomeHubLayoutStore.decodeOrder(sectionOrderRaw)
+        let order = HomeHubLayoutStore.resolvedOrder(sectionOrderRaw, hour: layoutHour)
         let hidden = hiddenSections
         return order.filter { !hidden.contains($0) && sectionHasContent($0) }
     }
@@ -997,6 +1013,67 @@ private struct HubSongCarousel: View {
                 .background(AppTheme.dynamicAccent, in: Circle())
                 .padding(6)
         }
+    }
+}
+
+// MARK: - Resume card
+
+/// Shown while a track is loaded but paused: the play button resumes in
+/// place, the rest of the card opens Now Playing.
+private struct HubResumeCard: View {
+    let song: Song
+    var accent: Color = AppTheme.dynamicAccent
+
+    @EnvironmentObject private var player: AudioPlayerManager
+    /// `ContentView`'s tab selection; 1 is Now Playing (the mini player
+    /// uses the same value).
+    @AppStorage("selected_tab") private var selectedAppTab = 0
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button {
+                selectedAppTab = 1
+            } label: {
+                HStack(spacing: 12) {
+                    ArtworkThumbnail(song: song, size: 52)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Paused")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(accent)
+                        Text(song.displayName)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.textPrimary)
+                            .lineLimit(1)
+                        Text(song.artistName)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.textSecondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Opens Now Playing")
+
+            Button {
+                player.togglePlayPause()
+            } label: {
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: 34))
+                    .foregroundStyle(accent)
+            }
+            .buttonStyle(PressableButtonStyle())
+            .accessibilityLabel("Resume \(song.displayName)")
+        }
+        .padding(10)
+        .adaptiveGlass(
+            tint: accent.opacity(0.1),
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous),
+            fallback: AppTheme.surface
+        )
+        .padding(.horizontal, 16)
     }
 }
 
