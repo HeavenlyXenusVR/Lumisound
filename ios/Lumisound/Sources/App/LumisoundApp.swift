@@ -21,6 +21,10 @@ struct LumisoundApp: App {
     @StateObject private var aiDJ = AIDJService()
     @StateObject private var silenceTrim = SilenceTrimService()
     @StateObject private var discordVerification = DiscordVerificationService.shared
+    /// Singleton, like PresenceService: `LiveUpdateService`'s room-event callback
+    /// needs a stable place to deliver pushes to, and it has no reference to
+    /// whichever instance a view hierarchy happened to construct.
+    @StateObject private var listenRooms = ListenRoomService.shared
     /// Shared app-wide instance so the Profile/Friends tabs, the Library
     /// hub's friends-activity carousel, and Account settings all see the
     /// same friends list / profile / incoming-requests state instead of
@@ -58,6 +62,10 @@ struct LumisoundApp: App {
         // freezes worth catching and a View's .task would begin watching only
         // after the very work it needs to observe has already run.
         MainThreadHangMonitor.shared.start()
+        // Subscribed at launch rather than when a room screen opens: a push can
+        // arrive (the host ending the room, say) while no room view is mounted,
+        // and the service has to act on it regardless of what is on screen.
+        ListenRoomService.shared.attachLiveUpdates()
     }
 
     var body: some Scene {
@@ -83,6 +91,7 @@ struct LumisoundApp: App {
                     .environmentObject(aiDJ)
                     .environmentObject(silenceTrim)
                     .environmentObject(discordVerification)
+                    .environmentObject(listenRooms)
                     .opacity(showLaunch ? 0 : 1)
                     .animation(.easeInOut(duration: 0.4), value: showLaunch)
 

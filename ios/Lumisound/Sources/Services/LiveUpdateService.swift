@@ -29,6 +29,13 @@ final class LiveUpdateService: NSObject {
     var onPresenceEvent: ((SocialPresence) -> Void)?
     var onNotificationEvent: (() -> Void)?
     var onSyncChangedEvent: (() -> Void)?
+    /// Room pushes, delivered as the raw event dict.
+    ///
+    /// Typed loosely on purpose, unlike the presence callback above: the bridge
+    /// sends five different `room_*` shapes (state, chat, queue, members, closed)
+    /// and `ListenRoomService` is the only consumer, so decoding each into its own
+    /// struct here would just move that service's switch into this file.
+    var onRoomEvent: (([String: Any]) -> Void)?
 
     private var urlSession: URLSession?
     private var task: URLSessionWebSocketTask?
@@ -136,6 +143,8 @@ final class LiveUpdateService: NSObject {
             onNotificationEvent?()
         case "sync_changed":
             onSyncChangedEvent?()
+        case "room_state", "room_chat", "room_queue", "room_members", "room_closed":
+            onRoomEvent?(json)
         default:
             break
         }

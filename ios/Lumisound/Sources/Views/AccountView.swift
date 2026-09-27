@@ -23,6 +23,7 @@ struct AccountView: View {
     @EnvironmentObject var library: LibraryManager
     @EnvironmentObject var aiDJ: AIDJService
     @EnvironmentObject var discordVerification: DiscordVerificationService
+    @EnvironmentObject var listenRooms: ListenRoomService
     @Environment(\.dismiss) var dismiss
 
     private let discordPresentationContext = DiscordAuthPresentationContext()
@@ -54,6 +55,7 @@ struct AccountView: View {
     @State private var isAddingEmail = false
     @State private var draftEmail = ""
     @State private var isSavingEmail = false
+    @State private var showListenRoom = false
 
     var body: some View {
         ZStack {
@@ -636,6 +638,25 @@ struct AccountView: View {
                             .foregroundStyle(AppTheme.textPrimary)
                     }
 
+                    Button {
+                        showListenRoom = true
+                    } label: {
+                        LabeledContent {
+                            // Shows the code when already in a room, so this row
+                            // doubles as "get back to the room I'm in" rather than
+                            // looking like it would start a second one.
+                            if let code = listenRooms.roomCode {
+                                Text(code)
+                                    .font(AppTheme.monoFont(size: 13))
+                                    .foregroundStyle(AppTheme.dynamicAccent)
+                            }
+                        } label: {
+                            Label("Listen Together", systemImage: "antenna.radiowaves.left.and.right")
+                                .foregroundStyle(AppTheme.textPrimary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+
                     Toggle(isOn: Binding(
                         get: { account.currentUser?.shareListeningActivity ?? false },
                         set: { newValue in Task { await account.setShareListeningActivity(newValue) } }
@@ -805,6 +826,15 @@ struct AccountView: View {
         .sheet(isPresented: $showAvatarGifPicker) {
             GifPickerSheet { data in
                 Task { await account.uploadAvatarData(data) }
+            }
+        }
+        .sheet(isPresented: $showListenRoom) {
+            // Straight to the room when already in one, rather than making
+            // somebody pass back through the create/join form to get to it.
+            if listenRooms.isInRoom {
+                ListenRoomView()
+            } else {
+                ListenRoomEntryView()
             }
         }
     }
