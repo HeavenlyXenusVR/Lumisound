@@ -58,14 +58,39 @@ extension LibraryManager {
     /// matter.
     func loadPersistedSnapshot() async {
         let url = Self.snapshotURL
-        let snapshot: LibrarySnapshot? = await Task.detached(priority: .userInitiated) {
+        // The lookup indexes are rebuilt from the snapshot too, not just
+        // `allSongs`. Without them, anything that resolves songs by id in the
+        // window before the first scan finishes gets nothing back — Home's
+        // Quick Access built every playlist tile as "0 songs" with no
+        // artwork, and because the scan then lands with the same song count,
+        // Home's `.task(id: allSongs.count)` never re-ran to correct it. Same
+        // construction as `rebuildAllSongs()`.
+        let restored: (snapshot: LibrarySnapshot,
+                       byID: [String: Song],
+                       byArtist: [String: [Song]],
+                       byAlbum: [String: [Song]],
+                       byGenre: [String: [Song]])? = await Task.detached(priority: .userInitiated) {
             guard let data = try? Data(contentsOf: url),
                   let snapshot = try? JSONDecoder().decode(LibrarySnapshot.self, from: data),
                   !snapshot.songs.isEmpty
             else { return nil }
-            return snapshot
+            let songs = snapshot.songs
+            return (
+                snapshot: snapshot,
+                byID: Dictionary(songs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
+                byArtist: Dictionary(grouping: songs, by: \.artistName),
+                byAlbum: Dictionary(grouping: songs, by: \.groupableAlbumName),
+                byGenre: Dictionary(grouping: songs.filter { !$0.genre.isEmpty }, by: \.genre)
+            )
         }.value
-        guard let snapshot else { return }
+        guard let restored else { return }
+        let snapshot = restored.snapshot
+        // Indexes first: `allSongs` is what views observe, so by the time it
+        // publishes, lookups against it already work.
+        songsByID = restored.byID
+        songsByArtist = restored.byArtist
+        songsByAlbum = restored.byAlbum
+        songsByGenre = restored.byGenre
         allSongs = snapshot.songs
         artists = snapshot.artists
         albums = snapshot.albums
