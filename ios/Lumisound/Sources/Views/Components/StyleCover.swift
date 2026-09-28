@@ -13,7 +13,8 @@ struct StyleCover: View {
     var body: some View {
         Group {
             if let song {
-                ArtworkThumbnail(song: song, size: size)
+                // No scrim: in Now Playing the cover is the whole point.
+                ArtworkThumbnail(song: song, size: size, showsScrim: false)
                     .environmentObject(library)
             } else {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)

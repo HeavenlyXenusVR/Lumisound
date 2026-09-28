@@ -14,46 +14,48 @@ private struct ThumbnailRequestID: Equatable {
 struct ArtworkThumbnail: View {
     let song: Song
     let size: CGFloat
+    /// The dark fade over the bottom third, for callers that lay text over
+    /// the cover. Off for places that show the cover on its own (Now
+    /// Playing's styles, album covers), where it only dulled the artwork.
+    var showsScrim: Bool = true
 
     @Environment(\.displayScale) private var displayScale
     @State private var image: UIImage? = nil
+    /// False once a load has finished, found or not — stops the shimmer on a
+    /// song that simply has no artwork.
+    @State private var isLoading = true
+
+    private var cornerRadius: CGFloat { max(4, size * 0.1) }
 
     var body: some View {
         ZStack(alignment: .bottom) {
+            // Placeholder stays underneath so the artwork fades in over it
+            // instead of popping in.
+            placeholder
+
             if let image {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
                     .frame(width: size, height: size)
                     .clipped()
+                    .transition(.opacity)
 
-                // Gradient overlay on bottom third
-                LinearGradient(
-                    gradient: Gradient(colors: [
-                        Color.black.opacity(0.0),
-                        Color.black.opacity(0.45)
-                    ]),
-                    startPoint: .center,
-                    endPoint: .bottom
-                )
-                .frame(height: size / 3)
-            } else {
-                RoundedRectangle(cornerRadius: max(4, size * 0.1), style: .continuous)
-                    .fill(AppTheme.surface)
-                    .overlay {
-                        Image(systemName: "music.note")
-                            .font(.system(size: size * 0.35, weight: .medium))
-                            .foregroundStyle(AppTheme.dynamicAccent)
-                    }
-                    .overlay(
-                        ShimmerOverlay()
-                            .clipShape(RoundedRectangle(cornerRadius: max(4, size * 0.1), style: .continuous))
+                if showsScrim {
+                    LinearGradient(
+                        gradient: Gradient(colors: [
+                            Color.black.opacity(0.0),
+                            Color.black.opacity(0.45)
+                        ]),
+                        startPoint: .center,
+                        endPoint: .bottom
                     )
-                    .frame(width: size, height: size)
+                    .frame(height: size / 3)
+                }
             }
         }
         .frame(width: size, height: size)
-        .clipShape(RoundedRectangle(cornerRadius: max(4, size * 0.1), style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         // Keyed on size as well as song: grid cells size this view from a
         // GeometryReader, so the width can settle after the first layout pass —
         // without the size in the id, a thumbnail fetched for the initial
@@ -66,7 +68,9 @@ struct ArtworkThumbnail: View {
             // already been rendered once.
             let pixelSize = size * displayScale
             if let cached = ArtworkService.shared.thumbnail(for: song, pixelSize: pixelSize) {
+                // Already decoded — show it straight away, no fade.
                 image = cached
+                isLoading = false
                 return
             }
             // Clear rather than leave the previous song's art on screen: since
@@ -74,7 +78,38 @@ struct ArtworkThumbnail: View {
             // scrolling, a stale `image` would otherwise display under the
             // new song's row for the duration of the async load below.
             image = nil
-            image = await ArtworkService.shared.loadThumbnail(for: song, pixelSize: pixelSize)
+            isLoading = true
+            let loaded = await ArtworkService.shared.loadThumbnail(for: song, pixelSize: pixelSize)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.22)) {
+                image = loaded
+            }
+            isLoading = false
         }
+    }
+
+    /// Accent-tinted gradient with a note glyph — also what shows for a
+    /// song that has no artwork at all. Only shimmers while a load is
+    /// actually pending.
+    private var placeholder: some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(
+                LinearGradient(
+                    colors: [AppTheme.dynamicAccent.opacity(0.35), AppTheme.surface],
+                    startPoint: .topLeading, endPoint: .bottomTrailing
+                )
+            )
+            .overlay {
+                Image(systemName: "music.note")
+                    .font(.system(size: size * 0.32, weight: .medium))
+                    .foregroundStyle(AppTheme.dynamicAccent.opacity(0.85))
+            }
+            .overlay {
+                if image == nil, isLoading {
+                    ShimmerOverlay()
+                        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                }
+            }
+            .frame(width: size, height: size)
     }
 }

@@ -555,7 +555,7 @@ struct AlbumCoverView: View {
     var body: some View {
         Group {
             if let song {
-                ArtworkThumbnail(song: song, size: size)
+                ArtworkThumbnail(song: song, size: size, showsScrim: false)
             } else {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .fill(AppTheme.surface)
