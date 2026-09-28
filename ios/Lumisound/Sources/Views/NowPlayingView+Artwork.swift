@@ -48,8 +48,9 @@ extension NowPlayingView {
         return (NowPlayingArtworkStyle.kaleidoscopeBloom.displayName, NowPlayingArtworkStyle.kaleidoscopeBloom.iconName)
     }
 
-    /// "✦ Kaleidoscope Bloom ⌄" — opens the Customize sheet. Long-press for
-    /// a quick menu of every style without leaving the screen.
+    /// "✦ Kaleidoscope Bloom ⌄" — opens the Customize sheet. No long-press
+    /// menu: a `.contextMenu` here swallowed vertical drags that started on
+    /// the pill, so the screen wouldn't scroll from the middle of it.
     var currentStylePill: some View {
         let label = currentStyleLabel
         return Button {
@@ -73,45 +74,7 @@ extension NowPlayingView {
             .adaptiveGlass(in: Capsule(), fallback: AppTheme.surface.opacity(0.6))
         }
         .buttonStyle(PressableButtonStyle())
-        .contextMenu {
-            Button {
-                cycleArtworkStyle()
-            } label: {
-                Label("Next Style", systemImage: "arrow.right.circle")
-            }
-            Divider()
-            ForEach(visibleBuiltinStyles) { style in
-                Button {
-                    selectStyle(style.rawValue)
-                } label: {
-                    Label(style.displayName, systemImage: artworkStyleSelection == style.rawValue ? "checkmark" : style.iconName)
-                }
-            }
-            if !customStyleStore.styles.isEmpty {
-                Divider()
-                ForEach(customStyleStore.styles) { custom in
-                    Button {
-                        selectStyle(custom.id)
-                    } label: {
-                        Label(custom.name, systemImage: artworkStyleSelection == custom.id ? "checkmark" : custom.iconName)
-                    }
-                }
-            }
-        }
         .accessibilityLabel("Artwork style: \(label.name)")
         .accessibilityHint("Opens Now Playing customization")
-    }
-
-    /// Steps to the next style in the same order the Customize sheet lists
-    /// them (visible built-ins, then custom styles), wrapping around.
-    func cycleArtworkStyle() {
-        let ids = visibleBuiltinStyles.map(\.rawValue) + customStyleStore.styles.map(\.id)
-        guard !ids.isEmpty else { return }
-        let next = ids.firstIndex(of: artworkStyleSelection).map { ($0 + 1) % ids.count } ?? 0
-        skipHaptic.impactOccurred()
-        withAnimation(.easeInOut(duration: 0.25)) {
-            selectStyle(ids[next])
-        }
-        ToastCenter.shared.show(currentStyleLabel.name, category: .info, icon: currentStyleLabel.icon)
     }
 }
