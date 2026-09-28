@@ -17,6 +17,17 @@ enum ScreenshotMode {
     static let launchArgument = "-LumisoundScreenshotMode"
     static let isActive = ProcessInfo.processInfo.arguments.contains(launchArgument)
 
+    /// `-LumisoundScreenshotLibraryTab Albums` opens Library on that tab
+    /// (a `LibraryTab` raw value). The screenshot test relaunches with this
+    /// instead of tapping through the library's horizontally scrolling tab
+    /// row, which UI tests couldn't reliably scroll or tap.
+    static var initialLibraryTab: LibraryTab? {
+        guard isActive,
+              let raw = UserDefaults.standard.string(forKey: "LumisoundScreenshotLibraryTab")
+        else { return nil }
+        return LibraryTab(rawValue: raw)
+    }
+
     /// Waits for the initial Documents scan to settle, then seeds. Safe to
     /// run on every launch: history merges keep the larger count and later
     /// date, favorites are a set union, and playlists are matched by name.

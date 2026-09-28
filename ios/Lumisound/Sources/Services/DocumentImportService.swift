@@ -211,7 +211,14 @@ struct DocumentImportService {
                 title = item.stringValue ?? title
             case "artist":
                 artist = item.stringValue ?? artist
-            case "album":
+            // AVFoundation's common key is "albumName"
+            // (`AVMetadataKey.commonKeyAlbumName`), not "album". Matching only
+            // "album" meant embedded album tags were never read: every imported
+            // file fell through to the folder-name fallback below (shown as
+            // "Unknown Album" in the Albums tab) unless the online iTunes
+            // lookup happened to find one. "album" is kept in case any
+            // container reports it that way.
+            case "albumName", "album":
                 album = item.stringValue ?? album
             default:
                 break
@@ -428,7 +435,8 @@ struct DocumentImportService {
                 title = item.stringValue ?? title
             case "artist":
                 artist = item.stringValue ?? artist
-            case "album":
+            // "albumName", not "album" — see `makeSong`.
+            case "albumName", "album":
                 album = item.stringValue ?? album
             default:
                 break
