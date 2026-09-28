@@ -21,6 +21,7 @@ final class ScreenshotTests: XCTestCase {
         // Pass 1: the app scans the demo library and ScreenshotMode seeds
         // play history, favorites and playlists.
         app.launch()
+        continueWithoutAccount()
         waitFor(app.staticTexts["Recently Added"], timeout: 120, what: "demo library scan")
         // The Resume card's "Paused" label appears once seeding has loaded a
         // track, which is its last step. Closing the app before that loses
@@ -32,6 +33,7 @@ final class ScreenshotTests: XCTestCase {
 
         // Pass 2: the seeded data is on disk, so Home builds with it from the start.
         app.launch()
+        continueWithoutAccount()
         waitFor(app.staticTexts["Jump Back In"], timeout: 60, what: "seeded Home")
         sleep(4)
         snap("01-home")
@@ -75,6 +77,17 @@ final class ScreenshotTests: XCTestCase {
     }
 
     // MARK: Helpers
+
+    /// The launch screen asks a signed-out user to create an account or log
+    /// in, on every launch. It overlays the app (whose content is already
+    /// loaded and queryable underneath), so without this every screenshot
+    /// is of the prompt.
+    private func continueWithoutAccount() {
+        let skip = app.buttons["Continue without account"]
+        guard skip.waitForExistence(timeout: 45) else { return }
+        skip.tap()
+        sleep(2)
+    }
 
     private func tabButton(_ tag: Int, title: String) -> XCUIElement {
         element("tab.\(tag)", label: title)
