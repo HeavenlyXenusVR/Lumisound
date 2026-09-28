@@ -150,6 +150,16 @@ jobs:
               CODE_SIGNING_ALLOWED=NO 2>&1 | tail -40 || status=1
 
             ls -1 "$OUT/$SLUG" 2>/dev/null || echo "No screenshots written for $SLUG"
+
+            # Simulator app crashes land in the host's DiagnosticReports.
+            CRASHES=$(find "$HOME/Library/Logs/DiagnosticReports" -name 'Lumisound*' -newer "$APP" 2>/dev/null || true)
+            if [ -n "$CRASHES" ]; then
+              echo "::warning::Lumisound crashed during the run; first report follows."
+              mkdir -p "$RUNNER_TEMP/results/crashes"
+              echo "$CRASHES" | while read -r f; do cp "$f" "$RUNNER_TEMP/results/crashes/"; done
+              head -c 12000 "$(echo "$CRASHES" | head -1)"
+              echo
+            fi
             xcrun simctl shutdown "$UDID" || true
             echo "::endgroup::"
           done

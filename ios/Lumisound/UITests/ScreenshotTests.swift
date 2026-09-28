@@ -22,8 +22,13 @@ final class ScreenshotTests: XCTestCase {
         // play history, favorites and playlists.
         app.launch()
         waitFor(app.staticTexts["Recently Added"], timeout: 120, what: "demo library scan")
-        sleep(8)
+        // The Resume card's "Paused" label appears once seeding has loaded a
+        // track, which is its last step. Closing the app before that loses
+        // the seed data (and once seemed to break the next launch).
+        waitFor(app.staticTexts["Paused"], timeout: 60, what: "seeding to finish")
+        sleep(4) // the playback snapshot is written on a background task
         app.terminate()
+        sleep(3)
 
         // Pass 2: the seeded data is on disk, so Home builds with it from the start.
         app.launch()
