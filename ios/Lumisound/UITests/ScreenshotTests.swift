@@ -136,18 +136,24 @@ final class ScreenshotTests: XCTestCase {
     }
 
     /// The library tab row is a horizontal scroller, so later tabs (Albums,
-    /// Artists, Playlists) start off-screen. Drags along the element's own
-    /// row, towards it, until it's on screen.
+    /// Artists, Playlists) start off-screen. Swipes on a visible tab in the
+    /// same row (same identifier prefix, e.g. "libraryTab.") towards the
+    /// target until it's on screen. A coordinate press-and-drag didn't move
+    /// the row in run 6; a real swipe on an element inside it does.
     private func scrollIntoView(_ element: XCUIElement) {
+        guard !element.isHittable else { return }
+        let identifier = element.identifier
+        guard let dot = identifier.lastIndex(of: ".") else { return }
+        let prefix = String(identifier[...dot])
+        let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", prefix))
         let width = app.frame.width
         for _ in 0..<6 where !element.isHittable {
-            let frame = element.frame
-            guard !frame.isEmpty else { return }
-            let direction: CGFloat
-            if frame.maxX > width { direction = -1 } else if frame.minX < 0 { direction = 1 } else { return }
-            let origin = app.coordinate(withNormalizedOffset: .zero)
-            let start = origin.withOffset(CGVector(dx: width * 0.5, dy: frame.midY))
-            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: direction * width * 0.4, dy: 0)))
+            guard let anchor = row.allElementsBoundByIndex.first(where: { $0.isHittable }) else { return }
+            if element.frame.minX >= width / 2 {
+                anchor.swipeLeft()
+            } else {
+                anchor.swipeRight()
+            }
             sleep(1)
         }
     }
