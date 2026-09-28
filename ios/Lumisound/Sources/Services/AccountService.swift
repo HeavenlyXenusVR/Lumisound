@@ -137,6 +137,8 @@ final class AccountService: ObservableObject {
                 await self.syncLibraryInventory(library: library)
             }
         }
+        // Lets iOS batch this wake-up with others (battery).
+        autoPushTimer?.tolerance = (20 * 60) * 0.1
 
         guard let token else { return }
         let live = LiveUpdateService.shared

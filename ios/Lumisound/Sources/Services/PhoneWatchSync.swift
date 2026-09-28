@@ -98,6 +98,8 @@ final class PhoneWatchSync: NSObject, ObservableObject {
             guard UIApplication.shared.applicationState == .active else { return }
             Task { @MainActor in self?.pushAccountHandoffIfNeeded() }
         }
+        // Lets iOS batch this wake-up with others (battery).
+        accountHandoffTimer?.tolerance = (15) * 0.1
     }
 
     private func pushAccountHandoffIfNeeded() {

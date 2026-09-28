@@ -15,6 +15,8 @@ extension AudioPlayerManager {
                 self?.timerTick()
             }
         }
+        // Lets iOS batch this wake-up with others (battery).
+        timer?.tolerance = 0.05
     }
 
     func stopTimer() {

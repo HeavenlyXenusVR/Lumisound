@@ -39,6 +39,8 @@ extension LibraryManager {
                 await self?.refreshNextMetadataBatch()
             }
         }
+        // Lets iOS batch this wake-up with others (battery).
+        timer.tolerance = (interval) * 0.1
         RunLoop.main.add(timer, forMode: .common)
         metadataRefreshTimer = timer
     }

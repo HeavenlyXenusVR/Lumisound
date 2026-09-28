@@ -34,6 +34,8 @@ final class LongTrackResumeService {
         saveTimer = Timer.scheduledTimer(withTimeInterval: Self.saveInterval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.periodicSave() }
         }
+        // Lets iOS batch this wake-up with others (battery).
+        saveTimer?.tolerance = (Self.saveInterval) * 0.1
     }
 
     private func handleTrackChange(to song: Song) {

@@ -72,7 +72,7 @@ struct ProfileEffectOverlay: View {
         if style == .none {
             EmptyView()
         } else {
-            TimelineView(.animation) { timeline in
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
                 Canvas { context, size in
                     let time = timeline.date.timeIntervalSinceReferenceDate
                     if style == .aurora {

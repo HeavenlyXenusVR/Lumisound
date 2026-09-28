@@ -28,12 +28,22 @@ struct AlbumDetailView: View {
         Array(repeating: GridItem(.flexible(), spacing: 12, alignment: .top), count: max(1, columns))
     }
 
-    private var songs: [Song] {
-        library.songs(inAlbum: album).sorted(by: AlbumSummary.albumOrder)
-    }
+    /// Tracks in album order and the album's summary, cached — both used to
+    /// be computed properties, re-sorted on every one of the dozen-odd reads
+    /// per render (and this view re-renders on every player update).
+    /// Rebuilt when the library changes (see `.task` in `body`).
+    @State private var songs: [Song] = []
+    @State private var summary: AlbumSummary?
+    @State private var moreByArtist: [String] = []
+    /// So "No tracks" doesn't flash for the frame before the first load.
+    @State private var hasLoaded = false
 
-    private var summary: AlbumSummary? {
-        AlbumSummary.build(from: songs).first
+    private func reload() {
+        let tracks = library.songs(inAlbum: album).sorted(by: AlbumSummary.albumOrder)
+        songs = tracks
+        summary = AlbumSummary.build(from: tracks).first
+        moreByArtist = computeMoreByArtist()
+        hasLoaded = true
     }
 
     private var artistName: String {
@@ -53,7 +63,7 @@ struct AlbumDetailView: View {
     }
 
     /// Other albums by the same artist, for the shelf at the bottom.
-    private var moreByArtist: [String] {
+    private func computeMoreByArtist() -> [String] {
         guard !isCompilation, artistName != "Unknown Artist" else { return [] }
         var seen = Set<String>()
         return library.songs(byArtist: artistName)
@@ -81,7 +91,7 @@ struct AlbumDetailView: View {
                     // Same SongRow as the Songs tab, so rows follow the
                     // user's row style everywhere.
                     Section {
-                        if songs.isEmpty {
+                        if songs.isEmpty, hasLoaded {
                             EmptyStateView(icon: "square.stack", title: "No tracks", message: "This album has no tracks.")
                                 .listRowBackground(Color.clear)
                         } else {
@@ -120,7 +130,7 @@ struct AlbumDetailView: View {
                     VStack(spacing: 16) {
                         headerBlock
 
-                        if songs.isEmpty {
+                        if songs.isEmpty, hasLoaded {
                             EmptyStateView(icon: "square.stack", title: "No tracks", message: "This album has no tracks.")
                                 .padding(.top, 40)
                         } else {
@@ -154,6 +164,7 @@ struct AlbumDetailView: View {
         .navigationTitle(album)
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom) { MiniPlayerBar() }
+        .task(id: library.allSongs.count) { reload() }
         .navigationDestination(isPresented: $showArtist) {
             ArtistDetailView(artist: artistName)
         }
