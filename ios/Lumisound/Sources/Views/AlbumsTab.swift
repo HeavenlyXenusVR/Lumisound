@@ -263,8 +263,15 @@ struct AlbumsTab: View {
         }
         let sorted = sortOrder.apply(to: filtered)
         visibleCount = sorted.count
-        sections = AlbumSection.group(sorted, by: sortOrder)
+        // Letter sections only pay off in a big library — in a small one
+        // most letters hold one album, leaving a row per album with the rest
+        // of the grid empty.
+        sections = sorted.count >= Self.sectioningThreshold
+            ? AlbumSection.group(sorted, by: sortOrder)
+            : [AlbumSection(title: nil, albums: sorted)]
     }
+
+    static let sectioningThreshold = 30
 
     private var gridColumns: [GridItem] {
         // `.top` so a one-line title doesn't sit lower than its two-line
@@ -293,6 +300,9 @@ struct AlbumsTab: View {
                     }
                     .adaptiveGlass(in: Capsule(), fallback: AppTheme.surface.opacity(0.55))
                     .padding(.trailing, 2)
+                    // Below the Recently Added shelf rather than centred
+                    // over it.
+                    .padding(.top, 260)
                 }
             }
         }
@@ -507,20 +517,28 @@ private struct AlbumIndexHeader: View {
     var body: some View {
         HStack(spacing: 8) {
             Text(title)
-                .font(.headline.weight(.heavy))
+                .font(.title3.weight(.heavy))
                 .foregroundStyle(AppTheme.dynamicAccent)
             Text("\(count)")
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(AppTheme.textSecondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(AppTheme.surface.opacity(0.7), in: Capsule())
             Rectangle()
                 .fill(AppTheme.textSecondary.opacity(0.18))
                 .frame(height: 1)
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 16)
         .padding(.vertical, 6)
-        .adaptiveGlass(in: Capsule(), fallback: AppTheme.background.opacity(0.75))
-        .padding(.horizontal, 10)
-        .padding(.vertical, 2)
+        // Pinned while scrolling, so it needs its own backing — a soft
+        // fade in the screen's background colour rather than a card.
+        .background(
+            LinearGradient(
+                colors: [AppTheme.background.opacity(0.85), AppTheme.background.opacity(0)],
+                startPoint: .top, endPoint: .bottom
+            )
+        )
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isHeader)
     }

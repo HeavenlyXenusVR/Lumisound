@@ -107,8 +107,10 @@ final class ScreenshotTests: XCTestCase {
             snap("33-album-detail-scrolled")
         }
 
-        relaunch(libraryTab: nil)
-        if tap(tabButton(1, title: "Playing"), what: "Playing tab") {
+        // Straight onto the Playing tab: tapping it after a relaunch onto
+        // Library didn't switch tabs in run 18.
+        relaunch(libraryTab: nil, mainTab: 1)
+        do {
             sleep(3)
             snap("34-now-playing")
             app.swipeUp()
@@ -147,10 +149,10 @@ final class ScreenshotTests: XCTestCase {
 
     /// Relaunches on the Library tab (`-selected_tab 0` overrides the saved
     /// main tab for this launch), optionally opening a specific library tab.
-    private func relaunch(libraryTab: String?) {
+    private func relaunch(libraryTab: String?, mainTab: Int = 0) {
         app.terminate()
         sleep(2)
-        app.launchArguments = ["-LumisoundScreenshotMode", "-selected_tab", "0"]
+        app.launchArguments = ["-LumisoundScreenshotMode", "-selected_tab", "\(mainTab)"]
         if let libraryTab {
             app.launchArguments += ["-LumisoundScreenshotLibraryTab", libraryTab]
         }
