@@ -821,7 +821,12 @@ private struct HubSpeedDialTile: View {
             .frame(width: tileWidth, alignment: .leading)
         }
         .buttonStyle(PressableButtonStyle())
-        .task(id: shortcut.id) {
+        // Keyed on the tile's songs, not just `shortcut.id`: the id of a
+        // playlist tile never changes, so a tile first built while its songs
+        // hadn't resolved yet (or before songs were added to the playlist)
+        // kept an empty collage and a placeholder icon even after the hub
+        // rebuilt it with the real songs.
+        .task(id: songsKey) {
             listenedFraction = library.listenedFraction(of: shortcut.songs)
             collage = library.collageSongs(from: shortcut.songs)
             if case .folder(let folder) = shortcut.kind {
@@ -830,6 +835,10 @@ private struct HubSpeedDialTile: View {
                 customFolderCover = nil
             }
         }
+    }
+
+    private var songsKey: String {
+        "\(shortcut.id)|\(shortcut.songs.count)|\(shortcut.songs.first?.id ?? "")|\(shortcut.songs.last?.id ?? "")"
     }
 
     @ViewBuilder
