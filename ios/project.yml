@@ -228,3 +228,29 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lumisound.ios.tests
         INFOPLIST_FILE: ""
+
+  # Drives the app for .github/workflows/screenshots-ios.yml. Only built by
+  # the LumisoundScreenshots scheme below, never by the release builds.
+  LumisoundUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: Lumisound/UITests
+    dependencies:
+      - target: Lumisound
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lumisound.ios.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Lumisound
+
+schemes:
+  LumisoundScreenshots:
+    build:
+      targets:
+        Lumisound: all
+        LumisoundUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - LumisoundUITests
