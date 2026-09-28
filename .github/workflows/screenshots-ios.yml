@@ -152,8 +152,10 @@ jobs:
             # it, which keeps the container's contents.
             xcrun simctl install "$UDID" "$APP"
             DATA="$(xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" data)"
-            mkdir -p "$DATA/Documents"
-            cp -R "$RUNNER_TEMP/demo-library/." "$DATA/Documents/"
+            # "Imported Music" is where imports land, and the only place the
+            # Folders tab and Home's folder tiles look for subfolders.
+            mkdir -p "$DATA/Documents/Imported Music"
+            cp -R "$RUNNER_TEMP/demo-library/." "$DATA/Documents/Imported Music/"
 
             # One retry. On a busy headless runner the simulator's audio
             # service sometimes doesn't answer while the app sets up its
