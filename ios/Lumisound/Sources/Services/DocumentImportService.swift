@@ -239,12 +239,12 @@ struct DocumentImportService {
                 sourceTrackID = item.stringValue
             }
 
-            if genre.isEmpty, idRaw.contains("genre") {
-                genre = item.stringValue ?? genre
+            if genre.isEmpty, Self.isGenreIdentifier(idRaw), let raw = item.stringValue {
+                genre = Self.cleanedGenre(raw)
             }
 
             // Track number — present as e.g. "tracknumber", "track", "itunes/tracknumber"
-            if trackNumber == 0, idRaw.contains("tracknumber") || idRaw.hasSuffix("/track") {
+            if trackNumber == 0, Self.isTrackNumberIdentifier(idRaw) {
                 if let raw = item.stringValue {
                     // ID3 TRCK can be "5/12" — take the part before the slash
                     let part = raw.split(separator: "/").first.map(String.init) ?? raw
@@ -256,7 +256,7 @@ struct DocumentImportService {
 
             // Year — present as "year", "date", "recordingyear" depending on format
             if year.isEmpty,
-               idRaw.contains("year") || idRaw.contains("date") || idRaw.contains("recordingyear")
+               Self.isYearIdentifier(idRaw)
             {
                 if let raw = item.stringValue {
                     // ISO 8601 date strings like "2003-11-06" — keep only the year portion
@@ -424,9 +424,13 @@ struct DocumentImportService {
         var title = current.title
         var artist = current.artist
         var album = current.album
-        var genre = current.genre
+        // Genre and year start empty so the file's own tags win: carried
+        // over, a value an earlier online lookup guessed (before these tags
+        // could be read at all) would block the real one. Restored below
+        // when the file has none.
+        var genre = ""
         var trackNumber = current.trackNumber
-        var year = current.year
+        var year = ""
         var sourceTrackID = current.sourceTrackID
 
         for item in commonMetadata {
@@ -451,11 +455,11 @@ struct DocumentImportService {
                 sourceTrackID = item.stringValue
             }
 
-            if genre.isEmpty, idRaw.contains("genre") {
-                genre = item.stringValue ?? genre
+            if genre.isEmpty, Self.isGenreIdentifier(idRaw), let raw = item.stringValue {
+                genre = Self.cleanedGenre(raw)
             }
 
-            if trackNumber == 0, idRaw.contains("tracknumber") || idRaw.hasSuffix("/track") {
+            if trackNumber == 0, Self.isTrackNumberIdentifier(idRaw) {
                 if let raw = item.stringValue {
                     let part = raw.split(separator: "/").first.map(String.init) ?? raw
                     trackNumber = Int(part.trimmingCharacters(in: .whitespaces)) ?? 0
@@ -465,7 +469,7 @@ struct DocumentImportService {
             }
 
             if year.isEmpty,
-               idRaw.contains("year") || idRaw.contains("date") || idRaw.contains("recordingyear")
+               Self.isYearIdentifier(idRaw)
             {
                 if let raw = item.stringValue {
                     year = String(raw.prefix(4))
@@ -513,6 +517,9 @@ struct DocumentImportService {
             }
         }
 
+        if genre.isEmpty { genre = current.genre }
+        if year.isEmpty { year = current.year }
+
         guard title != current.title || artist != current.artist || album != current.album
             || genre != current.genre || year != current.year || trackNumber != current.trackNumber
             || sourceTrackID != current.sourceTrackID
@@ -550,6 +557,40 @@ struct DocumentImportService {
             refreshed.albumInferredFromFolder = albumInferredFromFolder
         }
         return refreshed
+    }
+
+    // MARK: - Tag identifiers
+    //
+    // Format-specific metadata identifiers, lowercased. Matching only on words
+    // like "genre" / "year" / "tracknumber" caught QuickTime and Vorbis-style
+    // names but none of the ID3 frames (id3/TCON, id3/TYER, id3/TDRC,
+    // id3/TRCK) or iTunes atoms (itsk/©gen, itsk/©day) that MP3 and M4A files
+    // actually use. So genre, year and track number were never read from
+    // MP3s. The missing genre then sent every such track to the online
+    // lookup, which filled in the year of whatever real song matched the
+    // title.
+
+    static func isGenreIdentifier(_ id: String) -> Bool {
+        id.contains("genre") || id.hasSuffix("/tcon") || id.hasSuffix("%a9gen") || id.hasSuffix("\u{a9}gen")
+    }
+
+    static func isYearIdentifier(_ id: String) -> Bool {
+        id.contains("year") || id.contains("date")
+            || id.hasSuffix("/tyer") || id.hasSuffix("/tdrc") || id.hasSuffix("/tory")
+            || id.hasSuffix("%a9day") || id.hasSuffix("\u{a9}day")
+    }
+
+    static func isTrackNumberIdentifier(_ id: String) -> Bool {
+        id.contains("tracknumber") || id.hasSuffix("/track") || id.hasSuffix("/trck") || id.hasSuffix("/trkn")
+    }
+
+    /// ID3 genres can be stored as a numeric reference, "(17)" or "(17)Rock".
+    /// Keeps the text when there is some; otherwise returns the raw value.
+    static func cleanedGenre(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("("), let close = trimmed.firstIndex(of: ")") else { return trimmed }
+        let rest = trimmed[trimmed.index(after: close)...].trimmingCharacters(in: .whitespaces)
+        return rest.isEmpty ? trimmed : rest
     }
 
     // MARK: - Online Metadata Enrichment

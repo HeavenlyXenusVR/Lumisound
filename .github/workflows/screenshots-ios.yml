@@ -3,8 +3,10 @@ name: iOS Screenshots
 # Builds the app for the simulator, loads a generated demo library into it,
 # and runs Lumisound/UITests/ScreenshotTests.swift, which taps through the
 # main screens and saves a PNG of each. The PNGs are uploaded as an artifact
-# named "screenshots", and are also pushed to the `screenshots` branch so
-# they can be browsed on GitHub (that branch is replaced on every run).
+# named "screenshots", and are also pushed to a branch so they can be browsed
+# on GitHub: `screenshots` for runs from main, `screenshots-<ref>` for any
+# other branch or tag, so runs of different refs don't overwrite each other.
+# Each is replaced on every run of its ref.
 #
 # The demo library is made up (ios/scripts/screenshots/make-demo-library.sh),
 # and the app's `-LumisoundScreenshotMode` flag gives it listening history,
@@ -18,6 +20,12 @@ on:
         description: 'Simulators, comma-separated (closest available match is used)'
         required: false
         default: 'iPhone 17 Pro Max,iPhone 17'
+      tests:
+        description: 'Which screens'
+        required: false
+        default: 'all'
+        type: choice
+        options: [ all, main, folders ]
       appearance:
         description: 'System appearance'
         required: false
@@ -29,9 +37,11 @@ permissions:
   # Pushes the images to the `screenshots` branch.
   contents: write
 
+# Queue rather than cancel: a before/after pair started close together must
+# both finish (a cancelled "before" run is how this setting was found).
 concurrency:
   group: screenshots-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   screenshots:
@@ -41,6 +51,7 @@ jobs:
     env:
       DEVICES: ${{ github.event.inputs.devices || 'iPhone 17 Pro Max,iPhone 17' }}
       APPEARANCE: ${{ github.event.inputs.appearance || 'dark' }}
+      TESTS: ${{ github.event.inputs.tests || 'all' }}
       BUNDLE_ID: com.lumisound.ios
 
     steps:
@@ -108,6 +119,12 @@ jobs:
               [.devices | to_entries[] | select(.key | test("iOS")) | .value[] | select(.name | test("Pro Max"))] | last | .udid // empty'
           }
 
+          case "$TESTS" in
+            main)    ONLY_TESTING="LumisoundUITests/ScreenshotTests/testCaptureScreens" ;;
+            folders) ONLY_TESTING="LumisoundUITests/ScreenshotTests/testCaptureFolderScreens" ;;
+            *)       ONLY_TESTING="LumisoundUITests/ScreenshotTests" ;;
+          esac
+
           IFS=',' read -ra NAMES <<<"$DEVICES"
           for raw in "${NAMES[@]}"; do
             NAME="$(echo "$raw" | xargs)"
@@ -135,8 +152,10 @@ jobs:
             # it, which keeps the container's contents.
             xcrun simctl install "$UDID" "$APP"
             DATA="$(xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" data)"
-            mkdir -p "$DATA/Documents"
-            cp -R "$RUNNER_TEMP/demo-library/." "$DATA/Documents/"
+            # "Imported Music" is where imports land, and the only place the
+            # Folders tab and Home's folder tiles look for subfolders.
+            mkdir -p "$DATA/Documents/Imported Music"
+            cp -R "$RUNNER_TEMP/demo-library/." "$DATA/Documents/Imported Music/"
 
             # One retry. On a busy headless runner the simulator's audio
             # service sometimes doesn't answer while the app sets up its
@@ -155,11 +174,11 @@ jobs:
                 -destination "id=$UDID" \
                 -derivedDataPath build \
                 -resultBundlePath "$RUNNER_TEMP/results/$SLUG-$attempt.xcresult" \
-                -only-testing:LumisoundUITests/ScreenshotTests/testCaptureScreens \
+                "-only-testing:$ONLY_TESTING" \
                 CODE_SIGNING_ALLOWED=NO 2>&1 \
                 | grep -vE '^\s+t = .*(Checking existence|Checking `Expect|Capturing element|Waiting .* to exist)' \
                 | tail -250 || attempt_status=1
-              if [ "$attempt_status" = 0 ] || [ -f "$OUT/$SLUG/12-settings.png" ] || [ "$attempt" = 2 ]; then
+              if [ "$attempt_status" = 0 ] || [ -f "$OUT/$SLUG/12-settings.png" ] || [ -f "$OUT/$SLUG/21-folder-detail.png" ] || [ "$attempt" = 2 ]; then
                 [ "$attempt_status" = 0 ] || status=1
                 break
               fi
@@ -200,6 +219,11 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          if [ "$GITHUB_REF_NAME" = "main" ]; then
+            TARGET=screenshots
+          else
+            TARGET="screenshots-$(echo "$GITHUB_REF_NAME" | tr '/' '-' | tr -cd 'A-Za-z0-9._-')"
+          fi
           if [ -z "$(find screenshots -name '*.png' 2>/dev/null | head -1)" ]; then
             echo "No screenshots to publish."
             exit 0
@@ -228,8 +252,8 @@ jobs:
           git config user.email "actions@github.com"
           git add -A
           git commit -qm "Screenshots from run ${GITHUB_RUN_ID}"
-          git push -qf "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" screenshots:screenshots
-          echo "Published: ${{ github.server_url }}/${GITHUB_REPOSITORY}/tree/screenshots"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" "screenshots:$TARGET"
+          echo "Published: ${{ github.server_url }}/${GITHUB_REPOSITORY}/tree/$TARGET"
 
       - name: Upload test results and build log (on failure)
         if: failure()
