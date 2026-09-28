@@ -23,12 +23,6 @@ on:
         default: 'dark'
         type: choice
         options: [ dark, light ]
-  push:
-    branches: [ 'claude/home-page-restructure-m3mxah' ]
-    paths:
-      - '.github/workflows/screenshots-ios.yml'
-      - 'ios/scripts/screenshots/**'
-      - 'ios/Lumisound/UITests/**'
 
 permissions:
   contents: read
