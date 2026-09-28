@@ -689,6 +689,12 @@ private struct FolderAlbumHeader: View {
             .accessibilityLabel("Play \(section.title)")
         }
         .padding(.vertical, 8)
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // Plain-list section headers stay pinned while their section
+        // scrolls; without a background the rows show through the header.
+        .background(.ultraThinMaterial)
+        .listRowInsets(EdgeInsets())
         .textCase(nil)
     }
 }
