@@ -3,7 +3,8 @@ name: iOS Screenshots
 # Builds the app for the simulator, loads a generated demo library into it,
 # and runs Lumisound/UITests/ScreenshotTests.swift, which taps through the
 # main screens and saves a PNG of each. The PNGs are uploaded as an artifact
-# named "screenshots".
+# named "screenshots", and are also pushed to the `screenshots` branch so
+# they can be browsed on GitHub (that branch is replaced on every run).
 #
 # The demo library is made up (ios/scripts/screenshots/make-demo-library.sh),
 # and the app's `-LumisoundScreenshotMode` flag gives it listening history,
@@ -25,7 +26,8 @@ on:
         options: [ dark, light ]
 
 permissions:
-  contents: read
+  # Pushes the images to the `screenshots` branch.
+  contents: write
 
 concurrency:
   group: screenshots-${{ github.ref }}
@@ -160,6 +162,46 @@ jobs:
           name: screenshots
           path: screenshots
           if-no-files-found: warn
+
+      # A plain branch so the images can be viewed on github.com without
+      # downloading the zip. Force-pushed as a single commit each run, so
+      # old images don't pile up in its history.
+      - name: Publish to the screenshots branch
+        if: always()
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "$(find screenshots -name '*.png' 2>/dev/null | head -1)" ]; then
+            echo "No screenshots to publish."
+            exit 0
+          fi
+          PUBLISH="$RUNNER_TEMP/publish"
+          rm -rf "$PUBLISH" && mkdir -p "$PUBLISH"
+          cp -R screenshots/. "$PUBLISH/"
+          {
+            echo "# Lumisound screenshots"
+            echo
+            echo "From [this run]($RUN_URL) on \`${GITHUB_REF_NAME}\` at \`${GITHUB_SHA:0:7}\`. Replaced on every run."
+            for dir in "$PUBLISH"/*/; do
+              name="$(basename "$dir")"
+              echo
+              echo "## $name"
+              echo
+              for png in "$dir"*.png; do
+                file="$(basename "$png")"
+                echo "<img src=\"$name/$file\" width=\"260\" alt=\"${file%.png}\">"
+              done
+            done
+          } > "$PUBLISH/README.md"
+          cd "$PUBLISH"
+          git init -q -b screenshots
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add -A
+          git commit -qm "Screenshots from run ${GITHUB_RUN_ID}"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" screenshots:screenshots
+          echo "Published: ${{ github.server_url }}/${GITHUB_REPOSITORY}/tree/screenshots"
 
       - name: Upload test results and build log (on failure)
         if: failure()

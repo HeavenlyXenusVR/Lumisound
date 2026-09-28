@@ -37,23 +37,23 @@ final class ScreenshotTests: XCTestCase {
             snap(name)
         }
 
-        if tap(app.buttons["tab.1"], what: "Playing tab") {
+        if tap(tabButton(1, title: "Playing"), what: "Playing tab") {
             sleep(2)
             snap("05-now-playing")
         }
-        if tap(app.buttons["tab.2"], what: "Queue tab") {
+        if tap(tabButton(2, title: "Queue"), what: "Queue tab") {
             sleep(1)
             snap("06-queue")
         }
 
-        if tap(app.buttons["tab.0"], what: "Library tab") {
+        if tap(tabButton(0, title: "Library"), what: "Library tab") {
             for (tab, name) in [("Songs", "07-songs"), ("Albums", "08-albums"), ("Artists", "09-artists"), ("Playlists", "10-playlists")] {
-                if tap(app.buttons["libraryTab.\(tab)"], what: "\(tab) library tab") {
+                if tap(element("libraryTab.\(tab)", label: tab), what: "\(tab) library tab") {
                     sleep(2)
                     snap(name)
                 }
             }
-            if tap(app.buttons["libraryTab.Home"], what: "Home library tab") {
+            if tap(element("libraryTab.Home", label: "Home"), what: "Home library tab") {
                 sleep(1)
                 if tap(app.buttons["Customize Home"], what: "Customize Home button") {
                     sleep(1)
@@ -63,7 +63,7 @@ final class ScreenshotTests: XCTestCase {
             }
         }
 
-        if tap(app.buttons["tab.6"], what: "Settings tab") {
+        if tap(tabButton(6, title: "Settings"), what: "Settings tab") {
             sleep(1)
             snap("12-settings")
         }
@@ -71,10 +71,30 @@ final class ScreenshotTests: XCTestCase {
 
     // MARK: Helpers
 
+    private func tabButton(_ tag: Int, title: String) -> XCUIElement {
+        element("tab.\(tag)", label: title)
+    }
+
+    /// By identifier on any element type first: the main tab bar sits in a
+    /// Liquid Glass container, which doesn't always expose its children as
+    /// plain buttons. Falls back to a button with the visible label.
+    private func element(_ identifier: String, label: String) -> XCUIElement {
+        let byID = app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+        if byID.waitForExistence(timeout: 3) { return byID }
+        return app.buttons.matching(NSPredicate(format: "label CONTAINS %@", label)).firstMatch
+    }
+
+    private var printedHierarchy = false
+
     @discardableResult
     private func waitFor(_ element: XCUIElement, timeout: TimeInterval, what: String) -> Bool {
         guard element.waitForExistence(timeout: timeout) else {
             XCTFail("Timed out waiting for \(what)")
+            if !printedHierarchy {
+                // Lands in the job log, which is easier to get at than the xcresult.
+                printedHierarchy = true
+                print("ACCESSIBILITY HIERARCHY (first failure):\n\(app.debugDescription)")
+            }
             snap("zz-timeout-\(what.replacingOccurrences(of: " ", with: "-"))")
             return false
         }
