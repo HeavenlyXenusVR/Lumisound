@@ -85,14 +85,15 @@ extension NowPlayingView {
     static let panelsAnchor = "nowPlayingPanels"
 
     /// The secondary-controls panels in one glass card: the picker as its
-    /// header, the selected panel below. Swipe sideways to change panel.
+    /// header, the selected panel below. No sideways swipe to change panel:
+    /// the panels are full of horizontal sliders (volume, speed, pitch, EQ)
+    /// that a swipe recognizer over them would fight with.
     var panelCard: some View {
         VStack(spacing: 16) {
             panelPicker
             selectedPanelContent
                 .transition(.opacity)
                 .animation(.easeInOut(duration: 0.18), value: selectedPanel)
-                .simultaneousGesture(panelSwipeGesture)
         }
         .padding(12)
         .adaptiveGlass(
@@ -158,27 +159,6 @@ extension NowPlayingView {
         }
         .padding(3)
         .background(AppTheme.surface.opacity(0.45), in: RoundedRectangle(cornerRadius: 17, style: .continuous))
-    }
-
-    /// Horizontal swipe on the panel content advances/retreats through
-    /// `NowPlayingPanel.allCases`, mirroring `panelPicker`'s taps. Requires a
-    /// clearly-horizontal drag so it doesn't fight the ScrollView's vertical
-    /// scrolling.
-    var panelSwipeGesture: some Gesture {
-        DragGesture(minimumDistance: 30)
-            .onEnded { value in
-                let horizontal = value.translation.width
-                let vertical = value.translation.height
-                guard abs(horizontal) > abs(vertical) * 1.5, abs(horizontal) > 40 else { return }
-                let cases = NowPlayingPanel.allCases
-                guard let idx = cases.firstIndex(of: selectedPanel) else { return }
-                let nextIdx = horizontal < 0 ? idx + 1 : idx - 1
-                guard cases.indices.contains(nextIdx) else { return }
-                selectHaptic.selectionChanged()
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
-                    selectedPanel = cases[nextIdx]
-                }
-            }
     }
 
     @ViewBuilder
