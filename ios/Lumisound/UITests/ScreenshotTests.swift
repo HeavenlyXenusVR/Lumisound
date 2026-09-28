@@ -40,7 +40,8 @@ final class ScreenshotTests: XCTestCase {
 
         for name in ["02-home-2", "03-home-3", "04-home-4"] {
             app.swipeUp()
-            sleep(1)
+            // Tiles fill in their artwork in a `.task` once they appear.
+            sleep(3)
             snap(name)
         }
 
@@ -122,8 +123,33 @@ final class ScreenshotTests: XCTestCase {
     @discardableResult
     private func tap(_ element: XCUIElement, what: String) -> Bool {
         guard waitFor(element, timeout: 10, what: what) else { return false }
+        scrollIntoView(element)
+        guard element.isHittable else {
+            // `tap()` on an unhittable element is a hard error that ends the
+            // whole test; record it and move on to the next screen instead.
+            XCTFail("\(what) exists but can't be tapped")
+            snap("zz-unhittable-\(what.replacingOccurrences(of: " ", with: "-"))")
+            return false
+        }
         element.tap()
         return true
+    }
+
+    /// The library tab row is a horizontal scroller, so later tabs (Albums,
+    /// Artists, Playlists) start off-screen. Drags along the element's own
+    /// row, towards it, until it's on screen.
+    private func scrollIntoView(_ element: XCUIElement) {
+        let width = app.frame.width
+        for _ in 0..<6 where !element.isHittable {
+            let frame = element.frame
+            guard !frame.isEmpty else { return }
+            let direction: CGFloat
+            if frame.maxX > width { direction = -1 } else if frame.minX < 0 { direction = 1 } else { return }
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            let start = origin.withOffset(CGVector(dx: width * 0.5, dy: frame.midY))
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: direction * width * 0.4, dy: 0)))
+            sleep(1)
+        }
     }
 
     private func snap(_ name: String) {
