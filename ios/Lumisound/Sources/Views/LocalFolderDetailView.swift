@@ -80,15 +80,25 @@ struct LocalFolderDetailView: View {
     /// tracks).
     @State private var sortedSongs: [Song] = []
 
+    /// Track Order split per album, when the folder holds more than one real
+    /// album — see `albumSections(for:)`. Empty for every other sort order,
+    /// and for single-album folders, which list flat.
+    @State private var albumSections: [FolderAlbumSection] = []
+
+    /// Up to four songs with distinct artwork for the header mosaic.
+    @State private var collageSongs: [Song] = []
+
     private func refreshSortedSongs() {
+        albumSections = []
         switch sortOrder {
         case .trackOrder:
-            sortedSongs = songs.sorted {
-                if $0.trackNumber != $1.trackNumber && ($0.trackNumber > 0 || $1.trackNumber > 0) {
-                    return $0.trackNumber < $1.trackNumber
-                }
-                return $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
-            }
+            // Album by album, each in its own track order. Sorting by track
+            // number across the whole folder interleaved albums (every
+            // album's track 1, then every track 2, …) as soon as a folder
+            // held more than one.
+            let sections = Self.albumSections(for: songs)
+            sortedSongs = sections.flatMap(\.songs)
+            albumSections = sections.count > 1 ? sections : []
         case .title:
             sortedSongs = songs.sorted {
                 $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
@@ -115,6 +125,52 @@ struct LocalFolderDetailView: View {
                 }
             }
         }
+    }
+
+    /// Groups by album (folder-inferred "albums" collapse into one "Unknown
+    /// Album" group, via `groupableAlbumName`), albums alphabetically with
+    /// Unknown Album last, tracks by number then title.
+    private static func albumSections(for songs: [Song]) -> [FolderAlbumSection] {
+        let grouped = Dictionary(grouping: songs, by: \.groupableAlbumName)
+        return grouped
+            .map { name, albumSongs in
+                let tracks = albumSongs.sorted {
+                    if $0.trackNumber != $1.trackNumber {
+                        // Untagged (0) tracks after numbered ones.
+                        if $0.trackNumber == 0 { return false }
+                        if $1.trackNumber == 0 { return true }
+                        return $0.trackNumber < $1.trackNumber
+                    }
+                    return $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+                }
+                return FolderAlbumSection(title: name, songs: tracks)
+            }
+            .sorted { lhs, rhs in
+                if lhs.isUnknown != rhs.isUnknown { return !lhs.isUnknown }
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+    }
+
+    /// "A, B & C" / "A, B & 3 more", most-represented artists first.
+    private var artistSummary: String? {
+        var counts: [String: Int] = [:]
+        for song in songs where !song.artist.trimmingCharacters(in: .whitespaces).isEmpty {
+            counts[song.artistName, default: 0] += 1
+        }
+        let names = counts
+            .sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+            .map(\.key)
+        switch names.count {
+        case 0: return nil
+        case 1: return names[0]
+        case 2: return "\(names[0]) & \(names[1])"
+        case 3: return "\(names[0]), \(names[1]) & \(names[2])"
+        default: return "\(names[0]), \(names[1]) & \(names.count - 2) more"
+        }
+    }
+
+    private var albumCount: Int {
+        Set(songs.map(\.groupableAlbumName)).count
     }
 
     private var totalDurationText: String {
@@ -169,135 +225,61 @@ struct LocalFolderDetailView: View {
         Group {
             if columns == 1 {
                 List {
-                    // Header
                     Section {
-                        FolderDetailHeaderView(
-                            folderName: folderName,
-                            folderURL: folderURL,
-                            representativeSong: songs.first,
-                            songCount: songs.count,
-                            totalDurationText: totalDurationText,
-                            totalSizeText: totalSizeText,
-                            customCover: $customCover
-                        )
+                        headerAndControls
                     }
                     .listRowBackground(Color.clear)
                     .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
                     .listSectionSeparator(.hidden)
 
-                    // Play / Shuffle
-                    Section {
-                        HStack(spacing: 12) {
-                            Button {
-                                player.setQueue(sortedSongs, startIndex: 0, autoplay: true)
-                            } label: {
-                                Label("Play", systemImage: "play.fill")
-                                    .font(.subheadline.weight(.semibold))
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.bordered)
-                            .tint(AppTheme.dynamicAccent)
-
-                            Button {
-                                let shuffled = songs.shuffled()
-                                player.setQueue(shuffled, startIndex: 0, autoplay: true)
-                            } label: {
-                                Label("Shuffle", systemImage: "shuffle")
-                                    .font(.subheadline.weight(.semibold))
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.bordered)
-                            .tint(AppTheme.dynamicAccent)
-                        }
-                        .listRowBackground(Color.clear)
-                    }
-                    .listSectionSeparator(.hidden)
-
-                    // Track list — uses the same SongRow component as the main
-                    // Songs tab so rows look/behave identically (artwork, context
-                    // menus, favorite/play targets, styling) everywhere.
-                    Section {
-                        if sortedSongs.isEmpty {
+                    if sortedSongs.isEmpty {
+                        Section {
                             EmptyStateView(icon: "folder", title: "Empty folder", message: "No audio files found inside \"\(folderName)\".")
                                 .listRowBackground(Color.clear)
-                        } else {
-                            ForEach(sortedSongs) { song in
-                                Button {
-                                    if isSelecting {
-                                        toggleSelection(song)
-                                    } else {
-                                        player.play(song: song, in: sortedSongs)
-                                    }
-                                } label: {
-                                    HStack(spacing: 12) {
-                                        if isSelecting {
-                                            Image(systemName: selectedIDs.contains(song.id) ? "checkmark.circle.fill" : "circle")
-                                                .font(.system(size: 20))
-                                                .foregroundStyle(
-                                                    selectedIDs.contains(song.id)
-                                                        ? AppTheme.dynamicAccent
-                                                        : AppTheme.textSecondary
-                                                )
-                                                .transition(.scale.combined(with: .opacity))
-                                                .animation(.spring(response: 0.25, dampingFraction: 0.6), value: selectedIDs)
-                                        }
-                                        SongRow(song: song, isCurrent: player.currentSong?.id == song.id)
-                                    }
-                                    .animation(.easeInOut(duration: 0.15), value: isSelecting)
+                        }
+                    } else if !albumSections.isEmpty {
+                        // One section per album, each under a small album
+                        // header — see `albumSections(for:)`.
+                        ForEach(albumSections) { section in
+                            Section {
+                                ForEach(section.songs) { song in
+                                    songListRow(song, subtitle: trackSubtitle(for: song))
                                 }
-                                .buttonStyle(.plain)
-                                // Matches the rounded-card row treatment the
-                                // Queue redesign uses, for visual consistency
-                                // across this whole redesign pass.
-                                .listRowBackground(
-                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                        .fill(AppTheme.elevatedSurface.opacity(0.6))
-                                )
-                                .listRowSeparator(.hidden)
+                            } header: {
+                                FolderAlbumHeader(section: section) {
+                                    player.setQueue(section.songs, startIndex: 0, autoplay: true)
+                                }
+                            }
+                            .listSectionSeparator(.hidden)
+                        }
+                    } else {
+                        // Track list — the same SongRow the Songs tab uses, so
+                        // rows honour the user's chosen row style everywhere.
+                        Section {
+                            ForEach(sortedSongs) { song in
+                                songListRow(song, subtitle: nil)
                             }
                         }
+                        .listSectionSeparator(.hidden)
+                    }
+
+                    if !sortedSongs.isEmpty {
+                        Section {
+                            summaryFooter
+                        }
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        .listSectionSeparator(.hidden)
                     }
                 }
-                // .plain to match the main Library's edge-to-edge list (was
-                // .insetGrouped, which made folders look boxed/different).
+                // .plain to match the main Library's edge-to-edge list.
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
             } else {
                 ScrollView {
                     VStack(spacing: 16) {
-                        FolderDetailHeaderView(
-                            folderName: folderName,
-                            folderURL: folderURL,
-                            representativeSong: songs.first,
-                            songCount: songs.count,
-                            totalDurationText: totalDurationText,
-                            totalSizeText: totalSizeText,
-                            customCover: $customCover
-                        )
-
-                        HStack(spacing: 12) {
-                            Button {
-                                player.setQueue(sortedSongs, startIndex: 0, autoplay: true)
-                            } label: {
-                                Label("Play", systemImage: "play.fill")
-                                    .font(.subheadline.weight(.semibold))
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.bordered)
-                            .tint(AppTheme.dynamicAccent)
-
-                            Button {
-                                let shuffled = songs.shuffled()
-                                player.setQueue(shuffled, startIndex: 0, autoplay: true)
-                            } label: {
-                                Label("Shuffle", systemImage: "shuffle")
-                                    .font(.subheadline.weight(.semibold))
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.bordered)
-                            .tint(AppTheme.dynamicAccent)
-                        }
-                        .padding(.horizontal, 16)
+                        headerAndControls
 
                         if sortedSongs.isEmpty {
                             EmptyStateView(icon: "folder", title: "Empty folder", message: "No audio files found inside \"\(folderName)\".")
@@ -314,6 +296,8 @@ struct LocalFolderDetailView: View {
                                 }
                             }
                             .padding(.horizontal, 16)
+
+                            summaryFooter
                         }
                     }
                     // Extra clearance below the last row — see SongsTab's
@@ -370,6 +354,7 @@ struct LocalFolderDetailView: View {
         .task(id: library.allSongs.count) {
             songs = computeSongs()
             refreshSortedSongs()
+            collageSongs = library.collageSongs(from: songs)
             recomputeTotalSize()
         }
         .onAppear {
@@ -409,6 +394,8 @@ struct LocalFolderDetailView: View {
                 onCancel: { showCreatePlaylistSheet = false }
             )
         }
+        // Sort and layout moved out of the toolbar into the inline controls
+        // row under the header; the toolbar keeps Select and the ⋯ menu.
         .toolbar {
             ToolbarItem(placement: .navigationBarLeading) {
                 Button(isSelecting ? "Done" : "Select") {
@@ -424,26 +411,8 @@ struct LocalFolderDetailView: View {
                 .disabled(songs.isEmpty)
             }
 
-            ToolbarItemGroup(placement: .navigationBarTrailing) {
+            ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
-                    Menu {
-                        ForEach(FolderSortOrder.allCases, id: \.self) { order in
-                            Button {
-                                sortOrderRaw = order.rawValue
-                            } label: {
-                                HStack {
-                                    Text(order.rawValue)
-                                    if sortOrder == order {
-                                        Spacer()
-                                        Image(systemName: "checkmark")
-                                    }
-                                }
-                            }
-                        }
-                    } label: {
-                        Label("Sort By", systemImage: "arrow.up.arrow.down")
-                    }
-
                     Button {
                         showCreatePlaylistSheet = true
                     } label: {
@@ -471,32 +440,256 @@ struct LocalFolderDetailView: View {
                     Image(systemName: "ellipsis.circle")
                 }
                 .tint(AppTheme.dynamicAccent)
-
-                Button {
-                    columns = 1
-                } label: {
-                    Image(systemName: "list.bullet")
-                        .foregroundStyle(columns == 1 ? AppTheme.dynamicAccent : AppTheme.textSecondary)
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    columns = 2
-                } label: {
-                    Image(systemName: "square.grid.2x2")
-                        .foregroundStyle(columns == 2 ? AppTheme.dynamicAccent : AppTheme.textSecondary)
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    columns = 3
-                } label: {
-                    Image(systemName: "square.grid.3x3")
-                        .foregroundStyle(columns == 3 ? AppTheme.dynamicAccent : AppTheme.textSecondary)
-                }
-                .buttonStyle(.plain)
             }
         }
+    }
+
+    // MARK: Header, actions and controls
+
+    private var headerAndControls: some View {
+        VStack(spacing: 18) {
+            FolderDetailHeaderView(
+                folderName: folderName,
+                folderURL: folderURL,
+                representativeSong: songs.first,
+                collageSongs: collageSongs,
+                artistSummary: artistSummary,
+                songCount: songs.count,
+                albumCount: albumCount,
+                totalDurationText: totalDurationText,
+                totalSizeText: totalSizeText,
+                customCover: $customCover
+            )
+
+            actionButtons
+                .padding(.horizontal, 16)
+
+            controlsRow
+                .padding(.horizontal, 16)
+        }
+        .padding(.bottom, 10)
+    }
+
+    private var actionButtons: some View {
+        HStack(spacing: 10) {
+            Button {
+                player.setQueue(sortedSongs, startIndex: 0, autoplay: true)
+            } label: {
+                Label("Play", systemImage: "play.fill")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 13)
+                    .background(AppTheme.dynamicAccentGradient, in: Capsule())
+            }
+            .buttonStyle(PressableButtonStyle())
+
+            Button {
+                player.setQueue(songs.shuffled(), startIndex: 0, autoplay: true)
+            } label: {
+                Label("Shuffle", systemImage: "shuffle")
+                    .font(.headline)
+                    .foregroundStyle(AppTheme.textPrimary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 13)
+                    .adaptiveGlass(tint: AppTheme.dynamicAccent.opacity(0.12), in: Capsule(), fallback: AppTheme.surface)
+            }
+            .buttonStyle(PressableButtonStyle())
+
+            Button {
+                for song in sortedSongs { player.appendToQueue(song: song) }
+                ToastCenter.shared.show(
+                    "Added \(sortedSongs.count) song\(sortedSongs.count == 1 ? "" : "s") to queue",
+                    category: .success, icon: "text.badge.plus"
+                )
+            } label: {
+                Image(systemName: "text.badge.plus")
+                    .font(.headline)
+                    .foregroundStyle(AppTheme.dynamicAccent)
+                    .frame(width: 48, height: 48)
+                    .adaptiveGlass(tint: AppTheme.dynamicAccent.opacity(0.12), in: Circle(), fallback: AppTheme.surface)
+            }
+            .buttonStyle(PressableButtonStyle())
+            .accessibilityLabel("Add folder to queue")
+        }
+        .disabled(songs.isEmpty)
+        .opacity(songs.isEmpty ? 0.5 : 1)
+    }
+
+    /// Sort on the left, list/grid on the right — both used to be toolbar
+    /// items (five in all, three of them bare layout icons).
+    private var controlsRow: some View {
+        HStack {
+            Menu {
+                ForEach(FolderSortOrder.allCases, id: \.self) { order in
+                    Button {
+                        sortOrderRaw = order.rawValue
+                    } label: {
+                        if sortOrder == order {
+                            Label(order.rawValue, systemImage: "checkmark")
+                        } else {
+                            Text(order.rawValue)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "arrow.up.arrow.down")
+                    Text(sortOrder.rawValue)
+                    Image(systemName: "chevron.down")
+                        .font(.caption2.weight(.bold))
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.textPrimary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .adaptiveGlass(in: Capsule(), fallback: AppTheme.surface.opacity(0.7))
+            }
+
+            Spacer()
+
+            HStack(spacing: 2) {
+                layoutButton(columns: 1, icon: "list.bullet", label: "List")
+                layoutButton(columns: 2, icon: "square.grid.2x2", label: "Two-column grid")
+                layoutButton(columns: 3, icon: "square.grid.3x3", label: "Three-column grid")
+            }
+            .padding(3)
+            .adaptiveGlass(in: Capsule(), fallback: AppTheme.surface.opacity(0.7))
+        }
+    }
+
+    private func layoutButton(columns target: Int, icon: String, label: String) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) { columns = target }
+        } label: {
+            Image(systemName: icon)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(columns == target ? Color.white : AppTheme.textSecondary)
+                .frame(width: 32, height: 26)
+                .background {
+                    if columns == target {
+                        Capsule().fill(AppTheme.dynamicAccent)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(columns == target ? .isSelected : [])
+    }
+
+    private var summaryFooter: some View {
+        Text("\(songs.count) \(songs.count == 1 ? "song" : "songs") · \(totalDurationText) · \(totalSizeText)")
+            .font(.caption)
+            .foregroundStyle(AppTheme.textSecondary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+    }
+
+    /// Inside an album section the album name is already the header, so rows
+    /// show the track number and artist instead of repeating it.
+    private func trackSubtitle(for song: Song) -> String {
+        song.trackNumber > 0 ? "\(song.trackNumber) · \(song.artistName)" : song.artistName
+    }
+
+    @ViewBuilder
+    private func songListRow(_ song: Song, subtitle: String?) -> some View {
+        Button {
+            if isSelecting {
+                toggleSelection(song)
+            } else {
+                player.play(song: song, in: sortedSongs)
+            }
+        } label: {
+            HStack(spacing: 12) {
+                if isSelecting {
+                    Image(systemName: selectedIDs.contains(song.id) ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 20))
+                        .foregroundStyle(
+                            selectedIDs.contains(song.id)
+                                ? AppTheme.dynamicAccent
+                                : AppTheme.textSecondary
+                        )
+                        .transition(.scale.combined(with: .opacity))
+                        .animation(.spring(response: 0.25, dampingFraction: 0.6), value: selectedIDs)
+                }
+                SongRow(song: song, isCurrent: player.currentSong?.id == song.id, subtitle: subtitle)
+            }
+            .animation(.easeInOut(duration: 0.15), value: isSelecting)
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(AppTheme.elevatedSurface.opacity(0.6))
+        )
+        .listRowSeparator(.hidden)
+    }
+}
+
+// MARK: - Album sections
+
+struct FolderAlbumSection: Identifiable {
+    let title: String
+    let songs: [Song]
+    var id: String { title }
+    var isUnknown: Bool { title == "Unknown Album" }
+
+    var artist: String? {
+        let artists = Set(songs.map(\.artistName))
+        return artists.count == 1 ? artists.first : "Various Artists"
+    }
+
+    var year: String? {
+        songs.lazy.map { $0.year.trimmingCharacters(in: .whitespaces) }.first { !$0.isEmpty }
+    }
+}
+
+/// A compact album header inside a folder's track list — cover, name,
+/// artist · year · count, and a play button for just that album.
+private struct FolderAlbumHeader: View {
+    let section: FolderAlbumSection
+    let onPlay: () -> Void
+
+    private var detail: String {
+        var parts: [String] = []
+        if let artist = section.artist { parts.append(artist) }
+        if let year = section.year { parts.append(year) }
+        parts.append("\(section.songs.count) \(section.songs.count == 1 ? "song" : "songs")")
+        return parts.joined(separator: " · ")
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Group {
+                if let first = section.songs.first {
+                    ArtworkThumbnail(song: first, size: 44)
+                } else {
+                    RoundedRectangle(cornerRadius: 8).fill(AppTheme.surface)
+                }
+            }
+            .frame(width: 44, height: 44)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(section.title)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(AppTheme.textPrimary)
+                    .lineLimit(1)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Button(action: onPlay) {
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: 26))
+                    .foregroundStyle(AppTheme.dynamicAccent)
+            }
+            .buttonStyle(PressableButtonStyle())
+            .accessibilityLabel("Play \(section.title)")
+        }
+        .padding(.vertical, 8)
+        .textCase(nil)
     }
 }
 
@@ -506,79 +699,64 @@ private struct FolderDetailHeaderView: View {
     let folderName: String
     let folderURL: URL
     let representativeSong: Song?
+    /// Up to four songs with distinct artwork, for the mosaic shown when the
+    /// folder has no custom cover.
+    let collageSongs: [Song]
+    let artistSummary: String?
     let songCount: Int
+    let albumCount: Int
     let totalDurationText: String
     let totalSizeText: String
     @Binding var customCover: UIImage?
 
     @State private var pickerItem: PhotosPickerItem?
 
+    private let coverSize: CGFloat = 200
+
     var body: some View {
         ZStack(alignment: .bottom) {
             // Big blurred-artwork backdrop, same component the Queue and
-            // Songs redesigns use — gives the folder its own atmosphere
-            // instead of opening straight onto a plain centered art tile on
-            // a flat background.
-            HeroArtworkBackdrop(song: representativeSong, height: 300)
+            // Songs redesigns use.
+            HeroArtworkBackdrop(song: representativeSong, height: 380)
 
             VStack(spacing: 14) {
                 BreadcrumbTrail(parent: "Imported Music", current: folderName)
 
                 ZStack(alignment: .bottomTrailing) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .fill(AppTheme.surface)
-                            .frame(width: 156, height: 156)
-
-                        if let customCover {
-                            Image(uiImage: customCover)
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: 156, height: 156)
-                                .clipped()
-                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        } else if let song = representativeSong {
-                            ArtworkThumbnail(song: song, size: 156)
-                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        } else {
-                            Image(systemName: "folder.fill")
-                                .font(.system(size: 44))
-                                .foregroundStyle(AppTheme.dynamicAccent)
-                        }
-                    }
-                    .frame(width: 156, height: 156)
-                    .shadow(color: .black.opacity(0.5), radius: 14, y: 8)
+                    cover
+                        .frame(width: coverSize, height: coverSize)
+                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                .stroke(.white.opacity(0.12), lineWidth: 1)
+                        )
+                        .shadow(color: .black.opacity(0.5), radius: 18, y: 10)
 
                     // Custom folder cover art — device-local, see
-                    // FolderCoverArtService. Overlaid on the artwork itself
-                    // (rather than a toolbar action) so it's discoverable the
-                    // same way changing a playlist's/profile's photo is
-                    // elsewhere in the app.
+                    // FolderCoverArtService. Overlaid on the artwork itself so
+                    // it's discoverable the same way changing a playlist's or
+                    // profile's photo is elsewhere in the app.
                     PhotosPicker(selection: $pickerItem, matching: .images) {
                         Image(systemName: "pencil.circle.fill")
-                            .font(.system(size: 24))
+                            .font(.system(size: 26))
                             .symbolRenderingMode(.palette)
                             .foregroundStyle(.white, AppTheme.dynamicAccent)
                             .background(Circle().fill(.black.opacity(0.35)))
                     }
-                    .padding(6)
+                    .padding(8)
+                    .accessibilityLabel("Change folder cover")
                 }
                 .onChange(of: pickerItem) { item in
                     guard let item else { return }
                     Task {
                         // Downsample straight from the encoded bytes (ImageIO,
                         // never decodes the full-resolution photo-library asset)
-                        // rather than `UIImage(data:)` + a later resize — same
-                        // rationale as every other raster import path in the app
-                        // (see ImageDownsampler's header comment).
+                        // — see ImageDownsampler's header comment.
                         guard let data = try? await item.loadTransferable(type: Data.self),
                               let image = ImageDownsampler.downsampled(from: data, maxPixelSize: 512)
                         else { return }
-                        // Explicit MainActor hop for everything past the `await`
-                        // above (loadTransferable can resume off the main actor) —
-                        // same defensive pattern CustomStyleEditorView's identical
-                        // PhotosPicker → onChange → Task flow uses, and required
-                        // here anyway since FolderCoverArtService is @MainActor.
+                        // loadTransferable can resume off the main actor, and
+                        // FolderCoverArtService is @MainActor.
                         await MainActor.run {
                             FolderCoverArtService.shared.setCover(image, for: folderURL)
                             customCover = FolderCoverArtService.shared.cover(for: folderURL)
@@ -588,21 +766,65 @@ private struct FolderDetailHeaderView: View {
                 }
 
                 VStack(spacing: 6) {
+                    Text("FOLDER")
+                        .font(.caption2.weight(.heavy))
+                        .tracking(1.4)
+                        .foregroundStyle(AppTheme.dynamicAccent)
                     Text(folderName)
-                        .font(.title2.weight(.bold))
+                        .font(.title.weight(.bold))
                         .foregroundStyle(AppTheme.textPrimary)
                         .multilineTextAlignment(.center)
-
+                        .lineLimit(2)
+                    if let artistSummary {
+                        Text(artistSummary)
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.textSecondary)
+                            .lineLimit(1)
+                    }
                     HStack(spacing: 8) {
                         ScreenStatChip(icon: "music.note", text: "\(songCount) \(songCount == 1 ? "song" : "songs")")
+                        if albumCount > 1 {
+                            ScreenStatChip(icon: "square.stack", text: "\(albumCount) albums")
+                        }
                         ScreenStatChip(icon: "clock", text: totalDurationText)
-                        ScreenStatChip(icon: "internaldrive", text: totalSizeText)
                     }
+                    .padding(.top, 4)
                 }
+                .padding(.horizontal, 16)
             }
-            .padding(.bottom, 18)
+            .padding(.bottom, 4)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private var cover: some View {
+        if let customCover {
+            Image(uiImage: customCover)
+                .resizable()
+                .scaledToFill()
+        } else if collageSongs.count >= 4 {
+            let half = coverSize / 2
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    ArtworkThumbnail(song: collageSongs[0], size: half)
+                    ArtworkThumbnail(song: collageSongs[1], size: half)
+                }
+                HStack(spacing: 0) {
+                    ArtworkThumbnail(song: collageSongs[2], size: half)
+                    ArtworkThumbnail(song: collageSongs[3], size: half)
+                }
+            }
+        } else if let song = collageSongs.first ?? representativeSong {
+            ArtworkThumbnail(song: song, size: coverSize)
+        } else {
+            ZStack {
+                AppTheme.surface
+                Image(systemName: "folder.fill")
+                    .font(.system(size: 52))
+                    .foregroundStyle(AppTheme.dynamicAccent)
+            }
+        }
     }
 }
 
