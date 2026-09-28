@@ -156,7 +156,9 @@ jobs:
                 -derivedDataPath build \
                 -resultBundlePath "$RUNNER_TEMP/results/$SLUG-$attempt.xcresult" \
                 -only-testing:LumisoundUITests/ScreenshotTests/testCaptureScreens \
-                CODE_SIGNING_ALLOWED=NO 2>&1 | tail -40 || attempt_status=1
+                CODE_SIGNING_ALLOWED=NO 2>&1 \
+                | grep -vE '^\s+t = .*(Checking existence|Checking `Expect|Capturing element|Waiting .* to exist)' \
+                | tail -250 || attempt_status=1
               if [ "$attempt_status" = 0 ] || [ -f "$OUT/$SLUG/12-settings.png" ] || [ "$attempt" = 2 ]; then
                 [ "$attempt_status" = 0 ] || status=1
                 break

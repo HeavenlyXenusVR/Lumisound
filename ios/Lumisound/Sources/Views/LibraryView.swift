@@ -144,7 +144,7 @@ struct LibraryView: View {
     // toolbar's Select entry point is gated on it too.
     @AppStorage("library_songs_columns") private var songColumns: Int = 1
 
-    @State private var selectedTab: LibraryTab = .hub
+    @State private var selectedTab: LibraryTab = ScreenshotMode.initialLibraryTab ?? .hub
     @State private var searchText: String = ""
     @State private var debouncedSearch: String = ""
     @State private var filteredSongsState: [Song] = []

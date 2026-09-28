@@ -54,27 +54,44 @@ final class ScreenshotTests: XCTestCase {
             snap("06-queue")
         }
 
-        if tap(tabButton(0, title: "Library"), what: "Library tab") {
-            for (tab, name) in [("Songs", "07-songs"), ("Albums", "08-albums"), ("Artists", "09-artists"), ("Playlists", "10-playlists")] {
-                if tap(element("libraryTab.\(tab)", label: tab), what: "\(tab) library tab") {
-                    sleep(2)
-                    snap(name)
-                }
-            }
-            if tap(element("libraryTab.Home", label: "Home"), what: "Home library tab") {
-                sleep(1)
-                if tap(app.buttons["Customize Home"], what: "Customize Home button") {
-                    sleep(1)
-                    snap("11-customize-home")
-                    app.buttons["Done"].firstMatch.tap()
-                }
-            }
+        if tap(tabButton(0, title: "Library"), what: "Library tab"),
+           tap(element("libraryTab.Songs", label: "Songs"), what: "Songs library tab") {
+            sleep(2)
+            snap("07-songs")
         }
 
         if tap(tabButton(6, title: "Settings"), what: "Settings tab") {
             sleep(1)
             snap("12-settings")
         }
+
+        // The rest of the library tabs sit off-screen in a horizontally
+        // scrolling row that UI tests couldn't reliably scroll or tap (runs
+        // 6–9). Relaunch straight onto each one instead.
+        for (tab, name) in [("Albums", "08-albums"), ("Artists", "09-artists"), ("Playlists", "10-playlists")] {
+            relaunch(libraryTab: tab)
+            snap(name)
+        }
+
+        relaunch(libraryTab: nil)
+        if tap(app.buttons["Customize Home"], what: "Customize Home button") {
+            sleep(2)
+            snap("11-customize-home")
+        }
+    }
+
+    /// Relaunches on the Library tab (`-selected_tab 0` overrides the saved
+    /// main tab for this launch), optionally opening a specific library tab.
+    private func relaunch(libraryTab: String?) {
+        app.terminate()
+        sleep(2)
+        app.launchArguments = ["-LumisoundScreenshotMode", "-selected_tab", "0"]
+        if let libraryTab {
+            app.launchArguments += ["-LumisoundScreenshotLibraryTab", libraryTab]
+        }
+        app.launch()
+        continueWithoutAccount()
+        sleep(4)
     }
 
     // MARK: Helpers
@@ -124,6 +141,12 @@ final class ScreenshotTests: XCTestCase {
     private func tap(_ element: XCUIElement, what: String) -> Bool {
         guard waitFor(element, timeout: 10, what: what) else { return false }
         scrollIntoView(element)
+        // Visible on screen but reported unhittable (run 9: the library
+        // tab chips, with something unseen over them): tap its position.
+        if !element.isHittable, app.frame.contains(CGPoint(x: element.frame.midX, y: element.frame.midY)) {
+            element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            return true
+        }
         guard element.isHittable else {
             // `tap()` on an unhittable element is a hard error that ends the
             // whole test; record it and move on to the next screen instead.
