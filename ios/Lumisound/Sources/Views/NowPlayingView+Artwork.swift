@@ -29,7 +29,7 @@ extension NowPlayingView {
             }
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
-            .gesture(artworkSwipeGesture)
+            .simultaneousGesture(artworkSwipeGesture)
 
             currentStylePill
         }

@@ -92,7 +92,7 @@ extension NowPlayingView {
             selectedPanelContent
                 .transition(.opacity)
                 .animation(.easeInOut(duration: 0.18), value: selectedPanel)
-                .gesture(panelSwipeGesture)
+                .simultaneousGesture(panelSwipeGesture)
         }
         .padding(12)
         .adaptiveGlass(
