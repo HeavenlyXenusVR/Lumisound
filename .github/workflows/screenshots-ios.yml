@@ -138,16 +138,32 @@ jobs:
             mkdir -p "$DATA/Documents"
             cp -R "$RUNNER_TEMP/demo-library/." "$DATA/Documents/"
 
-            TEST_RUNNER_SCREENSHOTS_DIR="$OUT/$SLUG" \
-            xcodebuild test-without-building \
-              -project Lumisound.xcodeproj \
-              -scheme LumisoundScreenshots \
-              -configuration Debug \
-              -destination "id=$UDID" \
-              -derivedDataPath build \
-              -resultBundlePath "$RUNNER_TEMP/results/$SLUG.xcresult" \
-              -only-testing:LumisoundUITests/ScreenshotTests/testCaptureScreens \
-              CODE_SIGNING_ALLOWED=NO 2>&1 | tail -40 || status=1
+            # One retry. On a busy headless runner the simulator's audio
+            # service sometimes doesn't answer while the app sets up its
+            # AVAudioEngine at launch, and CoreAudio aborts the process
+            # (_ReportRPCTimeout). That's the runner, not the app, and the
+            # next attempt normally gets through. A retry only happens when
+            # the attempt failed AND didn't get as far as Settings.
+            for attempt in 1 2; do
+              rm -rf "$OUT/$SLUG" "$RUNNER_TEMP/results/$SLUG-$attempt.xcresult"
+              attempt_status=0
+              TEST_RUNNER_SCREENSHOTS_DIR="$OUT/$SLUG" \
+              xcodebuild test-without-building \
+                -project Lumisound.xcodeproj \
+                -scheme LumisoundScreenshots \
+                -configuration Debug \
+                -destination "id=$UDID" \
+                -derivedDataPath build \
+                -resultBundlePath "$RUNNER_TEMP/results/$SLUG-$attempt.xcresult" \
+                -only-testing:LumisoundUITests/ScreenshotTests/testCaptureScreens \
+                CODE_SIGNING_ALLOWED=NO 2>&1 | tail -40 || attempt_status=1
+              if [ "$attempt_status" = 0 ] || [ -f "$OUT/$SLUG/12-settings.png" ] || [ "$attempt" = 2 ]; then
+                [ "$attempt_status" = 0 ] || status=1
+                break
+              fi
+              echo "::warning::Attempt $attempt on $ACTUAL failed early; retrying once."
+              sleep 20
+            done
 
             ls -1 "$OUT/$SLUG" 2>/dev/null || echo "No screenshots written for $SLUG"
 
