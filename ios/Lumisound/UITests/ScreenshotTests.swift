@@ -18,18 +18,7 @@ final class ScreenshotTests: XCTestCase {
     }
 
     func testCaptureScreens() {
-        // Pass 1: the app scans the demo library and ScreenshotMode seeds
-        // play history, favorites and playlists.
-        app.launch()
-        continueWithoutAccount()
-        waitFor(app.staticTexts["Recently Added"], timeout: 120, what: "demo library scan")
-        // The Resume card's "Paused" label appears once seeding has loaded a
-        // track, which is its last step. Closing the app before that loses
-        // the seed data (and once seemed to break the next launch).
-        waitFor(app.staticTexts["Paused"], timeout: 60, what: "seeding to finish")
-        sleep(4) // the playback snapshot is written on a background task
-        app.terminate()
-        sleep(3)
+        seedDemoLibrary()
 
         // Pass 2: the seeded data is on disk, so Home builds with it from the start.
         app.launch()
@@ -78,6 +67,39 @@ final class ScreenshotTests: XCTestCase {
             sleep(2)
             snap("11-customize-home")
         }
+    }
+
+    /// The Folders tab and one folder's detail screen, at the top and
+    /// scrolled. Runs on its own (workflow input `tests: folders`) for quick
+    /// before/after checks while that screen is being worked on.
+    func testCaptureFolderScreens() {
+        seedDemoLibrary()
+        relaunch(libraryTab: "Folders")
+        snap("20-folders")
+
+        if tap(app.staticTexts["Late Night"].firstMatch, what: "Late Night folder") {
+            sleep(3)
+            snap("21-folder-detail")
+            app.swipeUp()
+            sleep(2)
+            snap("22-folder-detail-scrolled")
+        }
+    }
+
+    /// Pass 1: the app scans the demo library and ScreenshotMode seeds play
+    /// history, favorites and playlists. Seeding is idempotent, so every
+    /// test can start with this.
+    private func seedDemoLibrary() {
+        app.launch()
+        continueWithoutAccount()
+        waitFor(app.staticTexts["Recently Added"], timeout: 120, what: "demo library scan")
+        // The Resume card's "Paused" label appears once seeding has loaded a
+        // track, which is its last step. Closing the app before that loses
+        // the seed data (and once seemed to break the next launch).
+        waitFor(app.staticTexts["Paused"], timeout: 60, what: "seeding to finish")
+        sleep(4) // the playback snapshot is written on a background task
+        app.terminate()
+        sleep(3)
     }
 
     /// Relaunches on the Library tab (`-selected_tab 0` overrides the saved
