@@ -136,10 +136,11 @@ final class ScreenshotTests: XCTestCase {
     }
 
     /// The library tab row is a horizontal scroller, so later tabs (Albums,
-    /// Artists, Playlists) start off-screen. Swipes on a visible tab in the
-    /// same row (same identifier prefix, e.g. "libraryTab.") towards the
-    /// target until it's on screen. A coordinate press-and-drag didn't move
-    /// the row in run 6; a real swipe on an element inside it does.
+    /// Artists, Playlists) start off-screen. Swipes the row towards the
+    /// target, starting from the visible tab furthest from the edge it
+    /// swipes towards (run 8 swiped from the leftmost tab, right at the
+    /// screen edge, and the row never moved), then falls back to a fast
+    /// drag across the row. Logs positions so a miss can be diagnosed.
     private func scrollIntoView(_ element: XCUIElement) {
         guard !element.isHittable else { return }
         let identifier = element.identifier
@@ -147,12 +148,21 @@ final class ScreenshotTests: XCTestCase {
         let prefix = String(identifier[...dot])
         let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", prefix))
         let width = app.frame.width
-        for _ in 0..<6 where !element.isHittable {
-            guard let anchor = row.allElementsBoundByIndex.first(where: { $0.isHittable }) else { return }
-            if element.frame.minX >= width / 2 {
-                anchor.swipeLeft()
-            } else {
-                anchor.swipeRight()
+        for attempt in 0..<8 where !element.isHittable {
+            let target = element.frame
+            let towardsLeft = target.midX > width / 2
+            let visible = row.allElementsBoundByIndex
+                .filter { $0.isHittable }
+                .sorted { $0.frame.midX < $1.frame.midX }
+            print("scrollIntoView \(identifier) attempt \(attempt): target \(target), visible \(visible.map(\.identifier))")
+            if attempt < 4, let anchor = towardsLeft ? visible.last : visible.first {
+                if towardsLeft { anchor.swipeLeft() } else { anchor.swipeRight() }
+            } else if !target.isEmpty {
+                let y = (visible.first?.frame.midY ?? target.midY)
+                let origin = app.coordinate(withNormalizedOffset: .zero)
+                let from = origin.withOffset(CGVector(dx: towardsLeft ? width * 0.85 : width * 0.15, dy: y))
+                let to = origin.withOffset(CGVector(dx: towardsLeft ? width * 0.15 : width * 0.85, dy: y))
+                from.press(forDuration: 0.01, thenDragTo: to, withVelocity: .fast, thenHoldForDuration: 0)
             }
             sleep(1)
         }
