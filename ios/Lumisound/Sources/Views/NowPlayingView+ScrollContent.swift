@@ -27,16 +27,13 @@ extension NowPlayingView {
                 VStack(spacing: screenStyle.sectionSpacing) {
                     topBar
 
-                    // Subtle scroll-linked parallax — the hero eases down in
-                    // scale/opacity as it scrolls toward the top edge.
+                    // No `.scrollTransition` parallax here: with it, a swipe
+                    // that started anywhere in the hero didn't scroll the
+                    // screen (screenshot runs 3, 5 and 6), while swipes
+                    // starting below it always did.
                     heroSection
                         .transition(.opacity.combined(with: .scale(scale: 0.98)))
                         .animation(.easeInOut(duration: 0.25), value: displayMode)
-                        .scrollTransition(.animated) { content, phase in
-                            content
-                                .scaleEffect(phase.isIdentity ? 1.0 : 0.94)
-                                .opacity(phase.isIdentity ? 1.0 : 0.85)
-                        }
 
                     VStack(spacing: 14) {
                         trackInfoSection
