@@ -211,10 +211,17 @@ struct LumisoundApp: App {
                     // Configure background logger (idempotent — safe if .task fires multiple times)
                     AppLogger.shared.configure(bridgeURL: streaming.bridgeURL)
 
+                    // Screenshot workflow only — see ScreenshotMode.swift.
+                    if ScreenshotMode.isActive {
+                        Task { await ScreenshotMode.seed(library: libraryManager, player: player) }
+                    }
+
                     // Genuine 5-minute foreground check for tracks ready to
                     // convert to the Lumisound-exclusive extension — idempotent,
                     // safe to call every time this .task re-fires.
-                    LumisoundTrackVaultService.startFiveMinuteForegroundLoop()
+                    if !ScreenshotMode.isActive {
+                        LumisoundTrackVaultService.startFiveMinuteForegroundLoop()
+                    }
 
                     // Restore audio settings — player must be configured before any resume.
                     player.restoreDefaultAudioSettings(PersistenceService.shared.loadAudioSettings() ?? AudioSettings())
@@ -270,8 +277,10 @@ struct LumisoundApp: App {
                     // just keeps her checking continuously, but the actual
                     // corrupt/duplicate calls (auto-delete, acoustic match + auto-remove)
                     // are Aria's decisions, not raw heuristics acting alone.
-                    CorruptFileFinderService.shared.startPeriodicScanning()
-                    DuplicateFinderService.shared.startPeriodicScanning()
+                    if !ScreenshotMode.isActive {
+                        CorruptFileFinderService.shared.startPeriodicScanning()
+                        DuplicateFinderService.shared.startPeriodicScanning()
+                    }
 
                     // Aria's cloud-library housekeeping counterpart to the
                     // local corrupt-file scan above — once a day, at most.
@@ -285,7 +294,9 @@ struct LumisoundApp: App {
                     // Periodically retry online metadata lookups for imported
                     // tracks still missing artist/album/genre/year (e.g. after
                     // restoring files from a backup).
-                    libraryManager.startPeriodicMetadataReenrichment()
+                    if !ScreenshotMode.isActive {
+                        libraryManager.startPeriodicMetadataReenrichment()
+                    }
 
                     // Every 3 minutes, re-read embedded tags for a small rotating
                     // batch of imported tracks so externally-updated metadata
@@ -353,7 +364,9 @@ struct LumisoundApp: App {
 
                     // Request device-notification authorization and mirror any
                     // existing unread server-inbox items to device notifications.
-                    await NotificationService.shared.requestAuthorization()
+                    if !ScreenshotMode.isActive {
+                        await NotificationService.shared.requestAuthorization()
+                    }
                     if account.isLoggedIn {
                         let unread = await account.fetchNotifications(unreadOnly: true)
                         NotificationService.shared.syncServerNotifications(unread)
@@ -372,7 +385,9 @@ struct LumisoundApp: App {
 
                     // Check for updates after a brief delay.
                     try? await Task.sleep(nanoseconds: 3_000_000_000)
-                    await updater.checkForUpdates()
+                    if !ScreenshotMode.isActive {
+                        await updater.checkForUpdates()
+                    }
 
                     // Queue the periodic background check (subscriptions +
                     // tracked playlists) — see BackgroundRefreshService.

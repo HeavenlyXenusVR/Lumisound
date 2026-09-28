@@ -911,6 +911,8 @@ struct CustomTabBar: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // Stable handle for UI tests; the visible label can be hidden in Settings.
+        .accessibilityIdentifier("tab.\(spec.tag)")
     }
 
     /// The Profile tab (tag 5) shows the user's real avatar instead of a

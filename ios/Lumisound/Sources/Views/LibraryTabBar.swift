@@ -46,6 +46,7 @@ struct LibraryTabBar: View {
                             }
                     }
                     .buttonStyle(PressableButtonStyle())
+                    .accessibilityIdentifier("libraryTab.\(tab.rawValue)")
                 }
             }
             .padding(.vertical, 2)
