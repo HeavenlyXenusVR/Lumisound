@@ -5,88 +5,98 @@ extension NowPlayingView {
 
     // MARK: - Scroll content
 
+    // 2026-09 restructure. Top to bottom:
+    //
+    //   header        display mode · PLAYING FROM <source> · overflow
+    //   hero          artwork (any built-in / custom style) or lyrics,
+    //                 with a pill naming the style (opens Customize)
+    //   track info    title, artist, format chips · heart
+    //   timeline      the chosen seeker (+ optional counter)
+    //   transport     shuffle · prev · play · next · repeat (custom-style aware)
+    //   utility row   lyrics · AirPlay · SharePlay · sleep · queue
+    //   actions       Radio · Save · Share · Customize
+    //   panels        Controls / Sound / Queue / Lyrics / Marks, in a glass card
+    //   stations      suggestion shelf
+    //
+    // Everything that was a style picker on the screen itself (26 artwork
+    // chips, 12 seeker chips, 6 counter chips) is in the Customize sheet, and
+    // the navigation bar is hidden so the header row is the top of the screen.
     var scrollContent: some View {
-        ScrollView {
-            VStack(spacing: screenStyle.sectionSpacing) {
-                // ── Top bar: hero display-mode pill, AirPlay, overflow menu ──
-                topBar
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: screenStyle.sectionSpacing) {
+                    topBar
 
-                // ── Hero card: artwork or full lyrics, depending on displayMode ──
-                // `.scrollTransition` (the scroll-linked parallax below) needs
-                // iOS 17 — this app's deployment target is iOS 16 — so it's
-                // only applied on 17+; iOS 16 falls back to just the
-                // transition/animation with no parallax rather than failing
-                // to build entirely.
-                if #available(iOS 17.0, *) {
+                    // No `.scrollTransition` parallax here: with it, a swipe
+                    // that started anywhere in the hero didn't scroll the
+                    // screen (screenshot runs 3, 5 and 6), while swipes
+                    // starting below it always did.
                     heroSection
                         .transition(.opacity.combined(with: .scale(scale: 0.98)))
                         .animation(.easeInOut(duration: 0.25), value: displayMode)
-                        // Subtle scroll-linked parallax — the hero card eases down
-                        // in scale/opacity as it scrolls toward the top edge,
-                        // rather than just hard-clipping, for a touch more
-                        // premium "liveliness" while scrolling to the panels below.
-                        .scrollTransition(.animated) { content, phase in
-                            content
-                                .scaleEffect(phase.isIdentity ? 1.0 : 0.94)
-                                .opacity(phase.isIdentity ? 1.0 : 0.85)
-                        }
-                } else {
-                    heroSection
-                        .transition(.opacity.combined(with: .scale(scale: 0.98)))
-                        .animation(.easeInOut(duration: 0.25), value: displayMode)
+
+                    VStack(spacing: 14) {
+                        trackInfoSection
+                        aiDJCaption
+                        timelineSection
+                    }
+
+                    transportSection
+
+                    utilityRow
+
+                    ListenTogetherReactionBar()
+
+                    actionPillsRow
+
+                    panelCard
+                        .id(Self.panelsAnchor)
+
+                    // Contextual station ideas use the current song's
+                    // metadata, plus the account's listening history and
+                    // favorites.
+                    StationSuggestionsSection(
+                        seed: player.currentSong.map { StationSeed(song: $0) },
+                        accent: screenStyle.accentColor
+                    )
                 }
-
-                trackInfoSection
-                aiDJCaption
-                ListenTogetherReactionBar()
-                timelineSection
-                transportSection
-
-                // A small decorative drag-handle accent below transport,
-                // echoing the reference design's sheet-drag affordance —
-                // purely cosmetic here since this screen is a fixed tab
-                // rather than a dismissible sheet.
-                Capsule()
-                    .fill(AppTheme.textSecondary.opacity(0.25))
-                    .frame(width: 36, height: 4)
-                    .frame(maxWidth: .infinity)
-
-                // ── "Playing from" context row + like/radio/save/share pills ──
-                playingFromRow
-                actionPillsRow
-
-                // Contextual station ideas use the current song's metadata,
-                // plus the account's listening history and favorites.
-                StationSuggestionsSection(
-                    seed: player.currentSong.map { StationSeed(song: $0) },
-                    accent: screenStyle.accentColor
-                )
-
-                // ── Secondary controls, organized into switchable, swipeable panels ──
-                panelPicker
-                panelPageDots
-                selectedPanelContent
-                    .transition(.opacity)
-                    .animation(.easeInOut(duration: 0.18), value: selectedPanel)
-                    .gesture(panelSwipeGesture)
+                .padding(.horizontal, 16)
+                .padding(.top, 4)
+                // `CustomTabBar` is composited over every tab via
+                // `.safeAreaInset` on ContentView and only reserves space for
+                // screens that pad for it themselves — so this does, or the
+                // bottom of this screen sits under the tab bar.
+                .padding(.bottom, 32 + CustomTabBar.totalHeight)
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            // `CustomTabBar` is composited above every tab's own content via
-            // `.safeAreaInset` on ContentView's outer Group (see its own doc
-            // comment) — that inset only reserves space automatically for
-            // screens that explicitly add a matching bottom inset/padding
-            // themselves (MiniPlayerBar already does, see its doc comment).
-            // NowPlayingView never did, so its own bottom controls/action
-            // pills rendered flush to the true safe area, directly under
-            // where the pill-shaped tab bar sits on top and intercepts
-            // touches meant for this screen. Reserving the same
-            // `CustomTabBar.totalHeight` here keeps this screen's content
-            // clear of it, consistent with every other tab.
-            .padding(.bottom, 32 + CustomTabBar.totalHeight)
+            .scrollIndicators(.hidden)
+            .onChange(of: panelScrollRequest) { _ in
+                withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+                    proxy.scrollTo(Self.panelsAnchor, anchor: .top)
+                }
+            }
         }
         .navigationTitle("Now Playing")
-        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .navigationBar)
+    }
+
+    static let panelsAnchor = "nowPlayingPanels"
+
+    /// The secondary-controls panels in one glass card: the picker as its
+    /// header, the selected panel below. No sideways swipe to change panel:
+    /// the panels are full of horizontal sliders (volume, speed, pitch, EQ)
+    /// that a swipe recognizer over them would fight with.
+    var panelCard: some View {
+        VStack(spacing: 16) {
+            panelPicker
+            selectedPanelContent
+                .transition(.opacity)
+                .animation(.easeInOut(duration: 0.18), value: selectedPanel)
+        }
+        .padding(12)
+        .adaptiveGlass(
+            in: RoundedRectangle(cornerRadius: max(screenStyle.elementCornerRadius, 24), style: .continuous),
+            fallback: AppTheme.surface.opacity(0.35)
+        )
     }
 
     /// The hero card — artwork display (default) or a full-size synced
@@ -106,74 +116,46 @@ extension NowPlayingView {
         }
     }
 
-    /// A custom sliding-pill segmented control — the accent capsule glides
-    /// between labels via a shared `matchedGeometryEffect` instead of the
-    /// native segmented control's instant cross-fade.
+    /// Sliding-pill segmented control with an icon over each label — the
+    /// accent capsule glides between panels via `matchedGeometryEffect`.
+    /// (The page dots that sat under it are gone: the pill already shows
+    /// which panel is selected.)
     var panelPicker: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 2) {
             ForEach(NowPlayingPanel.allCases) { panel in
+                let isSelected = selectedPanel == panel
                 Button {
                     selectHaptic.selectionChanged()
                     withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
                         selectedPanel = panel
                     }
                 } label: {
-                    Text(panel.rawValue)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(selectedPanel == panel ? .white : AppTheme.textSecondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                        .background {
-                            if selectedPanel == panel {
-                                Capsule(style: .continuous)
-                                    .fill(screenStyle.accentColor)
-                                    .matchedGeometryEffect(id: "panelPickerPill", in: panelPickerNamespace)
-                            }
+                    VStack(spacing: 3) {
+                        Image(systemName: panel.iconName)
+                            .font(.system(size: 14, weight: .semibold))
+                        Text(panel.rawValue)
+                            .font(.system(size: 11, weight: .semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                    .foregroundStyle(isSelected ? .white : AppTheme.textSecondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 7)
+                    .background {
+                        if isSelected {
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(screenStyle.accentColor)
+                                .matchedGeometryEffect(id: "panelPickerPill", in: panelPickerNamespace)
                         }
+                    }
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         }
         .padding(3)
-        .background(AppTheme.surface.opacity(0.6), in: Capsule(style: .continuous))
-        .padding(.top, 4)
-    }
-
-    /// A YouTube-Music-style paging dot indicator beneath the panel picker —
-    /// echoes the reference design's swipeable-cards paging cue. Paired with
-    /// `panelSwipeGesture` (attached to `selectedPanelContent` below) so the
-    /// panels are both tappable (via `panelPicker`) and swipeable.
-    var panelPageDots: some View {
-        HStack(spacing: 6) {
-            ForEach(NowPlayingPanel.allCases) { panel in
-                Circle()
-                    .fill(panel == selectedPanel ? screenStyle.accentColor : AppTheme.textSecondary.opacity(0.3))
-                    .frame(width: 5, height: 5)
-            }
-        }
-        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: selectedPanel)
-        .padding(.top, 2)
-    }
-
-    /// Horizontal swipe on the panel content advances/retreats through
-    /// `NowPlayingPanel.allCases`, mirroring `panelPicker`'s taps. Requires a
-    /// clearly-horizontal drag so it doesn't fight the ScrollView's vertical
-    /// scrolling.
-    var panelSwipeGesture: some Gesture {
-        DragGesture(minimumDistance: 30)
-            .onEnded { value in
-                let horizontal = value.translation.width
-                let vertical = value.translation.height
-                guard abs(horizontal) > abs(vertical) * 1.5, abs(horizontal) > 40 else { return }
-                let cases = NowPlayingPanel.allCases
-                guard let idx = cases.firstIndex(of: selectedPanel) else { return }
-                let nextIdx = horizontal < 0 ? idx + 1 : idx - 1
-                guard cases.indices.contains(nextIdx) else { return }
-                selectHaptic.selectionChanged()
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
-                    selectedPanel = cases[nextIdx]
-                }
-            }
+        .background(AppTheme.surface.opacity(0.45), in: RoundedRectangle(cornerRadius: 17, style: .continuous))
     }
 
     @ViewBuilder

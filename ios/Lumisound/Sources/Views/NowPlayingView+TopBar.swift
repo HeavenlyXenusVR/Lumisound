@@ -40,24 +40,41 @@ extension NowPlayingView {
 
     // MARK: - Top bar
     //
-    // A reinterpretation of the YouTube-Music-style reference's collapsed-
-    // header row (expand chevron / headphones-video toggle / cast / overflow)
-    // — this screen is a permanent tab rather than a dismissible sheet (see
-    // `MiniPlayerBar`, owned by another workstream, for this app's actual
-    // "collapsed player"), so there's no expand/dismiss chevron here. The
-    // display-mode pill, AirPlay/cast button, and overflow menu all carry
-    // over as genuinely useful affordances though.
+    // 2026-09 restructure: the navigation bar ("Now Playing") is hidden and
+    // this row is the header — display-mode pill on the left, "PLAYING FROM
+    // <source>" in the middle (it used to be a separate row halfway down the
+    // screen; tapping it opens the Queue panel), overflow menu on the right.
+    // AirPlay moved to the utility row under the transport controls.
 
     var topBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             displayModePill
-            Spacer()
-            AirPlayRoutePicker(
-                tint: UIColor(AppTheme.textSecondary),
-                activeTint: UIColor(screenStyle.accentColor)
-            )
-            .frame(width: 26, height: 26)
+                .frame(width: 76, alignment: .leading)
+
+            Spacer(minLength: 4)
+
+            Button {
+                showPanel(.queue)
+            } label: {
+                VStack(spacing: 1) {
+                    Text("PLAYING FROM")
+                        .font(.system(size: 10, weight: .heavy))
+                        .tracking(1.2)
+                        .foregroundStyle(AppTheme.textSecondary)
+                    Text(playingFromLabel)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.textPrimary)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Shows the queue")
+
+            Spacer(minLength: 4)
+
             overflowMenu
+                .frame(width: 76, alignment: .trailing)
         }
     }
 
@@ -86,8 +103,8 @@ extension NowPlayingView {
                 .buttonStyle(.plain)
             }
         }
-        .padding(2)
-        .background(AppTheme.surface.opacity(0.6), in: Capsule(style: .continuous))
+        .padding(3)
+        .adaptiveGlass(in: Capsule(style: .continuous), fallback: AppTheme.surface.opacity(0.6))
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: displayMode)
     }
 
@@ -108,6 +125,11 @@ extension NowPlayingView {
                 showSleepTimerSheet = true
             } label: {
                 Label(sleepTimer.isActive ? "Edit Sleep Timer" : "Sleep Timer", systemImage: "moon.zzz.fill")
+            }
+            Button {
+                showCustomizeSheet = true
+            } label: {
+                Label("Customize Now Playing", systemImage: "paintbrush")
             }
             Button {
                 showStyleManager = true
@@ -144,76 +166,124 @@ extension NowPlayingView {
                 }
             }
         } label: {
-            Image(systemName: "ellipsis.circle.fill")
-                .font(.system(size: 20, weight: .medium))
-                .foregroundStyle(AppTheme.textSecondary)
-                .frame(width: 30, height: 30)
+            Image(systemName: "ellipsis")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(AppTheme.textPrimary)
+                .frame(width: 36, height: 36)
+                .adaptiveGlass(in: Circle(), fallback: AppTheme.surface.opacity(0.6))
         }
+        .accessibilityLabel("More")
     }
 
-    // MARK: - "Playing from" row
+    // MARK: - Utility row
+    //
+    // One row of round glass buttons under the transport controls — the
+    // Apple-Music-style bottom row: lyrics, AirPlay, SharePlay, sleep timer,
+    // queue. Each used to live somewhere different (top bar, track-info row,
+    // overflow menu, "Playing from" row).
 
-    /// Context label + a pill jumping straight to the Queue panel —
-    /// reinterprets the reference design's "Playing from X" row + queue/save
-    /// affordance pairing.
-    var playingFromRow: some View {
-        HStack(spacing: 8) {
-            Image(systemName: player.currentPlaylistID != nil ? "music.note.list" : "books.vertical.fill")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(AppTheme.textSecondary)
-            Text("Playing from \(playingFromLabel)")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(AppTheme.textSecondary)
-                .lineLimit(1)
-
-            Spacer(minLength: 8)
-
-            Button {
-                selectHaptic.selectionChanged()
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
-                    selectedPanel = .queue
+    var utilityRow: some View {
+        HStack(spacing: 0) {
+            utilityButton(
+                icon: displayMode == .lyrics ? "quote.bubble.fill" : "quote.bubble",
+                label: displayMode == .lyrics ? "Show Artwork" : "Show Lyrics",
+                isActive: displayMode == .lyrics
+            ) {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    displayMode = displayMode == .lyrics ? .artwork : .lyrics
                 }
-            } label: {
-                HStack(spacing: 4) {
-                    Text("Queue")
-                        .font(.caption.weight(.semibold))
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
-                }
-                .foregroundStyle(screenStyle.accentColor)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(screenStyle.accentColor.opacity(0.14), in: Capsule())
             }
-            .buttonStyle(.plain)
+            Spacer(minLength: 0)
+            AirPlayRoutePicker(
+                tint: UIColor(screenStyle.controlsColor ?? AppTheme.textSecondary),
+                activeTint: UIColor(screenStyle.accentColor)
+            )
+            .frame(width: 24, height: 24)
+            .frame(width: 44, height: 44)
+            .adaptiveGlass(in: Circle(), fallback: AppTheme.surface.opacity(0.5))
+            .accessibilityLabel("AirPlay")
+            Spacer(minLength: 0)
+            sharePlayButton
+            Spacer(minLength: 0)
+            utilityButton(
+                icon: sleepTimer.isActive ? "moon.zzz.fill" : "moon.zzz",
+                label: sleepTimer.isActive ? "Edit Sleep Timer" : "Sleep Timer",
+                isActive: sleepTimer.isActive
+            ) {
+                showSleepTimerSheet = true
+            }
+            Spacer(minLength: 0)
+            utilityButton(
+                icon: "list.bullet",
+                label: "Queue",
+                isActive: false,
+                badge: upNextSongs.isEmpty ? nil : upNextSongs.count
+            ) {
+                showPanel(.queue)
+            }
         }
+        .padding(.horizontal, 6)
+    }
+
+    func utilityButton(
+        icon: String,
+        label: String,
+        isActive: Bool,
+        badge: Int? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button {
+            selectHaptic.selectionChanged()
+            action()
+        } label: {
+            Image(systemName: icon)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(isActive ? .white : (screenStyle.controlsColor ?? AppTheme.textSecondary))
+                .frame(width: 44, height: 44)
+                .background {
+                    if isActive {
+                        Circle().fill(screenStyle.accentColor)
+                    }
+                }
+                .adaptiveGlass(in: Circle(), fallback: AppTheme.surface.opacity(isActive ? 0 : 0.5))
+                .overlay(alignment: .topTrailing) {
+                    if let badge {
+                        Text(badge > 99 ? "99+" : "\(badge)")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 4)
+                            .frame(minWidth: 16, minHeight: 16)
+                            .background(screenStyle.accentColor, in: Capsule())
+                            .offset(x: 4, y: -2)
+                    }
+                }
+                .symbolReplaceTransition()
+        }
+        .buttonStyle(PressableButtonStyle())
+        .accessibilityLabel(label)
+        .animation(.easeInOut(duration: 0.18), value: isActive)
+    }
+
+    /// Selects a panel and scrolls down to it (see `scrollContent`'s
+    /// `panelScrollRequest` handler).
+    func showPanel(_ panel: NowPlayingPanel) {
+        selectHaptic.selectionChanged()
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+            selectedPanel = panel
+        }
+        panelScrollRequest += 1
     }
 
     // MARK: - Action pills row
 
-    /// Like / AI-suggestion (Auto-Radio) / Save-to-playlist / Share pills —
-    /// a reinterpretation of the reference design's action-pill row.
-    /// Deliberately no "dislike" pill: this app has no recommendation/
-    /// blacklist infrastructure for one to actually influence (see this
-    /// workstream's final summary) — a pill that looks functional but isn't
-    /// would be worse than not having it.
+    /// Radio / Save-to-playlist / Share / Customize. Like moved out — the
+    /// heart next to the title already does it, so the pill was a second
+    /// copy of the same toggle. Still no "dislike": there's no
+    /// recommendation system for one to feed.
     var actionPillsRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                if let song = player.currentSong {
-                    actionPill(
-                        icon: library.isFavorite(songID: song.id) ? "heart.fill" : "heart",
-                        label: "Like",
-                        isActive: library.isFavorite(songID: song.id)
-                    ) {
-                        heartHaptic.impactOccurred()
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                            library.toggleFavorite(songID: song.id)
-                        }
-                    }
-                }
-
-                actionPill(icon: "sparkles", label: "Radio", isActive: player.autoRadioEnabled) {
+                actionPill(icon: "dot.radiowaves.left.and.right", label: "Radio", isActive: player.autoRadioEnabled) {
                     selectHaptic.selectionChanged()
                     withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
                         player.autoRadioEnabled.toggle()
@@ -237,10 +307,16 @@ extension NowPlayingView {
                 shareLink {
                     actionPillLabel(icon: "square.and.arrow.up", label: "Share", isActive: false)
                 }
+
+                actionPill(icon: "paintpalette", label: "Customize", isActive: false) {
+                    selectHaptic.selectionChanged()
+                    showCustomizeSheet = true
+                }
             }
             .padding(.horizontal, 2)
             .padding(.vertical, 2)
         }
+        .scrollClipDisabled()
     }
 
     func actionPill(icon: String, label: String, isActive: Bool, action: @escaping () -> Void) -> some View {
@@ -259,11 +335,13 @@ extension NowPlayingView {
         }
         .foregroundStyle(isActive ? .white : AppTheme.textPrimary)
         .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(
-            isActive ? screenStyle.accentColor : AppTheme.surface,
-            in: RoundedRectangle(cornerRadius: screenStyle.elementCornerRadius, style: .continuous)
-        )
+        .padding(.vertical, 9)
+        .background {
+            if isActive {
+                Capsule(style: .continuous).fill(screenStyle.accentColor)
+            }
+        }
+        .adaptiveGlass(in: Capsule(style: .continuous), fallback: AppTheme.surface.opacity(isActive ? 0 : 0.7))
         .animation(.easeInOut(duration: 0.18), value: isActive)
     }
 }

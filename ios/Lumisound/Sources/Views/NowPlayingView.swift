@@ -14,6 +14,16 @@ enum NowPlayingPanel: String, CaseIterable, Identifiable {
     case lyrics     = "Lyrics"
     case bookmarks  = "Marks"
     var id: String { rawValue }
+
+    var iconName: String {
+        switch self {
+        case .controls:  return "slider.horizontal.3"
+        case .sound:     return "waveform"
+        case .queue:     return "list.bullet"
+        case .lyrics:    return "quote.bubble"
+        case .bookmarks: return "bookmark"
+        }
+    }
 }
 
 /// The big central card's display mode — a reinterpretation of the
@@ -219,23 +229,23 @@ struct NowPlayingView: View {
         }
     }
 
-    // Seeker style
-    @State var seekerStyle: SeekerStyle = {
-        if let raw = UserDefaults.standard.string(forKey: "nowPlaying_seekerStyle"),
-           let style = SeekerStyle(rawValue: raw) {
-            return style
-        }
-        return .waveform
-    }()
+    // Seeker + playtime counter styles — @AppStorage (they used to be
+    // @State seeded once from UserDefaults) so a change made in Appearance
+    // settings, by a Lua theme preset, or by a sync pull shows up here
+    // without relaunching.
+    @AppStorage("nowPlaying_seekerStyle") var seekerStyle: SeekerStyle = .waveform
+    // Defaults to `.hidden`: every seeker style draws its own time labels,
+    // so the extra counter row only repeated them (the "1:51 / -0:54" above
+    // "1:50 · -0:55" doubling). Anyone who picked a counter keeps it.
+    @AppStorage("nowPlaying_playtimeCounterStyle") var playtimeCounterStyle: PlaytimeCounterStyle = .hidden
 
-    // Playtime counter style
-    @State var playtimeCounterStyle: PlaytimeCounterStyle = {
-        if let raw = UserDefaults.standard.string(forKey: "nowPlaying_playtimeCounterStyle"),
-           let style = PlaytimeCounterStyle(rawValue: raw) {
-            return style
-        }
-        return .elapsedRemaining
-    }()
+    /// The Customize sheet — artwork style, seeker and time display, which
+    /// used to be three always-visible chip rows on the screen itself.
+    @State var showCustomizeSheet = false
+
+    /// Bumped to scroll down to the panels card (the header's "Playing
+    /// from" and the utility row's queue button both open the Queue panel).
+    @State var panelScrollRequest = 0
 
     // Queue preview panel
     @AppStorage("nowPlaying_showQueuePreview") var showQueuePreview = true
@@ -295,6 +305,31 @@ struct NowPlayingView: View {
         .sheet(isPresented: $showSleepTimerSheet) {
             SleepTimerSheet()
                 .environmentObject(sleepTimer)
+        }
+        .sheet(isPresented: $showCustomizeSheet) {
+            NowPlayingCustomizeSheet(
+                artworkStyleSelection: artworkStyleSelection,
+                seekerStyle: $seekerStyle,
+                playtimeCounterStyle: $playtimeCounterStyle,
+                accent: screenStyle.accentColor,
+                onSelectArtworkStyle: { selectStyle($0) }
+            )
+            .environmentObject(library)
+            .environmentObject(player)
+        }
+        // Here rather than on the artwork section, which isn't in the tree
+        // while the hero shows lyrics — the overflow menu's "Manage Styles"
+        // did nothing in that mode.
+        .sheet(item: $editingCustomStyle) { style in
+            CustomStyleEditorView(style: style, previewSong: player.currentSong) { saved in
+                customStyleStore.update(saved)
+                selectStyle(saved.id)
+            }
+            .environmentObject(library)
+        }
+        .sheet(isPresented: $showStyleManager) {
+            StyleManagerView()
+                .environmentObject(library)
         }
         .sheet(isPresented: $showFormatInfoSheet) {
             FormatInfoSheet(song: player.currentSong, isUsingFallback: player.isUsingOpusPlayer)

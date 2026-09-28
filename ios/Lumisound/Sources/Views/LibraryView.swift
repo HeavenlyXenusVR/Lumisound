@@ -361,7 +361,7 @@ struct LibraryView: View {
         case .artists:
             ArtistsTab()
         case .albums:
-            AlbumsTab()
+            AlbumsTab(searchText: debouncedSearch)
         case .folders:
             FoldersTab()
         case .genres:

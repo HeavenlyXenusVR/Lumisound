@@ -64,6 +64,8 @@ final class PresenceService: ObservableObject {
                 await self.sendHeartbeat(account: account, player: player)
             }
         }
+        // Lets iOS batch this wake-up with others (battery).
+        heartbeatTimer?.tolerance = (Self.heartbeatInterval) * 0.1
     }
 
     func stopHeartbeat() {
@@ -141,6 +143,8 @@ final class PresenceService: ObservableObject {
                 await self.fetchFriendsPresence(account: account)
             }
         }
+        // Lets iOS batch this wake-up with others (battery).
+        friendsPollTimer?.tolerance = (Self.friendsPollInterval) * 0.1
     }
 
     func stopFriendsPolling() {

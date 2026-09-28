@@ -41,11 +41,13 @@ extension NowPlayingView {
                 }
             } label: {
                 Image(systemName: "shareplay")
-                    .font(.system(size: 20, weight: .medium))
-                    .foregroundStyle(AppTheme.textSecondary)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(screenStyle.controlsColor ?? AppTheme.textSecondary)
                     .frame(width: 44, height: 44)
+                    .adaptiveGlass(in: Circle(), fallback: AppTheme.surface.opacity(0.5))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableButtonStyle())
+            .accessibilityLabel("SharePlay")
         }
     }
 
@@ -72,93 +74,107 @@ extension NowPlayingView {
         }
     }
 
+    // 2026-09 restructure: title and artist get the full width (the format
+    // and BPM chips used to share the artist's line and squeeze its
+    // marquee), with the chips on their own line underneath. SharePlay
+    // moved to the utility row; the heart stays here.
     var trackInfoSection: some View {
         HStack(alignment: .center, spacing: 12) {
-            // Whole title/artist row is tappable — a reinterpretation of the
-            // reference design's "chevron to view more info": opens the same
-            // format/detail sheet the format-tag chip below already opens.
+            // Tapping the title/artist opens the format / detail sheet.
             Button {
                 guard player.currentSong != nil else { return }
                 selectHaptic.selectionChanged()
                 showFormatInfoSheet = true
             } label: {
-                HStack(alignment: .center, spacing: 6) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(player.currentSong?.displayName ?? "Nothing Playing")
-                            .font(screenStyle.titleFont)
-                            .foregroundStyle(screenStyle.titleColor)
-                            .lineLimit(2)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .contentTransition(.opacity)
-                        HStack(spacing: 6) {
-                            MarqueeText(
-                                text: player.currentSong?.artistName ?? "Choose a song from the Library",
-                                font: screenStyle.artistFont,
-                                color: screenStyle.artistColor
-                            )
-                            .frame(height: 20)
-                            .contentTransition(.opacity)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(player.currentSong?.displayName ?? "Nothing Playing")
+                        .font(screenStyle.titleFont)
+                        .foregroundStyle(screenStyle.titleColor)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.leading)
+                        .contentTransition(.opacity)
+                    MarqueeText(
+                        text: player.currentSong?.artistName ?? "Choose a song from the Library",
+                        font: screenStyle.artistFont,
+                        color: screenStyle.artistColor
+                    )
+                    .frame(height: 22)
+                    .contentTransition(.opacity)
 
-                            if LuaFeatureFlags.showBpmBadges, let bpm = player.currentSong?.bpm {
-                                Text("\(Int(bpm.rounded())) BPM")
-                                    .font(AppTheme.monoFont(size: 11))
-                                    .foregroundStyle(AppTheme.textSecondary)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(AppTheme.elevatedSurface, in: Capsule())
-                                    .fixedSize()
-                            }
-
-                            if let song = player.currentSong, let formatTag = song.formatTag {
-                                HStack(spacing: 4) {
-                                    if player.isUsingOpusPlayer {
-                                        Image(systemName: "exclamationmark.triangle.fill")
-                                            .font(.system(size: 9))
-                                            .foregroundStyle(AppTheme.warning)
-                                    }
-                                    Text(formatTag)
-                                        .font(AppTheme.monoFont(size: 11))
-                                }
-                                .foregroundStyle(AppTheme.textSecondary)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(AppTheme.elevatedSurface, in: Capsule())
-                                .fixedSize()
-                            }
-                        }
-                    }
-                    if player.currentSong != nil {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(AppTheme.textSecondary.opacity(0.6))
-                    }
+                    trackBadges
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
             .animation(.easeInOut(duration: 0.25), value: player.currentSong?.id)
-            Spacer(minLength: 8)
-
-            sharePlayButton
 
             if let song = player.currentSong {
+                let isFavorite = library.isFavorite(songID: song.id)
                 Button {
                     heartHaptic.impactOccurred()
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
                         library.toggleFavorite(songID: song.id)
                     }
                 } label: {
-                    Image(systemName: library.isFavorite(songID: song.id) ? "heart.fill" : "heart")
-                        .font(.system(size: 22, weight: .medium))
-                        .foregroundStyle(library.isFavorite(songID: song.id) ? screenStyle.accentColor : AppTheme.textSecondary)
-                        .frame(width: 44, height: 44)
+                    Image(systemName: isFavorite ? "heart.fill" : "heart")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(isFavorite ? screenStyle.accentColor : (screenStyle.controlsColor ?? AppTheme.textPrimary))
+                        .frame(width: 46, height: 46)
+                        .adaptiveGlass(in: Circle(), fallback: AppTheme.surface.opacity(0.5))
                         .symbolReplaceTransition()
                 }
                 .buttonStyle(PressableButtonStyle())
+                .accessibilityLabel(isFavorite ? "Remove from Favorites" : "Add to Favorites")
             }
         }
         // Slide-up + fade-in on track change
         .opacity(trackInfoVisible ? 1 : 0)
         .offset(y: trackInfoVisible ? 0 : 14)
         .animation(.spring(response: 0.42, dampingFraction: 0.72), value: trackInfoVisible)
+    }
+
+    /// Format / BPM chips under the artist — nothing at all when neither
+    /// applies, so the row doesn't reserve empty space.
+    @ViewBuilder
+    var trackBadges: some View {
+        let bpm = LuaFeatureFlags.showBpmBadges ? player.currentSong?.bpm : nil
+        let formatTag = player.currentSong?.formatTag
+        if bpm != nil || formatTag != nil {
+            HStack(spacing: 6) {
+                if let formatTag {
+                    HStack(spacing: 4) {
+                        if player.isUsingOpusPlayer {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.system(size: 9))
+                                .foregroundStyle(AppTheme.warning)
+                        }
+                        Text(formatTag)
+                            .font(AppTheme.monoFont(size: 10))
+                    }
+                    .trackBadgeStyle()
+                }
+                if let bpm {
+                    Text("\(Int(bpm.rounded())) BPM")
+                        .font(AppTheme.monoFont(size: 10))
+                        .trackBadgeStyle()
+                }
+                Image(systemName: "info.circle")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(AppTheme.textSecondary.opacity(0.7))
+            }
+            .padding(.top, 2)
+        }
+    }
+}
+
+private extension View {
+    func trackBadgeStyle() -> some View {
+        self
+            .foregroundStyle(AppTheme.textSecondary)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .overlay(Capsule().strokeBorder(AppTheme.textSecondary.opacity(0.35), lineWidth: 1))
+            .fixedSize()
     }
 }

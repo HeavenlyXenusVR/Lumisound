@@ -113,7 +113,7 @@ struct AvatarFrameOverlay: View {
             // rather than a repeating `.animation`, matching how the decoration
             // and effect overlays animate — the angle is a pure function of the
             // clock, so nothing has to be started, stopped, or kept in sync.
-            TimelineView(.animation) { timeline in
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
                 let angle = timeline.date.timeIntervalSinceReferenceDate
                     .truncatingRemainder(dividingBy: 3) / 3 * 360
                 Circle()
@@ -128,7 +128,7 @@ struct AvatarFrameOverlay: View {
 
         case .orbit:
             // A faint track with a single dot travelling around it.
-            TimelineView(.animation) { timeline in
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
                 let t = timeline.date.timeIntervalSinceReferenceDate
                 let angle = t.truncatingRemainder(dividingBy: 4) / 4 * 2 * .pi
                 let radius = (diameter + 14) / 2

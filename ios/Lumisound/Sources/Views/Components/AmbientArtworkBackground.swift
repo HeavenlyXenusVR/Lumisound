@@ -17,8 +17,16 @@ struct AmbientArtworkBackground: View {
     @EnvironmentObject private var library: LibraryManager
     @State private var palette: ArtworkPalette?
 
+    /// The glow is drawn on a canvas well beyond the artwork and faded out
+    /// radially before its edge. It used to be rasterized (`drawingGroup`)
+    /// into the 320pt square it was laid out in, which cut the blur off
+    /// along a hard edge — the visible "box" behind every artwork style.
+    static let canvasSide: CGFloat = 560
+
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isPlaying)) { timeline in
+        // 30fps: a drift that takes 7–9s per leg looks identical at half the
+        // frame rate, and this is the largest blurred layer on the screen.
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !isPlaying)) { timeline in
             let drift = ArtworkClock.pingPong(timeline.date, legDuration: 9) * 36
             let pulse = 1.0 + ArtworkClock.pingPong(timeline.date, legDuration: 7) * 0.18
 
@@ -26,24 +34,33 @@ struct AmbientArtworkBackground: View {
                 if let palette {
                     Circle()
                         .fill(palette.primary)
-                        .frame(width: 320, height: 320)
-                        .blur(radius: 80)
-                        .offset(x: -90 + drift, y: -60 - drift * 0.6)
+                        .frame(width: 300, height: 300)
+                        .offset(x: -80 + drift, y: -50 - drift * 0.6)
                         .scaleEffect(pulse)
 
                     Circle()
                         .fill(palette.secondary)
-                        .frame(width: 300, height: 300)
-                        .blur(radius: 80)
-                        .offset(x: 100 - drift, y: 70 + drift * 0.5)
+                        .frame(width: 280, height: 280)
+                        .offset(x: 90 - drift, y: 60 + drift * 0.5)
                         .scaleEffect(2 - pulse)
                 }
             }
+            .frame(width: Self.canvasSide, height: Self.canvasSide)
+            .blur(radius: 70)
+            .mask(
+                RadialGradient(
+                    colors: [.white, .white.opacity(0.6), .clear],
+                    center: .center,
+                    startRadius: 0,
+                    endRadius: Self.canvasSide / 2
+                )
+            )
             .drawingGroup()
             .opacity(0.55)
             .allowsHitTesting(false)
             .animation(.easeInOut(duration: 1.2), value: palette)
         }
+        .frame(width: Self.canvasSide, height: Self.canvasSide)
         .task(id: song?.id) {
             await loadPalette()
         }

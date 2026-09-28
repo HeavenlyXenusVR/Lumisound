@@ -4,132 +4,106 @@ import UIKit
 extension NowPlayingView {
 
     // MARK: - Artwork
+    //
+    // 2026-09 restructure: the row of 26+ style chips that sat under the
+    // artwork is gone — it was the first thing under the cover and pushed
+    // the title and controls well down the screen. Styles are now picked in
+    // the Customize sheet (`NowPlayingCustomizeSheet`), opened from the small
+    // pill under the artwork that names the current style. Swiping the
+    // artwork still skips tracks.
+
+    // The artwork stage (2026-09): every style — built-in or custom — is
+    // drawn at 300pt and now sits on one shared stage instead of each one
+    // floating in its own box:
+    //
+    // - a fixed 320pt-tall stage, so switching styles or tracks never moves
+    //   the title and controls below;
+    // - the ambient palette glow as a *background* that bleeds past the
+    //   stage without taking layout space, faded out radially (it used to be
+    //   clipped to a square, the hard-edged box behind every style);
+    // - a soft floor shadow tinted by the accent, which grounds the artwork.
+    static let artworkStageHeight: CGFloat = 320
 
     var artworkSection: some View {
-        VStack(spacing: 14) {
-            // ── Artwork display ──────────────────────────────────────────
-            ZStack {
-                AmbientArtworkBackground(song: player.currentSong, isPlaying: artworkIsPlaying)
-                    .environmentObject(library)
-
-                artworkDisplay
-                    .scaleEffect(artworkScale * artworkDragScale)
-                    .opacity(artworkOpacity)
-                    .offset(x: artworkDragOffset)
-                    .animation(.spring(response: 0.4, dampingFraction: 0.65), value: artworkScale)
-                    .animation(.easeInOut(duration: 0.2), value: artworkOpacity)
-                    .id(artworkAnimationID)
-                    .modifier(PulseModifier(isPlaying: player.isPlaying))
-            }
-            .frame(maxWidth: .infinity)
-            .contentShape(Rectangle())
-            .gesture(artworkSwipeGesture)
-
-            // ── Style picker (horizontal scroll: built-ins + custom + add/manage) ──
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(visibleBuiltinStyles) { style in
-                        styleChip(
-                            icon: style.iconName, name: style.displayName,
-                            isSelected: artworkStyleSelection == style.rawValue
-                        ) {
-                            selectStyle(style.rawValue)
-                        }
+        VStack(spacing: 12) {
+            artworkDisplay
+                .scaleEffect(artworkScale * artworkDragScale)
+                .opacity(artworkOpacity)
+                .offset(x: artworkDragOffset)
+                .animation(.spring(response: 0.4, dampingFraction: 0.65), value: artworkScale)
+                .animation(.easeInOut(duration: 0.2), value: artworkOpacity)
+                .id(artworkAnimationID)
+                .modifier(PulseModifier(isPlaying: player.isPlaying))
+                .frame(maxWidth: .infinity)
+                .frame(height: Self.artworkStageHeight)
+                .background {
+                    ZStack {
+                        AmbientArtworkBackground(song: player.currentSong, isPlaying: artworkIsPlaying)
+                            .environmentObject(library)
+                        artworkFloorShadow
                     }
-                    ForEach(customStyleStore.styles) { custom in
-                        styleChip(
-                            icon: custom.iconName, name: custom.name,
-                            isSelected: artworkStyleSelection == custom.id
-                        ) {
-                            selectStyle(custom.id)
-                        }
-                        .contextMenu {
-                            Button {
-                                editingCustomStyle = custom
-                            } label: {
-                                Label("Edit", systemImage: "pencil")
-                            }
-                            Button(role: .destructive) {
-                                customStyleStore.remove(id: custom.id)
-                            } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
-                        }
-                    }
-                    addStyleChip
-                    manageStylesButton
+                    .allowsHitTesting(false)
                 }
-                .padding(.horizontal, 2)
-                .padding(.vertical, 2)
-            }
+                .contentShape(Rectangle())
+                .gesture(artworkSwipeGesture)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(player.currentSong.map { "Artwork for \($0.displayName)" } ?? "No artwork")
+                .accessibilityHint("Swipe left or right to change track")
+
+            currentStylePill
         }
         .frame(maxWidth: .infinity)
-        .padding(.top, 8)
-        .sheet(item: $editingCustomStyle) { style in
-            CustomStyleEditorView(style: style, previewSong: player.currentSong) { saved in
-                customStyleStore.update(saved)
-                selectStyle(saved.id)
-            }
-            .environmentObject(library)
-        }
-        .sheet(isPresented: $showStyleManager) {
-            StyleManagerView()
-                .environmentObject(library)
-        }
+        .padding(.top, 4)
     }
 
-    func styleChip(icon: String, name: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.system(size: 14, weight: .medium))
-                Text(name)
-                    .font(.system(size: 11, weight: .medium))
-            }
-            .foregroundStyle(isSelected ? .white : AppTheme.textSecondary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(
-                isSelected ? screenStyle.accentColor : AppTheme.surface,
-                in: RoundedRectangle(cornerRadius: screenStyle.elementCornerRadius, style: .continuous)
-            )
-        }
-        .buttonStyle(.plain)
-        .animation(.easeInOut(duration: 0.18), value: isSelected)
+    /// A blurred ellipse under the stage, in the accent colour, so the
+    /// artwork reads as sitting on something rather than hanging in space.
+    var artworkFloorShadow: some View {
+        Ellipse()
+            .fill(screenStyle.accentColor.opacity(0.35))
+            .frame(width: 220, height: 34)
+            .blur(radius: 22)
+            .offset(y: Self.artworkStageHeight / 2 - 6)
     }
 
-    var addStyleChip: some View {
-        Button {
-            editingCustomStyle = CustomNowPlayingStyle()
+    /// Name + icon of the selected artwork style (built-in or custom).
+    var currentStyleLabel: (name: String, icon: String) {
+        if let builtin = selectedBuiltinStyle {
+            return (builtin.displayName, builtin.iconName)
+        }
+        if let custom = selectedCustomStyle {
+            return (custom.name, custom.iconName)
+        }
+        return (NowPlayingArtworkStyle.kaleidoscopeBloom.displayName, NowPlayingArtworkStyle.kaleidoscopeBloom.iconName)
+    }
+
+    /// "✦ Kaleidoscope Bloom ⌄" — opens the Customize sheet. No long-press
+    /// menu: a `.contextMenu` here swallowed vertical drags that started on
+    /// the pill, so the screen wouldn't scroll from the middle of it.
+    var currentStylePill: some View {
+        let label = currentStyleLabel
+        return Button {
+            selectHaptic.selectionChanged()
+            showCustomizeSheet = true
         } label: {
-            VStack(spacing: 4) {
-                Image(systemName: "plus")
-                    .font(.system(size: 14, weight: .medium))
-                Text("New Style")
-                    .font(.system(size: 11, weight: .medium))
+            HStack(spacing: 6) {
+                Image(systemName: label.icon)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(screenStyle.accentColor)
+                Text(label.name)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.textPrimary)
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(AppTheme.textSecondary)
             }
-            .foregroundStyle(screenStyle.accentColor)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: screenStyle.elementCornerRadius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: screenStyle.elementCornerRadius, style: .continuous)
-                    .strokeBorder(screenStyle.accentColor.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-            )
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .adaptiveGlass(in: Capsule(), fallback: AppTheme.surface.opacity(0.6))
         }
-        .buttonStyle(.plain)
-    }
-
-    var manageStylesButton: some View {
-        Button {
-            showStyleManager = true
-        } label: {
-            Image(systemName: "slider.horizontal.3")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(AppTheme.textSecondary)
-                .frame(width: 32, height: 32)
-                .background(AppTheme.surface, in: Circle())
-        }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableButtonStyle())
+        .accessibilityLabel("Artwork style: \(label.name)")
+        .accessibilityHint("Opens Now Playing customization")
     }
 }

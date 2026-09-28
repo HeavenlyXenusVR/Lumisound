@@ -32,6 +32,8 @@ extension LibraryManager {
                 await self?.reenrichSongsMissingMetadata()
             }
         }
+        // Lets iOS batch this wake-up with others (battery).
+        timer.tolerance = (interval) * 0.1
         RunLoop.main.add(timer, forMode: .common)
         metadataReenrichTimer = timer
     }

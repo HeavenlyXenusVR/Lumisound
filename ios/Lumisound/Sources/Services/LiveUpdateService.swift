@@ -99,6 +99,8 @@ final class LiveUpdateService: NSObject {
         pingTimer = Timer.scheduledTimer(withTimeInterval: 25, repeats: true) { [weak self] _ in
             self?.task?.send(.string("ping")) { _ in }
         }
+        // Lets iOS batch this wake-up with others (battery).
+        pingTimer?.tolerance = (25) * 0.1
     }
 
     private func listenForMessages() {

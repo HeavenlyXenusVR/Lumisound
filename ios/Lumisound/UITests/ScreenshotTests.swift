@@ -86,6 +86,54 @@ final class ScreenshotTests: XCTestCase {
         }
     }
 
+    /// The Albums tab, one album's detail screen, and Now Playing (top,
+    /// scrolled to the panels, and the Customize sheet). Runs on its own
+    /// with workflow input `tests: albums`.
+    func testCaptureAlbumAndNowPlayingScreens() {
+        seedDemoLibrary()
+        relaunch(libraryTab: "Albums")
+        sleep(2)
+        snap("30-albums")
+        app.swipeUp()
+        sleep(2)
+        snap("31-albums-scrolled")
+
+        let album = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Glass Meridian")).firstMatch
+        if tap(album, what: "Glass Meridian album") {
+            sleep(3)
+            snap("32-album-detail")
+            app.swipeUp()
+            sleep(2)
+            snap("33-album-detail-scrolled")
+        }
+
+        // Straight onto the Playing tab: tapping it after a relaunch onto
+        // Library didn't switch tabs in run 18.
+        relaunch(libraryTab: nil, mainTab: 1)
+        do {
+            sleep(3)
+            snap("34-now-playing")
+            // Screen centre is the artwork style pill — this swipe also
+            // checks that a drag starting on it scrolls the screen (a
+            // context menu on the pill used to swallow it).
+            app.swipeUp()
+            sleep(2)
+            snap("35-now-playing-scrolled")
+            app.swipeUp()
+            sleep(2)
+            snap("36-now-playing-panels")
+            app.swipeDown()
+            app.swipeDown()
+            app.swipeDown()
+            sleep(1)
+            let stylePill = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Artwork style")).firstMatch
+            if tap(stylePill, what: "artwork style pill") {
+                sleep(2)
+                snap("37-now-playing-customize")
+            }
+        }
+    }
+
     /// Pass 1: the app scans the demo library and ScreenshotMode seeds play
     /// history, favorites and playlists. Seeding is idempotent, so every
     /// test can start with this.
@@ -104,10 +152,10 @@ final class ScreenshotTests: XCTestCase {
 
     /// Relaunches on the Library tab (`-selected_tab 0` overrides the saved
     /// main tab for this launch), optionally opening a specific library tab.
-    private func relaunch(libraryTab: String?) {
+    private func relaunch(libraryTab: String?, mainTab: Int = 0) {
         app.terminate()
         sleep(2)
-        app.launchArguments = ["-LumisoundScreenshotMode", "-selected_tab", "0"]
+        app.launchArguments = ["-LumisoundScreenshotMode", "-selected_tab", "\(mainTab)"]
         if let libraryTab {
             app.launchArguments += ["-LumisoundScreenshotLibraryTab", libraryTab]
         }

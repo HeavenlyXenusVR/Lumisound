@@ -54,6 +54,8 @@ final class SleepTimerService: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.tick() }
         }
+        // Lets iOS batch this wake-up with others (battery).
+        timer?.tolerance = (1) * 0.1
         appLog("SleepTimer: started for \(Int(d))s (\(formattedRemaining))", category: "general")
     }
 

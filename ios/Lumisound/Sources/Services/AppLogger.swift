@@ -326,6 +326,8 @@ final class AppLogger: ObservableObject {
         flushTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             Task { [weak self] in await self?.flush() }
         }
+        // Lets iOS batch this wake-up with others (battery).
+        flushTimer?.tolerance = (15) * 0.1
     }
 
     private func flush() async {
