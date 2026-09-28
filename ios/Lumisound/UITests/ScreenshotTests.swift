@@ -113,7 +113,9 @@ final class ScreenshotTests: XCTestCase {
         do {
             sleep(3)
             snap("34-now-playing")
-            app.swipeUp()
+            // Drag from the title (screen centre is the style pill); if
+            // this scrolls but a centre swipe doesn't, the pill is eating it.
+            drag(fromY: 0.56, toY: 0.12)
             sleep(2)
             snap("35-now-playing-scrolled")
             app.swipeUp()
@@ -256,6 +258,13 @@ final class ScreenshotTests: XCTestCase {
             }
             sleep(1)
         }
+    }
+
+    /// A slow vertical drag between two normalized heights, at mid-width.
+    private func drag(fromY: CGFloat, toY: CGFloat) {
+        let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: fromY))
+        let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: toY))
+        from.press(forDuration: 0.05, thenDragTo: to, withVelocity: .default, thenHoldForDuration: 0.1)
     }
 
     private func snap(_ name: String) {
