@@ -4,10 +4,16 @@ import UIKit
 extension NowPlayingView {
 
     // MARK: - Artwork
+    //
+    // 2026-09 restructure: the row of 26+ style chips that sat under the
+    // artwork is gone — it was the first thing under the cover and pushed
+    // the title and controls well down the screen. Styles are now picked in
+    // the Customize sheet (`NowPlayingCustomizeSheet`), opened from the small
+    // pill under the artwork that names the current style. Swiping the
+    // artwork still skips tracks.
 
     var artworkSection: some View {
-        VStack(spacing: 14) {
-            // ── Artwork display ──────────────────────────────────────────
+        VStack(spacing: 12) {
             ZStack {
                 AmbientArtworkBackground(song: player.currentSong, isPlaying: artworkIsPlaying)
                     .environmentObject(library)
@@ -25,111 +31,87 @@ extension NowPlayingView {
             .contentShape(Rectangle())
             .gesture(artworkSwipeGesture)
 
-            // ── Style picker (horizontal scroll: built-ins + custom + add/manage) ──
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(visibleBuiltinStyles) { style in
-                        styleChip(
-                            icon: style.iconName, name: style.displayName,
-                            isSelected: artworkStyleSelection == style.rawValue
-                        ) {
-                            selectStyle(style.rawValue)
-                        }
-                    }
-                    ForEach(customStyleStore.styles) { custom in
-                        styleChip(
-                            icon: custom.iconName, name: custom.name,
-                            isSelected: artworkStyleSelection == custom.id
-                        ) {
-                            selectStyle(custom.id)
-                        }
-                        .contextMenu {
-                            Button {
-                                editingCustomStyle = custom
-                            } label: {
-                                Label("Edit", systemImage: "pencil")
-                            }
-                            Button(role: .destructive) {
-                                customStyleStore.remove(id: custom.id)
-                            } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
-                        }
-                    }
-                    addStyleChip
-                    manageStylesButton
-                }
-                .padding(.horizontal, 2)
-                .padding(.vertical, 2)
-            }
+            currentStylePill
         }
         .frame(maxWidth: .infinity)
-        .padding(.top, 8)
-        .sheet(item: $editingCustomStyle) { style in
-            CustomStyleEditorView(style: style, previewSong: player.currentSong) { saved in
-                customStyleStore.update(saved)
-                selectStyle(saved.id)
-            }
-            .environmentObject(library)
-        }
-        .sheet(isPresented: $showStyleManager) {
-            StyleManagerView()
-                .environmentObject(library)
-        }
+        .padding(.top, 4)
     }
 
-    func styleChip(icon: String, name: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.system(size: 14, weight: .medium))
-                Text(name)
-                    .font(.system(size: 11, weight: .medium))
-            }
-            .foregroundStyle(isSelected ? .white : AppTheme.textSecondary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(
-                isSelected ? screenStyle.accentColor : AppTheme.surface,
-                in: RoundedRectangle(cornerRadius: screenStyle.elementCornerRadius, style: .continuous)
-            )
+    /// Name + icon of the selected artwork style (built-in or custom).
+    var currentStyleLabel: (name: String, icon: String) {
+        if let builtin = selectedBuiltinStyle {
+            return (builtin.displayName, builtin.iconName)
         }
-        .buttonStyle(.plain)
-        .animation(.easeInOut(duration: 0.18), value: isSelected)
+        if let custom = selectedCustomStyle {
+            return (custom.name, custom.iconName)
+        }
+        return (NowPlayingArtworkStyle.kaleidoscopeBloom.displayName, NowPlayingArtworkStyle.kaleidoscopeBloom.iconName)
     }
 
-    var addStyleChip: some View {
-        Button {
-            editingCustomStyle = CustomNowPlayingStyle()
+    /// "✦ Kaleidoscope Bloom ⌄" — opens the Customize sheet. Long-press for
+    /// a quick menu of every style without leaving the screen.
+    var currentStylePill: some View {
+        let label = currentStyleLabel
+        return Button {
+            selectHaptic.selectionChanged()
+            showCustomizeSheet = true
         } label: {
-            VStack(spacing: 4) {
-                Image(systemName: "plus")
-                    .font(.system(size: 14, weight: .medium))
-                Text("New Style")
-                    .font(.system(size: 11, weight: .medium))
+            HStack(spacing: 6) {
+                Image(systemName: label.icon)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(screenStyle.accentColor)
+                Text(label.name)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.textPrimary)
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(AppTheme.textSecondary)
             }
-            .foregroundStyle(screenStyle.accentColor)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: screenStyle.elementCornerRadius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: screenStyle.elementCornerRadius, style: .continuous)
-                    .strokeBorder(screenStyle.accentColor.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-            )
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .adaptiveGlass(in: Capsule(), fallback: AppTheme.surface.opacity(0.6))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableButtonStyle())
+        .contextMenu {
+            Button {
+                cycleArtworkStyle()
+            } label: {
+                Label("Next Style", systemImage: "arrow.right.circle")
+            }
+            Divider()
+            ForEach(visibleBuiltinStyles) { style in
+                Button {
+                    selectStyle(style.rawValue)
+                } label: {
+                    Label(style.displayName, systemImage: artworkStyleSelection == style.rawValue ? "checkmark" : style.iconName)
+                }
+            }
+            if !customStyleStore.styles.isEmpty {
+                Divider()
+                ForEach(customStyleStore.styles) { custom in
+                    Button {
+                        selectStyle(custom.id)
+                    } label: {
+                        Label(custom.name, systemImage: artworkStyleSelection == custom.id ? "checkmark" : custom.iconName)
+                    }
+                }
+            }
+        }
+        .accessibilityLabel("Artwork style: \(label.name)")
+        .accessibilityHint("Opens Now Playing customization")
     }
 
-    var manageStylesButton: some View {
-        Button {
-            showStyleManager = true
-        } label: {
-            Image(systemName: "slider.horizontal.3")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(AppTheme.textSecondary)
-                .frame(width: 32, height: 32)
-                .background(AppTheme.surface, in: Circle())
+    /// Steps to the next style in the same order the Customize sheet lists
+    /// them (visible built-ins, then custom styles), wrapping around.
+    func cycleArtworkStyle() {
+        let ids = visibleBuiltinStyles.map(\.rawValue) + customStyleStore.styles.map(\.id)
+        guard !ids.isEmpty else { return }
+        let next = ids.firstIndex(of: artworkStyleSelection).map { ($0 + 1) % ids.count } ?? 0
+        skipHaptic.impactOccurred()
+        withAnimation(.easeInOut(duration: 0.25)) {
+            selectStyle(ids[next])
         }
-        .buttonStyle(.plain)
+        ToastCenter.shared.show(currentStyleLabel.name, category: .info, icon: currentStyleLabel.icon)
     }
 }

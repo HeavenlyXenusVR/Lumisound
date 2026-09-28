@@ -5,81 +5,36 @@ extension NowPlayingView {
 
     // MARK: - Timeline
 
+    // 2026-09 restructure: the seeker and playtime-counter style pickers
+    // (two horizontally scrolling chip rows, plus the custom-seeker panel)
+    // moved into the Customize sheet. What's left is the scrubber and, when
+    // one is chosen, the counter — tap it to step to the next format.
     var timelineSection: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 6) {
             NowPlayingScrubber(seekerStyle: seekerStyle, seekHaptic: seekHaptic)
-            NowPlayingPlaytimeCounter(style: playtimeCounterStyle)
-            seekerStylePicker
-            if seekerStyle == .custom {
-                CustomScrubberSettingsPanel()
+            if playtimeCounterStyle != .hidden {
+                Button {
+                    selectHaptic.selectionChanged()
+                    cyclePlaytimeCounterStyle()
+                } label: {
+                    NowPlayingPlaytimeCounter(style: playtimeCounterStyle)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 3)
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("Changes the time format")
             }
-            playtimeCounterStylePicker
         }
     }
 
-    var playtimeCounterRow: some View {
-        NowPlayingPlaytimeCounter(style: playtimeCounterStyle)
-    }
-
-    var playtimeCounterStylePicker: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 7) {
-                ForEach(PlaytimeCounterStyle.allCases) { style in
-                    Button {
-                        selectHaptic.selectionChanged()
-                        playtimeCounterStyle = style
-                        UserDefaults.standard.set(style.rawValue, forKey: "nowPlaying_playtimeCounterStyle")
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: style.iconName)
-                                .font(.system(size: 11, weight: .medium))
-                            Text(style.displayName)
-                                .font(.system(size: 11, weight: .medium))
-                        }
-                        .foregroundStyle(playtimeCounterStyle == style ? .white : AppTheme.textSecondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(
-                            playtimeCounterStyle == style ? AppTheme.dynamicAccent : AppTheme.surface,
-                            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .animation(.easeInOut(duration: 0.18), value: playtimeCounterStyle)
-                }
-            }
-            .padding(.horizontal, 2)
-        }
-    }
-
-    var seekerStylePicker: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 7) {
-                ForEach(SeekerStyle.allCases) { style in
-                    Button {
-                        selectHaptic.selectionChanged()
-                        seekerStyle = style
-                        UserDefaults.standard.set(style.rawValue, forKey: "nowPlaying_seekerStyle")
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: style.iconName)
-                                .font(.system(size: 11, weight: .medium))
-                            Text(style.displayName)
-                                .font(.system(size: 11, weight: .medium))
-                        }
-                        .foregroundStyle(seekerStyle == style ? .white : AppTheme.textSecondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(
-                            seekerStyle == style ? AppTheme.dynamicAccent : AppTheme.surface,
-                            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .animation(.easeInOut(duration: 0.18), value: seekerStyle)
-                }
-            }
-            .padding(.horizontal, 2)
+    /// Next visible counter format — skips `.hidden`, which is only chosen
+    /// from the Customize sheet so a tap can't make the counter vanish.
+    func cyclePlaytimeCounterStyle() {
+        let formats = PlaytimeCounterStyle.allCases.filter { $0 != .hidden }
+        guard let idx = formats.firstIndex(of: playtimeCounterStyle) else { return }
+        withAnimation(.snappy) {
+            playtimeCounterStyle = formats[(idx + 1) % formats.count]
         }
     }
 }

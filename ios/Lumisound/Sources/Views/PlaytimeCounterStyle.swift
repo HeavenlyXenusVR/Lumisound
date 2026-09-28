@@ -10,6 +10,10 @@ enum PlaytimeCounterStyle: String, CaseIterable, Identifiable {
     case totalDuration
     case percentage
     case fraction
+    /// No separate counter — every seeker style already draws its own
+    /// elapsed/remaining labels, so a second readout under it just repeats
+    /// them. The default since the 2026-09 Now Playing restructure.
+    case hidden
 
     var id: String { rawValue }
 
@@ -21,6 +25,7 @@ enum PlaytimeCounterStyle: String, CaseIterable, Identifiable {
         case .totalDuration:    return "Total Length"
         case .percentage:       return "Percentage"
         case .fraction:         return "Position / Total"
+        case .hidden:           return "Off"
         }
     }
 
@@ -32,6 +37,7 @@ enum PlaytimeCounterStyle: String, CaseIterable, Identifiable {
         case .totalDuration:    return "clock"
         case .percentage:       return "percent"
         case .fraction:         return "number"
+        case .hidden:           return "eye.slash"
         }
     }
 
@@ -52,6 +58,8 @@ enum PlaytimeCounterStyle: String, CaseIterable, Identifiable {
             return "\(Int((position / duration * 100).rounded()))%"
         case .fraction:
             return "\(Self.formatTime(position)) / \(Self.formatTime(duration))"
+        case .hidden:
+            return ""
         }
     }
 

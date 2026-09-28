@@ -77,37 +77,36 @@ extension NowPlayingView {
                             startPoint: .topLeading, endPoint: .bottomTrailing
                         )
                     )
-                    .frame(width: 72 * scale, height: 72 * scale)
+                    .frame(width: 76 * scale, height: 76 * scale)
                     .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 1))
                     .shadow(color: screenStyle.accentColor.opacity(0.5), radius: 16, x: 0, y: 8)
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 28 * scale, weight: .bold))
+                    .font(.system(size: 30 * scale, weight: .bold))
                     .foregroundStyle(.white)
                     .symbolReplaceTransition()
             }
         }
         .buttonStyle(PressableButtonStyle())
+        .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
     }
 
     /// Resolves one `TransportControl` case to its concrete button.
     @ViewBuilder
     func transportControlView(for control: CustomNowPlayingStyle.TransportControl) -> some View {
-        let scale = screenStyle.transportScale
         switch control {
         case .shuffle:
-            transportButton(
+            transportToggle(
                 systemName: "shuffle",
-                font: .system(size: 18 * scale, weight: .semibold),
+                label: "Shuffle",
                 isActive: player.shuffleEnabled
             ) {
                 selectHaptic.selectionChanged()
                 player.toggleShuffle()
             }
         case .previous:
-            transportButton(
+            transportSkipButton(
                 systemName: "backward.fill",
-                font: .system(size: 24 * scale, weight: .medium),
-                isActive: false
+                label: "Previous"
             ) {
                 skipHaptic.impactOccurred()
                 player.skipToPrevious()
@@ -115,18 +114,17 @@ extension NowPlayingView {
         case .playPause:
             playPauseButton
         case .next:
-            transportButton(
+            transportSkipButton(
                 systemName: "forward.fill",
-                font: .system(size: 24 * scale, weight: .medium),
-                isActive: false
+                label: "Next"
             ) {
                 skipHaptic.impactOccurred()
                 player.skipToNext()
             }
         case .repeatControl:
-            transportButton(
+            transportToggle(
                 systemName: repeatIcon,
-                font: .system(size: 18 * scale, weight: .semibold),
+                label: "Repeat",
                 isActive: player.repeatMode != .off
             ) {
                 selectHaptic.selectionChanged()
@@ -135,35 +133,56 @@ extension NowPlayingView {
         }
     }
 
-    /// A secondary transport control rendered as an icon inside a subtle
-    /// circular "well" — glass when active (accent-tinted), faint surface
-    /// otherwise — with press-scale feedback. Size already includes the
-    /// screen style's scale factor via the caller-supplied `font`; the
-    /// well itself is scaled here too so the tap target grows/shrinks with it.
-    func transportButton(
+    // 2026-09 restructure: previous/next are large bare glyphs and
+    // shuffle/repeat are smaller glyphs that turn accent-coloured with a dot
+    // underneath when on — instead of every control sitting in a filled
+    // circle, which made the whole row read as five equal buttons. Size,
+    // colour and order still come from `screenStyle`, so custom styles keep
+    // working.
+
+    /// Previous / next.
+    func transportSkipButton(systemName: String, label: String, action: @escaping () -> Void) -> some View {
+        let scale = screenStyle.transportScale
+        return Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 30 * scale, weight: .semibold))
+                .foregroundStyle(screenStyle.controlsColor ?? AppTheme.textPrimary)
+                .frame(width: 56 * scale, height: 56 * scale)
+                .contentShape(Circle())
+        }
+        .buttonStyle(PressableButtonStyle())
+        .accessibilityLabel(label)
+    }
+
+    /// Shuffle / repeat.
+    func transportToggle(
         systemName: String,
-        font: Font,
+        label: String,
         isActive: Bool,
         action: @escaping () -> Void
     ) -> some View {
         let scale = screenStyle.transportScale
         return Button(action: action) {
-            Image(systemName: systemName)
-                .font(font)
-                .foregroundStyle(isActive ? .white : (screenStyle.controlsColor ?? AppTheme.textPrimary))
-                .frame(width: 46 * scale, height: 46 * scale)
-                .background(
-                    Circle().fill(
+            VStack(spacing: 4) {
+                Image(systemName: systemName)
+                    .font(.system(size: 19 * scale, weight: .semibold))
+                    .foregroundStyle(
                         isActive
-                            ? screenStyle.accentColor.opacity(0.9)
-                            : AppTheme.elevatedSurface.opacity(0.5)
+                            ? screenStyle.accentColor
+                            : (screenStyle.controlsColor ?? AppTheme.textSecondary)
                     )
-                )
-                .overlay(
-                    Circle().stroke(.white.opacity(isActive ? 0.25 : 0.08), lineWidth: 1)
-                )
+                    .symbolReplaceTransition()
+                Circle()
+                    .fill(screenStyle.accentColor)
+                    .frame(width: 4, height: 4)
+                    .opacity(isActive ? 1 : 0)
+            }
+            .frame(width: 46 * scale, height: 50 * scale)
+            .contentShape(Rectangle())
         }
         .buttonStyle(PressableButtonStyle())
+        .accessibilityLabel(label)
+        .accessibilityValue(isActive ? "On" : "Off")
         .animation(.easeInOut(duration: 0.2), value: isActive)
     }
 }

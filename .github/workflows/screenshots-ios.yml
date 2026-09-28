@@ -25,7 +25,7 @@ on:
         required: false
         default: 'all'
         type: choice
-        options: [ all, main, folders ]
+        options: [ all, main, folders, albums ]
       appearance:
         description: 'System appearance'
         required: false
@@ -122,6 +122,7 @@ jobs:
           case "$TESTS" in
             main)    ONLY_TESTING="LumisoundUITests/ScreenshotTests/testCaptureScreens" ;;
             folders) ONLY_TESTING="LumisoundUITests/ScreenshotTests/testCaptureFolderScreens" ;;
+            albums)  ONLY_TESTING="LumisoundUITests/ScreenshotTests/testCaptureAlbumAndNowPlayingScreens" ;;
             *)       ONLY_TESTING="LumisoundUITests/ScreenshotTests" ;;
           esac
 
