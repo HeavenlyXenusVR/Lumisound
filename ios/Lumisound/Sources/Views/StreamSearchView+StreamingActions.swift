@@ -67,18 +67,25 @@ extension StreamSearchView {
         // for the watchdog to kill the app (the "big playlist" crash).
         let index = library.importedIdentityIndex()
 
-        for track in streaming.searchResults where !downloadedTrackIDs.contains(track.id) {
+        // Collected locally and assigned once: inserting into the @State
+        // sets per match invalidated the view once per track, which on a
+        // resolved 1000-track playlist meant hundreds of state writes.
+        var downloaded = downloadedTrackIDs
+        for track in streaming.searchResults where !downloaded.contains(track.id) {
             if localSourceIDs.contains(track.sourceTrackID)
                 || index.contains(title: track.title, artist: track.artist, duration: track.duration) {
-                downloadedTrackIDs.insert(track.id)
+                downloaded.insert(track.id)
             }
         }
+        if downloaded != downloadedTrackIDs { downloadedTrackIDs = downloaded }
 
-        for track in streaming.serverTracks where !downloadedServerTrackIDs.contains(track.id) {
+        var downloadedServer = downloadedServerTrackIDs
+        for track in streaming.serverTracks where !downloadedServer.contains(track.id) {
             if index.contains(title: track.title, artist: track.artist, duration: track.duration) {
-                downloadedServerTrackIDs.insert(track.id)
+                downloadedServer.insert(track.id)
             }
         }
+        if downloadedServer != downloadedServerTrackIDs { downloadedServerTrackIDs = downloadedServer }
     }
 
     func handleDownload(track: StreamTrack) {

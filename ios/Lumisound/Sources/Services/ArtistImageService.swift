@@ -34,6 +34,14 @@ final class ArtistImageService {
         let dir = (caches ?? FileManager.default.temporaryDirectory).appendingPathComponent("ArtistImages", isDirectory: true)
         diskCacheURL = dir
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        // Same as ArtworkService: drop decoded images on a memory warning or
+        // when backgrounded; they reload from the disk cache.
+        for name in [UIApplication.didReceiveMemoryWarningNotification, UIApplication.didEnterBackgroundNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
+                self?.memoryCache.removeAllObjects()
+            }
+        }
     }
 
     /// Clears the in-memory image cache and the "no match" lookup set — used
