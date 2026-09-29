@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - LaunchScreenStyle
 
@@ -558,12 +559,20 @@ private struct LaunchRecord: View {
                 ZStack {
                     Circle()
                         .fill(AppTheme.dynamicAccentGradient)
-                    Image("AppIconDisplay")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: size * 0.3, height: size * 0.3)
-                        .clipShape(RoundedRectangle(cornerRadius: size * 0.07, style: .continuous))
-                        .shadow(color: .black.opacity(0.35), radius: 4, y: 2)
+                    // The icon when it loads; a waveform glyph when it doesn't
+                    // (it drew nothing in the simulator screenshot runs).
+                    if let icon = UIImage(named: "AppIconDisplay") {
+                        Image(uiImage: icon)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: size * 0.3, height: size * 0.3)
+                            .clipShape(RoundedRectangle(cornerRadius: size * 0.07, style: .continuous))
+                            .shadow(color: .black.opacity(0.35), radius: 4, y: 2)
+                    } else {
+                        Image(systemName: "waveform")
+                            .font(.system(size: size * 0.14, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
                 }
                 .frame(width: size * 0.42, height: size * 0.42)
                 .overlay(Circle().stroke(.white.opacity(0.25), lineWidth: 1))
