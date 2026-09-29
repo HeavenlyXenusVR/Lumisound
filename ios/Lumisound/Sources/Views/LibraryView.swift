@@ -359,7 +359,7 @@ struct LibraryView: View {
         case .appleMusic:
             AppleMusicTab()
         case .artists:
-            ArtistsTab()
+            ArtistsTab(searchText: debouncedSearch)
         case .albums:
             AlbumsTab(searchText: debouncedSearch)
         case .folders:
@@ -371,7 +371,7 @@ struct LibraryView: View {
         case .favorites:
             // LibraryView already paints the gallery background behind the
             // whole screen — see `drawsOwnBackground`.
-            FavoritesView(drawsOwnBackground: false)
+            FavoritesView(drawsOwnBackground: false, searchText: debouncedSearch)
         case .moods:
             MoodPlaylistsView()
                 .environmentObject(moodService)

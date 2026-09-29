@@ -3,6 +3,14 @@ import SwiftUI
 
 /// The full-screen Queue editor.
 ///
+/// Restructured 2026-09: a large Now Playing card at the top (cover,
+/// title, live progress, previous / play / next) replaces both the old
+/// small hero and the separate pulsing "Now Playing" row; shuffle, repeat,
+/// save and cloud-restore moved out of the toolbar into a row of labelled
+/// toggles under it; sections get headers with their track count and
+/// running time; rows are numbered in play order; and the empty queue
+/// offers to shuffle the library.
+///
 /// Reworked around a real distinction between "Manually Queued" tracks
 /// (explicit "Play Next"/"Add to Queue" actions — see `QueueSource`) and the
 /// "Up Next" auto-continuation tail (the loaded playlist/album/library list,
@@ -21,7 +29,6 @@ struct QueueView: View {
     @State private var isRestoringQueue = false
     @State private var showSaveQueueAlert = false
     @State private var saveQueueName = ""
-    @State private var nowPlayingPulse = false
 
     private var totalDuration: TimeInterval {
         player.queue.reduce(0) { $0 + $1.duration }
@@ -49,48 +56,9 @@ struct QueueView: View {
                 queueList
             }
             .navigationTitle("Queue")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItemGroup(placement: .navigationBarLeading) {
-                    // Shuffle toggle
-                    Button {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                            player.toggleShuffle()
-                        }
-                    } label: {
-                        Image(systemName: "shuffle")
-                            .foregroundStyle(player.shuffleEnabled ? AppTheme.dynamicAccent : AppTheme.textSecondary)
-                            .fontWeight(player.shuffleEnabled ? .bold : .regular)
-                            .scaleEffect(player.shuffleEnabled ? 1.1 : 1.0)
-                    }
-                    .animation(.spring(response: 0.3, dampingFraction: 0.6), value: player.shuffleEnabled)
-                    // Repeat cycle button
-                    Button {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                            player.cycleRepeatMode()
-                        }
-                    } label: {
-                        Image(systemName: repeatIcon)
-                            .foregroundStyle(player.repeatMode != .off ? AppTheme.dynamicAccent : AppTheme.textSecondary)
-                            .fontWeight(player.repeatMode != .off ? .bold : .regular)
-                            .contentTransition(.opacity)
-                            .scaleEffect(player.repeatMode != .off ? 1.1 : 1.0)
-                    }
-                    .animation(.spring(response: 0.3, dampingFraction: 0.6), value: player.repeatMode)
-                }
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
-                    if account.isLoggedIn {
-                        Button {
-                            restoreQueueFromCloud()
-                        } label: {
-                            if isRestoringQueue {
-                                ProgressView()
-                            } else {
-                                Image(systemName: "icloud.and.arrow.down")
-                                    .foregroundStyle(AppTheme.dynamicAccent)
-                            }
-                        }
-                        .disabled(isRestoringQueue)
-                    }
                     if !player.queue.isEmpty {
                         Button {
                             withAnimation {
@@ -98,15 +66,27 @@ struct QueueView: View {
                             }
                         } label: {
                             Text(editMode == .active ? "Done" : "Edit")
+                                .fontWeight(.semibold)
                                 .foregroundStyle(AppTheme.dynamicAccent)
                         }
 
-                        Button(role: .destructive) {
-                            clearQueue()
+                        Menu {
+                            Button {
+                                saveQueueName = defaultQueueName()
+                                showSaveQueueAlert = true
+                            } label: {
+                                Label("Save as Playlist", systemImage: "square.and.arrow.down")
+                            }
+                            Button(role: .destructive) {
+                                clearQueue()
+                            } label: {
+                                Label("Clear Queue", systemImage: "trash")
+                            }
                         } label: {
-                            Image(systemName: "trash")
-                                .foregroundStyle(AppTheme.error)
+                            Image(systemName: "ellipsis.circle")
+                                .foregroundStyle(AppTheme.dynamicAccent)
                         }
+                        .accessibilityLabel("More")
                     }
                 }
             }
@@ -169,10 +149,10 @@ struct QueueView: View {
                 emptyState
             } else {
                 heroSection
+                controlsSection
                 contextHeaderSection
                 listenTogetherSection
                 earlierSection
-                nowPlayingSection
                 manualSection
                 autoTailSection
                 autoWrapSection
@@ -194,37 +174,65 @@ struct QueueView: View {
         .animation(.spring(response: 0.35, dampingFraction: 0.82), value: player.queue.map(\.id))
     }
 
-    /// Hero-forward top-of-screen treatment: a big blurred backdrop drawn
-    /// from whatever's currently playing, giving the Queue screen its own
-    /// visual identity that shifts with playback instead of opening
-    /// straight onto a flat list the way it used to.
+    /// The Now Playing card: blurred backdrop, big cover, title, live
+    /// progress and previous / play / next.
     @ViewBuilder
     private var heroSection: some View {
         if let current = player.currentSong {
-            ZStack(alignment: .bottomLeading) {
-                HeroArtworkBackdrop(song: current, height: 190)
-                HStack(spacing: 14) {
-                    ArtworkThumbnail(song: current, size: 64)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .shadow(color: .black.opacity(0.4), radius: 10, y: 4)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Now Playing")
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(AppTheme.dynamicAccent)
-                            .textCase(.uppercase)
-                        Text(current.displayName)
-                            .font(.headline)
-                            .foregroundStyle(AppTheme.textPrimary)
-                            .lineLimit(1)
-                        Text(current.artistName)
-                            .font(.subheadline)
-                            .foregroundStyle(AppTheme.textSecondary)
-                            .lineLimit(1)
+            ZStack(alignment: .bottom) {
+                HeroArtworkBackdrop(song: current, height: 300)
+
+                VStack(spacing: 14) {
+                    HStack(alignment: .center, spacing: 16) {
+                        ArtworkThumbnail(song: current, size: 118, showsScrim: false)
+                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(.white.opacity(0.12), lineWidth: 1))
+                            .shadow(color: .black.opacity(0.45), radius: 14, y: 8)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 6) {
+                                if player.isPlaying {
+                                    QueuePlayingBars()
+                                }
+                                Text(player.isPlaying ? "NOW PLAYING" : "PAUSED")
+                                    .font(.caption2.weight(.heavy))
+                                    .tracking(1.3)
+                                    .foregroundStyle(AppTheme.dynamicAccent)
+                            }
+                            Text(current.displayName)
+                                .font(.title3.weight(.bold))
+                                .foregroundStyle(AppTheme.textPrimary)
+                                .lineLimit(2)
+                            Text(current.artistName)
+                                .font(.subheadline)
+                                .foregroundStyle(AppTheme.textSecondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
                     }
-                    Spacer(minLength: 0)
+
+                    QueueHeroProgress()
+
+                    HStack(spacing: 36) {
+                        heroTransportButton("backward.fill", size: 22, label: "Previous") { player.skipToPrevious() }
+                        Button {
+                            player.togglePlayPause()
+                        } label: {
+                            Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                                .font(.system(size: 24, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 58, height: 58)
+                                .background(AppTheme.dynamicAccentGradient, in: Circle())
+                                .shadow(color: AppTheme.dynamicAccent.opacity(0.45), radius: 12, y: 6)
+                                .symbolReplaceTransition()
+                        }
+                        .buttonStyle(PressableButtonStyle())
+                        .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+                        heroTransportButton("forward.fill", size: 22, label: "Next") { player.skipToNext() }
+                    }
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 14)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 16)
             }
             .listRowInsets(EdgeInsets())
             .listRowBackground(Color.clear)
@@ -232,56 +240,156 @@ struct QueueView: View {
         }
     }
 
-    private var emptyState: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "music.note.list")
-                .font(.system(size: 48, weight: .medium))
-                .foregroundStyle(AppTheme.textSecondary)
-            Text("Queue is empty")
-                .font(.headline)
-                .foregroundStyle(AppTheme.textSecondary)
-            Text("Start playing a song to add it to the queue.")
-                .font(.subheadline)
-                .foregroundStyle(AppTheme.textSecondary.opacity(0.7))
-                .multilineTextAlignment(.center)
+    private func heroTransportButton(_ icon: String, size: CGFloat, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: size, weight: .semibold))
+                .foregroundStyle(AppTheme.textPrimary)
+                .frame(width: 48, height: 48)
+                .contentShape(Circle())
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 48)
+        .buttonStyle(PressableButtonStyle())
+        .accessibilityLabel(label)
+    }
+
+    /// Shuffle / Repeat / Save / cloud restore as labelled toggles — they
+    /// used to be bare toolbar icons whose state was a colour change.
+    private var controlsSection: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                queueToggle(
+                    icon: "shuffle",
+                    label: "Shuffle",
+                    isOn: player.shuffleEnabled
+                ) {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { player.toggleShuffle() }
+                }
+                queueToggle(
+                    icon: repeatIcon,
+                    label: repeatLabel,
+                    isOn: player.repeatMode != .off
+                ) {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { player.cycleRepeatMode() }
+                }
+                queueToggle(icon: "square.and.arrow.down", label: "Save", isOn: false) {
+                    saveQueueName = defaultQueueName()
+                    showSaveQueueAlert = true
+                }
+                if account.isLoggedIn {
+                    queueToggle(
+                        icon: isRestoringQueue ? "arrow.triangle.2.circlepath" : "icloud.and.arrow.down",
+                        label: isRestoringQueue ? "Restoring\u{2026}" : "From Cloud",
+                        isOn: false
+                    ) {
+                        restoreQueueFromCloud()
+                    }
+                    .disabled(isRestoringQueue)
+                }
+            }
+            .padding(.horizontal, 2)
+            .padding(.vertical, 2)
+        }
+        .listRowInsets(EdgeInsets(top: 4, leading: 14, bottom: 4, trailing: 14))
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
     }
 
-    /// Persistent "Playing from X" label + pill "Save" affordance — saves the
-    /// current queue's contents as a new playlist via the library's existing
-    /// `createPlaylist(name:songIDs:)`.
-    private var contextHeaderSection: some View {
-        HStack(alignment: .center, spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(player.playingFromContextLabel(library: library))
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(AppTheme.textPrimary)
-                    .lineLimit(1)
-                Text("\(player.queue.count) track\(player.queue.count == 1 ? "" : "s")")
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.textSecondary)
-            }
-            Spacer(minLength: 8)
-            Button {
-                saveQueueName = defaultQueueName()
-                showSaveQueueAlert = true
-            } label: {
-                Label("Save", systemImage: "square.and.arrow.down")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.dynamicAccent)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(AppTheme.dynamicAccent.opacity(0.15), in: Capsule(style: .continuous))
-            }
-            .buttonStyle(.plain)
+    private var repeatLabel: String {
+        switch player.repeatMode {
+        case .off: return "Repeat"
+        case .all: return "Repeat All"
+        case .one: return "Repeat One"
         }
-        .padding(.vertical, 6)
+    }
+
+    private func queueToggle(icon: String, label: String, isOn: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .semibold))
+                    .symbolReplaceTransition()
+                Text(label)
+                    .font(.caption.weight(.semibold))
+            }
+            .foregroundStyle(isOn ? .white : AppTheme.textPrimary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .background {
+                if isOn { Capsule().fill(AppTheme.dynamicAccent) }
+            }
+            .adaptiveGlass(in: Capsule(), fallback: AppTheme.surface.opacity(isOn ? 0 : 0.7))
+        }
+        .buttonStyle(PressableButtonStyle())
+        .accessibilityAddTraits(isOn ? .isSelected : [])
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            ZStack {
+                Circle()
+                    .fill(AppTheme.dynamicAccent.opacity(0.15))
+                    .frame(width: 110, height: 110)
+                Image(systemName: "music.note.list")
+                    .font(.system(size: 42, weight: .medium))
+                    .foregroundStyle(AppTheme.dynamicAccentGradient)
+            }
+            Text("Nothing queued")
+                .font(.title3.weight(.bold))
+                .foregroundStyle(AppTheme.textPrimary)
+            Text("Play something, or use Play Next and Add to Queue on any song.")
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.textSecondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+            if !library.allSongs.isEmpty {
+                Button {
+                    player.setQueue(library.allSongs.shuffled(), startIndex: 0, autoplay: true)
+                } label: {
+                    Label("Shuffle Your Library", systemImage: "shuffle")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 22)
+                        .padding(.vertical, 12)
+                        .background(AppTheme.dynamicAccentGradient, in: Capsule())
+                }
+                .buttonStyle(PressableButtonStyle())
+                .padding(.top, 4)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 60)
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
+    }
+
+    /// "Playing from X" plus how much is left to play.
+    private var contextHeaderSection: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("PLAYING FROM")
+                .font(.caption2.weight(.heavy))
+                .tracking(1.2)
+                .foregroundStyle(AppTheme.textSecondary)
+            Text(player.playingFromContextLabel(library: library))
+                .font(.headline)
+                .foregroundStyle(AppTheme.textPrimary)
+                .lineLimit(1)
+            Text(upcomingSummary)
+                .font(.caption)
+                .foregroundStyle(AppTheme.textSecondary)
+        }
+        .padding(.vertical, 4)
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+    }
+
+    private var upcomingSongs: [Song] {
+        player.manuallyQueuedUpNext + autoTailSongs
+    }
+
+    private var upcomingSummary: String {
+        let songs = upcomingSongs
+        let time = formatDurationLong(songs.reduce(0) { $0 + ($1.duration.isFinite ? $1.duration : 0) })
+        return songs.isEmpty ? "Nothing up next" : "\(songs.count) up next · \(time)"
     }
 
     /// Shows only during an active Listen Together (SharePlay) session —
@@ -355,34 +463,7 @@ struct QueueView: View {
                         .opacity(0.55)
                 }
             } header: {
-                Text("Earlier")
-            }
-            .listRowSeparatorTint(AppTheme.surface)
-        }
-    }
-
-    @ViewBuilder
-    private var nowPlayingSection: some View {
-        if let current = player.currentSong {
-            Section {
-                SongRow(song: current, isCurrent: true)
-                    .padding(.vertical, 2)
-                    .listRowBackground(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(AppTheme.dynamicAccent.opacity(nowPlayingPulse ? 0.20 : 0.09))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    .strokeBorder(AppTheme.dynamicAccent.opacity(0.4), lineWidth: 1)
-                            )
-                    )
-                    .listRowSeparator(.hidden)
-                    .onAppear {
-                        withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
-                            nowPlayingPulse = true
-                        }
-                    }
-            } header: {
-                Text("Now Playing")
+                QueueSectionHeader(icon: "clock.arrow.circlepath", title: "Earlier", songs: earlierSongs)
             }
             .listRowSeparatorTint(AppTheme.surface)
         }
@@ -393,8 +474,8 @@ struct QueueView: View {
         let manual = player.manuallyQueuedUpNext
         if !manual.isEmpty {
             Section {
-                ForEach(manual, id: \.id) { song in
-                    queueRow(song: song, leadingIcon: "person.fill")
+                ForEach(Array(manual.enumerated()), id: \.element.id) { index, song in
+                    queueRow(song: song, leadingIcon: nil, position: index + 1)
                 }
                 .onMove { source, destination in
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
@@ -402,7 +483,7 @@ struct QueueView: View {
                     }
                 }
             } header: {
-                Label("Manually Queued", systemImage: "person.fill.badge.plus")
+                QueueSectionHeader(icon: "person.fill.badge.plus", title: "Queued by You", songs: manual)
             }
             .listRowSeparatorTint(AppTheme.surface)
         }
@@ -413,8 +494,8 @@ struct QueueView: View {
         let auto = autoTailSongs
         if !auto.isEmpty {
             Section {
-                ForEach(auto, id: \.id) { song in
-                    queueRow(song: song, leadingIcon: nil)
+                ForEach(Array(auto.enumerated()), id: \.element.id) { index, song in
+                    queueRow(song: song, leadingIcon: nil, position: manualCount + index + 1)
                 }
                 .onMove { source, destination in
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
@@ -422,12 +503,11 @@ struct QueueView: View {
                     }
                 }
             } header: {
-                HStack(spacing: 4) {
-                    Text("Up Next")
-                    if player.shuffleEnabled {
-                        Image(systemName: "shuffle")
-                    }
-                }
+                QueueSectionHeader(
+                    icon: player.shuffleEnabled ? "shuffle" : "text.line.first.and.arrowtriangle.forward",
+                    title: player.shuffleEnabled ? "Up Next · Shuffled" : "Up Next",
+                    songs: auto
+                )
             }
             .listRowSeparatorTint(AppTheme.surface)
         }
@@ -442,7 +522,7 @@ struct QueueView: View {
                         .opacity(0.7)
                 }
             } header: {
-                Label("Then, From the Top", systemImage: "repeat")
+                QueueSectionHeader(icon: "repeat", title: "Then, From the Top", songs: autoWrapSongs)
             }
             .listRowSeparatorTint(AppTheme.surface)
         }
@@ -451,11 +531,19 @@ struct QueueView: View {
     /// A single reorderable/removable row shared by every section — tap to
     /// jump to that position in the queue (preserving playback context),
     /// swipe (at any time, no Edit mode needed) to remove.
-    private func queueRow(song: Song, leadingIcon: String?) -> some View {
+    private var manualCount: Int { player.manuallyQueuedUpNext.count }
+
+    private func queueRow(song: Song, leadingIcon: String?, position: Int? = nil) -> some View {
         Button {
             jumpTo(song: song)
         } label: {
             HStack(spacing: 8) {
+                if let position {
+                    Text("\(position)")
+                        .font(AppTheme.monoFont(size: 12).weight(.semibold))
+                        .foregroundStyle(AppTheme.textSecondary)
+                        .frame(minWidth: 22, alignment: .trailing)
+                }
                 if let leadingIcon {
                     Image(systemName: leadingIcon)
                         .font(.caption2)
@@ -579,5 +667,91 @@ struct QueueView: View {
             ToastCenter.shared.show("Queue cleared", category: .info, icon: "trash")
         }
         editMode = .inactive
+    }
+}
+
+// MARK: - Section header
+
+private struct QueueSectionHeader: View {
+    let icon: String
+    let title: String
+    let songs: [Song]
+
+    private var durationText: String {
+        let total = Int(songs.reduce(0) { $0 + ($1.duration.isFinite ? $1.duration : 0) })
+        let h = total / 3600, m = (total % 3600) / 60
+        return h > 0 ? "\(h)h \(m)m" : "\(max(m, 1))m"
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(AppTheme.dynamicAccent)
+            Text(title)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(AppTheme.textPrimary)
+                .textCase(nil)
+            Spacer()
+            Text("\(songs.count) · \(durationText)")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(AppTheme.textSecondary)
+                .textCase(nil)
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+// MARK: - Hero progress
+
+/// Live position for the Now Playing card. Its own view so only it
+/// re-renders on each position tick, not the whole queue list.
+private struct QueueHeroProgress: View {
+    @EnvironmentObject private var progress: PlaybackProgress
+
+    var body: some View {
+        let duration = max(progress.duration, 0.001)
+        let fraction = min(max(progress.position / duration, 0), 1)
+        VStack(spacing: 4) {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(AppTheme.textSecondary.opacity(0.25))
+                    Capsule()
+                        .fill(AppTheme.dynamicAccentGradient)
+                        .frame(width: geo.size.width * fraction)
+                }
+            }
+            .frame(height: 4)
+            HStack {
+                Text(progress.position.formattedAsMinutesSeconds)
+                Spacer()
+                Text("-" + max(progress.duration - progress.position, 0).formattedAsMinutesSeconds)
+            }
+            .font(AppTheme.monoFont(size: 11))
+            .foregroundStyle(AppTheme.textSecondary)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(progress.position.formattedAsMinutesSeconds) of \(progress.duration.formattedAsMinutesSeconds)")
+    }
+}
+
+// MARK: - Playing bars
+
+/// Three small bouncing bars next to "NOW PLAYING". 30fps.
+private struct QueuePlayingBars: View {
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+            let t = timeline.date.timeIntervalSinceReferenceDate
+            HStack(alignment: .bottom, spacing: 2) {
+                ForEach(0..<3, id: \.self) { i in
+                    Capsule()
+                        .fill(AppTheme.dynamicAccent)
+                        .frame(width: 3, height: 4 + 7 * CGFloat(0.5 + 0.5 * sin(t * 6 + Double(i) * 1.3)))
+                }
+            }
+            .frame(height: 11, alignment: .bottom)
+        }
+        .accessibilityHidden(true)
     }
 }
