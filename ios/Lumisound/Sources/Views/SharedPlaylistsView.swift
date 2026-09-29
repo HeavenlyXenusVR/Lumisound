@@ -82,7 +82,9 @@ private struct SharedPlaylistDetailView: View {
         // (crashes) on any duplicate id, which `library.allSongs` isn't
         // guaranteed to be free of (see the matching fix/comment in
         // LibraryManager+SongRemoval.swift's rebuildAllSongs).
-        let songsByID = Dictionary(library.allSongs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        // The library's own id index, instead of rebuilding a dictionary of
+        // the whole library on every render.
+        let songsByID = library.songsByID
         return detail.tracks.compactMap { track -> Song? in
             if let localID = track.localSongId, let song = songsByID[localID] {
                 return song
@@ -174,7 +176,7 @@ private struct SharedPlaylistDetailView: View {
             // still referenceable — addSong just stores the ID, which is fine
             // for local-library matches; URL-only tracks are skipped here since
             // there's no durable local song record to point at.
-            if library.allSongs.contains(where: { $0.id == song.id }) {
+            if library.songsByID[song.id] != nil {
                 library.addSong(id: song.id, toPlaylistID: newPL.id)
             }
         }

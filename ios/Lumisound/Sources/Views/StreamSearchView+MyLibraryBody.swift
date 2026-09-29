@@ -165,6 +165,7 @@ extension StreamSearchView {
                 .scrollContentBackground(.hidden)
             }
         }
+        .task(id: libraryMatchKey) { await refreshLibraryMatches() }
     }
 }
 

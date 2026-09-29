@@ -149,7 +149,8 @@ struct Song: Identifiable, Hashable, Codable {
         // "Portal Soundtrack - You're Not A Good Person" already has the right
         // title and wants the tail). Ambiguity is the signal that holds; word
         // order isn't.
-        guard AmbiguousTitleIndex.contains(ambiguityKey),
+        guard !AmbiguousTitleIndex.isEmpty,
+              AmbiguousTitleIndex.contains(ambiguityKey),
               let stem = url?.deletingPathExtension().lastPathComponent
                   .replacingOccurrences(of: ".opus", with: "")
                   .replacingOccurrences(of: ".m4a", with: ""),

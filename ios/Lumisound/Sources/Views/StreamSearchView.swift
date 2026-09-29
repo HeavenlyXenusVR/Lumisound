@@ -11,6 +11,9 @@ struct StreamSearchView: View {
     @EnvironmentObject var account: AccountService
 
     @State var searchText        = ""
+    /// Cached by `refreshLibraryMatches()`.
+    @State var matchingLocalSongs: [Song] = []
+    @State var matchingDownloadHistory: [DownloadHistoryTrack] = []
     @State var selectedSource    = "youtube"
     @State var loadingTrackID:   String? = nil
     @State var downloadingTrackIDs: Set<String> = []

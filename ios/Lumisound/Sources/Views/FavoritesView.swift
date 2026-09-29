@@ -52,7 +52,7 @@ enum FavoritesSortOrder: String, CaseIterable, Identifiable {
         }
         switch self {
         case .title:
-            return songs.sorted(by: byTitle)
+            return songs.sortedByDisplayName()
         case .artist:
             return songs.sorted {
                 let order = $0.artistName.localizedCaseInsensitiveCompare($1.artistName)

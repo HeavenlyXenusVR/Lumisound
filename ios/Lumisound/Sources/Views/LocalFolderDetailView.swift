@@ -100,9 +100,7 @@ struct LocalFolderDetailView: View {
             sortedSongs = sections.flatMap(\.songs)
             albumSections = sections.count > 1 ? sections : []
         case .title:
-            sortedSongs = songs.sorted {
-                $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
-            }
+            sortedSongs = songs.sortedByDisplayName()
         case .artist:
             sortedSongs = songs.sorted {
                 let cmp = $0.artistName.localizedCaseInsensitiveCompare($1.artistName)

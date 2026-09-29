@@ -240,9 +240,7 @@ extension LibraryManager {
             let imported = self.importedSongs
 
             let (combined, artists, albums, genres, byID, byArtist, byAlbum, byGenre) = await Task.detached(priority: .userInitiated) {
-                let combined = (media + imported).sorted {
-                    $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
-                }
+                let combined = (media + imported).sortedByDisplayName()
                 let artists = Array(Set(combined.map(\.artistName))).sorted()
                 // `groupableAlbumName` (not `albumName`) so folder-name-inferred
                 // pseudo-albums collapse into the same "Unknown Album" bucket as

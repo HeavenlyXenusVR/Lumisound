@@ -101,7 +101,10 @@ struct PressableButtonStyle: ButtonStyle {
 /// same reason: immune to freezing from frequent parent re-renders.
 struct ShimmerOverlay: View {
     var body: some View {
-        TimelineView(.animation) { timeline in
+        // Capped at 60fps: one of these runs per artwork still loading, so a
+        // fast fling through a big library can have dozens at once — at
+        // ProMotion's 120Hz that doubled the redraw cost for no visible gain.
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { timeline in
             let t = ArtworkClock.loop(timeline.date, cycleDuration: 1.4)
             GeometryReader { geo in
                 LinearGradient(

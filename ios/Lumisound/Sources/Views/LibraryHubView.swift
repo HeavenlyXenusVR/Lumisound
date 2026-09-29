@@ -632,10 +632,12 @@ struct LibraryHubView: View {
     private static func buildShortcuts(library: LibraryManager) -> [HubShortcut] {
         var result: [HubShortcut] = []
 
-        if !library.favoriteSongs.isEmpty {
+        // One full-library pass, not two.
+        let favorites = library.favoriteSongs
+        if !favorites.isEmpty {
             result.append(HubShortcut(
                 id: "favorites", kind: .favorites, title: "Favorites",
-                songs: library.favoriteSongs, icon: "heart.fill"
+                songs: favorites, icon: "heart.fill"
             ))
         }
 

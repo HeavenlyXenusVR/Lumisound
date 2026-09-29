@@ -89,7 +89,7 @@ private enum LibrarySortOption: String, CaseIterable, Identifiable {
     func apply(to songs: [Song]) -> [Song] {
         switch self {
         case .titleAZ:
-            return songs.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+            return songs.sortedByDisplayName()
         case .artistAZ:
             return songs.sorted { $0.artistName.localizedCaseInsensitiveCompare($1.artistName) == .orderedAscending }
         case .dateAddedNewest:

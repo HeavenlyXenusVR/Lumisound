@@ -33,7 +33,13 @@ struct DownloadsManagementView: View {
         library.importedSongs.filter { $0.url != nil }
     }
 
-    private var sortedSongs: [Song] {
+    /// Sorted once per change of the downloads, their sizes or the sort
+    /// option rather than on every read (it's read several times a render,
+    /// and selection taps re-render the whole list).
+    @State private var sortedSongs: [Song] = []
+
+    private func sorted() -> [Song] {
+        let downloadedSongs = self.downloadedSongs
         switch sortOption {
         case .sizeDescending:
             return downloadedSongs.sorted { (sizesByID[$0.id] ?? 0) > (sizesByID[$1.id] ?? 0) }
@@ -44,7 +50,7 @@ struct DownloadsManagementView: View {
         case .dateOldest:
             return downloadedSongs.sorted { ($0.dateAdded ?? .distantPast) < ($1.dateAdded ?? .distantPast) }
         case .name:
-            return downloadedSongs.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+            return downloadedSongs.sortedByDisplayName()
         }
     }
 
@@ -166,8 +172,14 @@ struct DownloadsManagementView: View {
         } message: {
             Text("This permanently deletes the file from your device. This can't be undone.")
         }
-        .onAppear(perform: computeSizes)
-        .onChange(of: downloadedSongs.map(\.id)) { _ in computeSizes() }
+        // Keyed on the count, not `downloadedSongs.map(\.id)` — that filtered
+        // and mapped the whole imported library on every render to diff it.
+        .task(id: library.importedSongs.count) {
+            sortedSongs = sorted()
+            computeSizes()
+        }
+        .onChange(of: sortOption) { sortedSongs = sorted() }
+        .onChange(of: sizesByID) { sortedSongs = sorted() }
     }
 
     @ViewBuilder

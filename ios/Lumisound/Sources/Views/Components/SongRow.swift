@@ -63,8 +63,6 @@ struct SongRow: View {
     var showArtwork: Bool = true
     var subtitle: String? = nil
 
-    @EnvironmentObject private var library: LibraryManager
-    @EnvironmentObject private var player: AudioPlayerManager
     @ObservedObject private var customStyleStore = CustomLibraryStyleStore.shared
 
     @AppStorage("library_cardStyle") private var cardStyleRaw: String = SongCardStyle.compact.rawValue
@@ -86,8 +84,6 @@ struct SongRow: View {
             // CustomLibraryRowView applies its own contentShape/animation/contextMenu,
             // so it's returned directly rather than wrapped a second time below.
             CustomLibraryRowView(song: song, isCurrent: isCurrent, config: customStyle, subtitle: subtitle)
-                .environmentObject(library)
-                .environmentObject(player)
         } else {
             builtinBody
                 .contentShape(Rectangle())
@@ -96,8 +92,6 @@ struct SongRow: View {
                 .animation(.easeInOut(duration: 0.25), value: isCurrent)
                 .contextMenu {
                     SongContextMenuContent(song: song)
-                        .environmentObject(library)
-                        .environmentObject(player)
                 }
         }
     }
@@ -286,8 +280,6 @@ struct SongGridCell: View {
     /// (used by AlbumDetailView's grid).
     var trackNumber: Int? = nil
 
-    @EnvironmentObject private var library: LibraryManager
-    @EnvironmentObject private var player: AudioPlayerManager
     @ObservedObject private var customStyleStore = CustomLibraryStyleStore.shared
 
     @AppStorage("library_cardStyle") private var cardStyleRaw: String = SongCardStyle.compact.rawValue
@@ -305,8 +297,6 @@ struct SongGridCell: View {
             // CustomLibraryGridCellView applies its own animation/contextMenu,
             // so it's returned directly rather than wrapped a second time below.
             CustomLibraryGridCellView(song: song, isCurrent: isCurrent, config: customStyle, subtitle: subtitle, trackNumber: trackNumber)
-                .environmentObject(library)
-                .environmentObject(player)
         } else {
             builtinBody
         }
@@ -366,8 +356,6 @@ struct SongGridCell: View {
         .animation(.easeInOut(duration: 0.25), value: isCurrent)
         .contextMenu {
             SongContextMenuContent(song: song)
-                .environmentObject(library)
-                .environmentObject(player)
         }
     }
 }

@@ -25,7 +25,7 @@ extension StreamSearchView {
     /// Songs already on this device whose title/artist/album match `searchText`
     /// — shown at the top of the "My Library" tab so on-device tracks actually
     /// surface in search instead of only the server-uploaded library.
-    var matchingLocalSongs: [Song] {
+    func computeMatchingLocalSongs() -> [Song] {
         guard !searchText.isEmpty else { return [] }
         let q = searchText.lowercased()
         return library.allSongs.filter {
@@ -39,10 +39,30 @@ extension StreamSearchView {
     /// aren't already present on this device — surfaced as "Previously
     /// Downloaded" so the user can re-download tracks they've lost (reinstall,
     /// corruption cleanup, etc.) without re-searching from scratch.
-    var matchingDownloadHistory: [DownloadHistoryTrack] {
+    func computeMatchingDownloadHistory() -> [DownloadHistoryTrack] {
         guard !searchText.isEmpty else { return [] }
         let localIDs = Set(library.allSongs.compactMap { $0.sourceTrackID })
         return streaming.downloadHistory.filter { !localIDs.contains($0.sourceTrackID) }
+    }
+
+    /// Key for `refreshLibraryMatches()` — changes when the query, the
+    /// library or the download history does.
+    var libraryMatchKey: String {
+        "\(searchText)|\(library.allSongs.count)|\(streaming.downloadHistory.count)"
+    }
+
+    /// Recomputes the cached "On This Device" / "Previously Downloaded"
+    /// matches. These used to be computed properties read several times per
+    /// render — each read lowercased and scanned the whole library (and
+    /// rebuilt a Set of every song's source ID), on every keystroke and every
+    /// player tick. Now it runs once per change, debounced while typing.
+    func refreshLibraryMatches() async {
+        if !searchText.isEmpty {
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+        }
+        matchingLocalSongs = computeMatchingLocalSongs()
+        matchingDownloadHistory = computeMatchingDownloadHistory()
     }
 
     func sourceLabel(_ src: String) -> String {

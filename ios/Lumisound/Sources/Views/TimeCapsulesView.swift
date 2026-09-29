@@ -99,7 +99,7 @@ private struct SealTimeCapsuleView: View {
     private var resolvedSongIDs: [Song.ID] {
         switch source {
         case .favorites:
-            return library.allSongs.filter { library.favoriteSongIDs.contains($0.id) }.map(\.id)
+            return library.favoriteSongs.map(\.id)
         case .playlist:
             guard let selectedPlaylistID,
                   let playlist = library.playlists.first(where: { $0.id == selectedPlaylistID }) else { return [] }
@@ -175,8 +175,10 @@ struct TimeCapsuleDetailView: View {
     @EnvironmentObject private var player: AudioPlayerManager
 
     private var songs: [Song] {
-        let byID = Dictionary(uniqueKeysWithValues: library.allSongs.map { ($0.id, $0) })
-        return capsule.songIDs.compactMap { byID[$0] }
+        // The library's own id index — this used to rebuild a dictionary of
+        // the whole library on every render, with `uniqueKeysWithValues`,
+        // which also crashes on a duplicate id.
+        capsule.songIDs.compactMap { library.songsByID[$0] }
     }
 
     var body: some View {
