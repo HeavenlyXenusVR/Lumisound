@@ -162,14 +162,34 @@ struct LibraryView: View {
 
     // MARK: Filtered songs for Songs tab (uses debounced search)
 
-    private func recomputeFilteredSongs() {
-        let query = debouncedSearch.trimmingCharacters(in: .whitespacesAndNewlines)
-        let base = query.isEmpty ? library.allSongs : library.allSongs.filter { song in
+    nonisolated private static func filter(_ songs: [Song], query: String) -> [Song] {
+        guard !query.isEmpty else { return songs }
+        return songs.filter { song in
             song.displayName.localizedCaseInsensitiveContains(query)
                 || song.artistName.localizedCaseInsensitiveContains(query)
                 || song.albumName.localizedCaseInsensitiveContains(query)
         }
-        filteredSongsState = sortOption.apply(to: base)
+    }
+
+    /// Filters and sorts off the main thread — three localized substring
+    /// checks per song plus a full sort ran on the main thread for every
+    /// (debounced) keystroke. The date-added sorts stay on the main thread:
+    /// they read file dates through `LibrarySortOption.fileDateCache`, which
+    /// isn't thread-safe.
+    private func recomputeFilteredSongs() async {
+        let query = debouncedSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        let songs = library.allSongs
+        let option = sortOption
+        switch option {
+        case .dateAddedNewest, .dateAddedOldest:
+            filteredSongsState = option.apply(to: Self.filter(songs, query: query))
+        default:
+            let result = await Task.detached(priority: .userInitiated) {
+                option.apply(to: Self.filter(songs, query: query))
+            }.value
+            guard !Task.isCancelled else { return }
+            filteredSongsState = result
+        }
     }
 
     // MARK: Body
@@ -241,7 +261,7 @@ struct LibraryView: View {
                 // Keep the O(n log n) Songs-tab query out of SwiftUI body
                 // evaluation. Player progress and navigation state can
                 // invalidate this root many times without changing the data.
-                recomputeFilteredSongs()
+                await recomputeFilteredSongs()
             }
             .safeAreaInset(edge: .bottom) {
                 if isSelecting {

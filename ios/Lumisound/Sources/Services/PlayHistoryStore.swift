@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 // MARK: - PlayHistoryStore
 //
@@ -24,7 +25,24 @@ final class PlayHistoryStore {
     private let key = "playHistory.v1"
     private(set) var entries: [String: PlayHistoryEntry] = [:]
 
-    private init() { load() }
+    /// Saves are coalesced (see `save()`) and encoded on this serial queue,
+    /// so they stay in order and off the main thread.
+    private static let saveQueue = DispatchQueue(label: "PlayHistoryStore.save", qos: .utility)
+    private var pendingSave: Task<Void, Never>?
+    private var backgroundObserver: NSObjectProtocol?
+
+    private init() {
+        load()
+        // Write any coalesced save straight away when the app backgrounds,
+        // so a pending play count isn't lost if iOS then ends the app.
+        backgroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.flush() }
+        }
+    }
 
     /// Call when a song starts playing. Increments its play count and
     /// stamps the current time as its last-played date.
@@ -96,9 +114,29 @@ final class PlayHistoryStore {
         }
     }
 
+    /// Coalesces writes: every play, merge and rekey used to JSON-encode the
+    /// whole table (one entry per song ever played) on the main thread and
+    /// rewrite it into UserDefaults — a batch rename after a library cleanup
+    /// did that once per song. Now changes within a second share one write,
+    /// encoded off the main thread.
     private func save() {
-        if let data = try? JSONEncoder().encode(entries) {
-            UserDefaults.standard.set(data, forKey: key)
+        pendingSave?.cancel()
+        pendingSave = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            self?.flush()
+        }
+    }
+
+    private func flush() {
+        pendingSave?.cancel()
+        pendingSave = nil
+        let snapshot = entries
+        let key = self.key
+        Self.saveQueue.async {
+            if let data = try? JSONEncoder().encode(snapshot) {
+                UserDefaults.standard.set(data, forKey: key)
+            }
         }
     }
 }
