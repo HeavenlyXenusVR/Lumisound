@@ -448,8 +448,6 @@ struct LaunchView: View {
     }
 }
 
-}
-
 // MARK: - LaunchCoverWall
 
 /// The library's own covers in a tilted grid that drifts slowly upward,
