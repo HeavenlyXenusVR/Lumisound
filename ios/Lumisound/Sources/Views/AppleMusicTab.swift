@@ -39,13 +39,17 @@ struct AppleMusicTab: View {
 
     // MARK: Sorted songs
 
-    private var songs: [Song] {
+    /// Sorted once per change of the Apple Music songs or the sort order
+    /// (see the `.onChange`s in `body`). This used to be a computed property —
+    /// a full sort of every Apple Music song on each of the ~18 reads per
+    /// render, and this tab re-renders on every player update.
+    @State private var songs: [Song] = []
+
+    private func sortedMediaSongs() -> [Song] {
         let raw = library.mediaSongs
         switch sortOrder {
         case .title:
-            return raw.sorted {
-                $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
-            }
+            return raw.sortedByDisplayName()
         case .artist:
             return raw.sorted {
                 let cmp = $0.artistName.localizedCaseInsensitiveCompare($1.artistName)
@@ -71,7 +75,7 @@ struct AppleMusicTab: View {
         Group {
             switch authorizationStatus {
             case .authorized:
-                if songs.isEmpty {
+                if library.mediaSongs.isEmpty {
                     emptyOrScanningState
                 } else {
                     songList
@@ -85,6 +89,9 @@ struct AppleMusicTab: View {
             }
         }
         .background(GalleryBackgroundView().ignoresSafeArea())
+        .onAppear { songs = sortedMediaSongs() }
+        .onChange(of: library.mediaSongs) { songs = sortedMediaSongs() }
+        .onChange(of: sortOrder) { songs = sortedMediaSongs() }
         .navigationTitle("Apple Music")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

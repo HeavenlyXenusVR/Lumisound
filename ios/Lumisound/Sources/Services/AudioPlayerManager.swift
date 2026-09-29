@@ -60,6 +60,13 @@ final class AudioPlayerManager: ObservableObject {
     var nowPlayingArtworkSongID: String?
     @Published var queue: [Song] = [] {
         didSet {
+            // Keep `currentIndex` pointing inside the queue whenever it
+            // shrinks, so the many `queue[currentIndex]` reads (skip,
+            // repeat-one peek, restore) can never index past the end. Code
+            // that then sets `currentIndex` itself still wins.
+            if !queue.isEmpty, !queue.indices.contains(currentIndex) {
+                currentIndex = min(max(currentIndex, 0), queue.count - 1)
+            }
             pushQueueToBridge()
         }
     }

@@ -380,12 +380,17 @@ private struct AddSongsSheet: View {
         }
     }
 
-    private func isInPlaylist(_ song: Song) -> Bool {
-        (library.playlists.first(where: { $0.id == playlist.id }) ?? playlist).songIDs.contains(song.id)
+    /// The playlist's current song IDs as a Set, built once per render —
+    /// `isInPlaylist` used to look the playlist up and linearly scan its
+    /// song IDs four times for every visible row.
+    private var memberIDs: Set<String> {
+        Set((library.playlists.first(where: { $0.id == playlist.id }) ?? playlist).songIDs)
     }
 
     var body: some View {
-        NavigationStack {
+        let memberIDs = self.memberIDs
+        func isInPlaylist(_ song: Song) -> Bool { memberIDs.contains(song.id) }
+        return NavigationStack {
             List {
                 ForEach(filteredSongs) { song in
                     Button {

@@ -10,28 +10,42 @@ struct ArtistDetailView: View {
     @State private var bio: ArtistBio?
     @State private var isBioExpanded = false
 
-    // Songs sorted by album name then track number
-    private var songs: [Song] {
-        library.songs(byArtist: artist)
+    /// Songs sorted by album name then track number, grouped by album in
+    /// the order they first appear. Built once per library change (see
+    /// `.onChange` below) — these were computed properties, so every render
+    /// re-sorted the artist's songs several times over and re-filtered them
+    /// once per album section, and this view re-renders on player updates.
+    private struct AlbumGroup {
+        let name: String
+        var songs: [Song]
+    }
+    private struct Contents {
+        var songs: [Song] = []
+        var albums: [AlbumGroup] = []
+    }
+    @State private var contents: Contents?
+
+    private var songs: [Song] { contents?.songs ?? [] }
+
+    private func buildContents() -> Contents {
+        let sorted = library.songs(byArtist: artist)
             .sorted {
                 if $0.albumName != $1.albumName {
                     return $0.albumName.localizedCaseInsensitiveCompare($1.albumName) == .orderedAscending
                 }
                 return $0.trackNumber < $1.trackNumber
             }
-    }
-
-    // Albums in order they first appear
-    private var albums: [String] {
-        var seen = Set<String>()
-        return songs.compactMap { song -> String? in
-            let name = song.albumName
-            return seen.insert(name).inserted ? name : nil
+        var albums: [AlbumGroup] = []
+        var indexByName: [String: Int] = [:]
+        for song in sorted {
+            if let index = indexByName[song.albumName] {
+                albums[index].songs.append(song)
+            } else {
+                indexByName[song.albumName] = albums.count
+                albums.append(AlbumGroup(name: song.albumName, songs: [song]))
+            }
         }
-    }
-
-    private func songs(inAlbum album: String) -> [Song] {
-        songs.filter { $0.albumName == album }
+        return Contents(songs: sorted, albums: albums)
     }
 
     var body: some View {
@@ -39,7 +53,7 @@ struct ArtistDetailView: View {
             // Artist header — real profile picture, matching the look of
             // AlbumDetailView's/LocalFolderDetailView's headers.
             Section {
-                ArtistHeaderView(artist: artist, songCount: songs.count, albumCount: albums.count)
+                ArtistHeaderView(artist: artist, songCount: songs.count, albumCount: contents?.albums.count ?? 0)
             }
             .listRowBackground(Color.clear)
             .listRowInsets(EdgeInsets())
@@ -47,7 +61,11 @@ struct ArtistDetailView: View {
 
             bioSection
 
-            if songs.isEmpty {
+            if contents == nil {
+                // Still building — show nothing rather than a flash of the
+                // empty state.
+                EmptyView()
+            } else if songs.isEmpty {
                 EmptyStateView(
                     icon: "person.crop.circle",
                     title: "No songs",
@@ -65,9 +83,9 @@ struct ArtistDetailView: View {
                 // Albums and their songs — uses the same SongRow component as
                 // the main Songs tab so rows look/behave identically (context
                 // menus, favorite/play targets, styling) everywhere.
-                ForEach(albums, id: \.self) { album in
+                ForEach(contents?.albums ?? [], id: \.name) { album in
                     Section {
-                        ForEach(songs(inAlbum: album)) { song in
+                        ForEach(album.songs) { song in
                             Button {
                                 player.play(song: song, in: songs)
                             } label: {
@@ -80,7 +98,7 @@ struct ArtistDetailView: View {
                             .listRowBackground(AppTheme.surface.opacity(0.5))
                         }
                     } header: {
-                        AlbumSectionHeader(album: album, songs: songs(inAlbum: album))
+                        AlbumSectionHeader(album: album.name, songs: album.songs)
                     }
                 }
             }
@@ -95,6 +113,10 @@ struct ArtistDetailView: View {
         .navigationTitle(artist)
         .navigationBarTitleDisplayMode(.large)
         .safeAreaInset(edge: .bottom) { MiniPlayerBar() }
+        // Watches the list itself, not its count, so an edited tag moves a
+        // song between albums (or off this artist) straight away.
+        .onAppear { contents = buildContents() }
+        .onChange(of: library.allSongs) { contents = buildContents() }
         .task(id: artist) {
             bio = await account.fetchArtistBio(name: artist)
         }

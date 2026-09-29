@@ -19,8 +19,6 @@ struct CustomLibraryRowView: View {
     let config: CustomLibraryRowStyle
     var subtitle: String? = nil
 
-    @EnvironmentObject private var library: LibraryManager
-    @EnvironmentObject private var player: AudioPlayerManager
 
     private var resolvedSubtitle: String {
         subtitle ?? "\(song.artistName) · \(song.albumName)"
@@ -47,8 +45,6 @@ struct CustomLibraryRowView: View {
             .animation(.easeInOut(duration: 0.25), value: isCurrent)
             .contextMenu {
                 SongContextMenuContent(song: song)
-                    .environmentObject(library)
-                    .environmentObject(player)
             }
     }
 
@@ -186,8 +182,6 @@ struct CustomLibraryGridCellView: View {
     var subtitle: String? = nil
     var trackNumber: Int? = nil
 
-    @EnvironmentObject private var library: LibraryManager
-    @EnvironmentObject private var player: AudioPlayerManager
 
     private var resolvedSubtitle: String {
         subtitle ?? song.artistName
@@ -265,8 +259,6 @@ struct CustomLibraryGridCellView: View {
         .animation(.easeInOut(duration: 0.25), value: isCurrent)
         .contextMenu {
             SongContextMenuContent(song: song)
-                .environmentObject(library)
-                .environmentObject(player)
         }
     }
 

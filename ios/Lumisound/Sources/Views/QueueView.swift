@@ -489,6 +489,8 @@ struct QueueView: View {
     @ViewBuilder
     private var autoTailSection: some View {
         let auto = autoTailSongs
+        // Once per render, not per row — it rebuilds the manual block.
+        let manualCount = self.manualCount
         if !auto.isEmpty {
             Section {
                 ForEach(Array(auto.enumerated()), id: \.element.id) { index, song in

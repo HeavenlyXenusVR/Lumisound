@@ -131,7 +131,7 @@ struct SongsTab: View {
         let base: [Song]
         switch sortOrder {
         case .title:
-            base = songs.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+            base = songs.sortedByDisplayName()
         case .artist:
             base = songs.sorted { $0.artistName.localizedCaseInsensitiveCompare($1.artistName) == .orderedAscending }
         case .dateAdded:

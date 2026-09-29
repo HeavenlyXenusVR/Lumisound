@@ -156,10 +156,15 @@ private struct FriendGroupSection: Identifiable {
     var id: String { kind.rawValue }
 }
 
-private func relativeTimeString(_ date: Date) -> String {
+/// Shared — called for every friend row on every render.
+private let relativeTimeFormatter: RelativeDateTimeFormatter = {
     let formatter = RelativeDateTimeFormatter()
     formatter.unitsStyle = .abbreviated
-    return formatter.localizedString(for: date, relativeTo: Date())
+    return formatter
+}()
+
+private func relativeTimeString(_ date: Date) -> String {
+    relativeTimeFormatter.localizedString(for: date, relativeTo: Date())
 }
 
 /// Shared small-caps section header used across every Friends-tab segment

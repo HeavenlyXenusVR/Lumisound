@@ -243,7 +243,7 @@ struct SmartPlaylist: Codable, Identifiable, Equatable {
     @MainActor
     private func sortSongs(_ songs: [Song]) -> [Song] {
         switch sort {
-        case .titleAsc:    return songs.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        case .titleAsc:    return songs.sortedByDisplayName()
         case .artistAsc:   return songs.sorted { $0.artist.localizedCaseInsensitiveCompare($1.artist) == .orderedAscending }
         case .yearDesc:    return songs.sorted { (Int($0.year) ?? 0) > (Int($1.year) ?? 0) }
         case .bpmAsc:      return songs.sorted { ($0.bpm ?? 0) < ($1.bpm ?? 0) }

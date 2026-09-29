@@ -179,6 +179,16 @@ extension AudioPlayerManager {
         return result
     }
 
+    /// `manuallyQueuedUpNext.count + autoContinuationUpNext.count`, without
+    /// building either array — both copy the rest of the queue (the whole
+    /// library, when playing from Songs), and badges only need the number.
+    var upNextCount: Int {
+        guard repeatMode != .one, !queue.isEmpty else { return 0 }
+        let after = max(queue.count - (currentIndex + 1), 0)
+        let wrap = (repeatMode == .all && queue.count > 1) ? min(max(currentIndex, 0), queue.count) : 0
+        return after + wrap
+    }
+
     /// Human-readable "Playing from X" context label — the playlist name if
     /// the current queue was started from one, else a generic fallback.
     /// Takes `LibraryManager` as a parameter (mirroring the existing weak
@@ -209,6 +219,10 @@ extension AudioPlayerManager {
 
     func peekNextSong() -> Song? {
         guard let nextIndex = resolveNextIndex() else {
+            pendingNextIndex = nil
+            return nil
+        }
+        guard queue.indices.contains(nextIndex) else {
             pendingNextIndex = nil
             return nil
         }

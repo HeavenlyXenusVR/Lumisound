@@ -30,6 +30,15 @@ enum AmbiguousTitleIndex {
         lock.unlock()
     }
 
+    /// Lets `Song.displayName` skip building its lowercased title|artist key
+    /// — the costly part — in the common case of a library with no
+    /// ambiguous titles at all.
+    static var isEmpty: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.isEmpty
+    }
+
     static func contains(_ key: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }

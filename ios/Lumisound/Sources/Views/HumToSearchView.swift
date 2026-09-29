@@ -144,7 +144,7 @@ struct HumToSearchView: View {
                 Text("Possible Matches")
                     .font(.headline)
                 List(matches) { match in
-                    if let song = library.importedSongs.first(where: { $0.id == match.songID }) {
+                    if let song = library.songsByID[match.songID] {
                         Button {
                             player.play(song: song, in: [song])
                             dismiss()

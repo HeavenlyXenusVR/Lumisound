@@ -154,10 +154,15 @@ struct SubscriptionFeedView: View {
         }
     }
 
-    private func relativeDateString(_ date: Date) -> String {
+    /// Shared — called for every feed row on every render.
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: date, relativeTo: Date())
+        return formatter
+    }()
+
+    private func relativeDateString(_ date: Date) -> String {
+        Self.relativeFormatter.localizedString(for: date, relativeTo: Date())
     }
 
     @ViewBuilder

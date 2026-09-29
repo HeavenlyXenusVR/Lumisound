@@ -145,7 +145,7 @@ extension AccountService {
         do {
             let data = try await makeRequest(components.string ?? "/user/podcasts/episode-progress")
             let entries = try JSONDecoder().decode([PodcastEpisodeProgress].self, from: data)
-            return Dictionary(uniqueKeysWithValues: entries.map { ($0.episodeGuid, $0) })
+            return Dictionary(entries.map { ($0.episodeGuid, $0) }, uniquingKeysWith: { first, _ in first })
         } catch {
             return [:]
         }

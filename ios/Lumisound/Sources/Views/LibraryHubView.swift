@@ -509,7 +509,7 @@ struct LibraryHubView: View {
             async let progressResult = account.fetchRecentPodcastProgress(limit: 10)
             let subs = await subsResult
             let progressEntries = await progressResult
-            let subsByFeed = Dictionary(uniqueKeysWithValues: subs.map { ($0.feedURL, $0) })
+            let subsByFeed = Dictionary(subs.map { ($0.feedURL, $0) }, uniquingKeysWith: { first, _ in first })
             continueListeningPodcasts = progressEntries.compactMap { progress -> ContinueListeningPodcastItem? in
                 guard let feedURL = progress.feedURL, let sub = subsByFeed[feedURL] else { return nil }
                 return ContinueListeningPodcastItem(subscription: sub, progress: progress)
@@ -632,10 +632,12 @@ struct LibraryHubView: View {
     private static func buildShortcuts(library: LibraryManager) -> [HubShortcut] {
         var result: [HubShortcut] = []
 
-        if !library.favoriteSongs.isEmpty {
+        // One full-library pass, not two.
+        let favorites = library.favoriteSongs
+        if !favorites.isEmpty {
             result.append(HubShortcut(
                 id: "favorites", kind: .favorites, title: "Favorites",
-                songs: library.favoriteSongs, icon: "heart.fill"
+                songs: favorites, icon: "heart.fill"
             ))
         }
 
