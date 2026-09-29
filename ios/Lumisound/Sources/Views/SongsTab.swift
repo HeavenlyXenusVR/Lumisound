@@ -4,8 +4,10 @@ import MediaPlayer
 // MARK: - Song sort order
 
 /// Backs `SongsTab`'s sort-chip row — persisted via `@AppStorage` so the
-/// chosen order survives relaunches, same as `library_songs_columns`.
-private enum SongSortOrder: String {
+/// chosen order survives relaunches, same as `library_songs_columns`. The
+/// Library toolbar's sort menu writes the same `library_songs_sort` key, so
+/// the chips and the menu are one setting.
+enum SongSortOrder: String {
     case title
     case artist
     case dateAdded
