@@ -552,14 +552,22 @@ private struct LaunchRecord: View {
                     .frame(width: size - 8, height: size - 8)
                     .rotationEffect(.degrees(angle))
 
-                // Label: the app icon, turning with the record.
-                Image("AppIconDisplay")
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: size * 0.42, height: size * 0.42)
-                    .clipShape(Circle())
-                    .overlay(Circle().stroke(.white.opacity(0.2), lineWidth: 1))
-                    .rotationEffect(.degrees(angle))
+                // Label: an accent disc with the app icon on it, turning with
+                // the record. The disc is there so the label reads as a
+                // label even where the icon art is dark.
+                ZStack {
+                    Circle()
+                        .fill(AppTheme.dynamicAccentGradient)
+                    Image("AppIconDisplay")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: size * 0.3, height: size * 0.3)
+                        .clipShape(RoundedRectangle(cornerRadius: size * 0.07, style: .continuous))
+                        .shadow(color: .black.opacity(0.35), radius: 4, y: 2)
+                }
+                .frame(width: size * 0.42, height: size * 0.42)
+                .overlay(Circle().stroke(.white.opacity(0.25), lineWidth: 1))
+                .rotationEffect(.degrees(angle))
                 // Spindle.
                 Circle()
                     .fill(AppTheme.background)

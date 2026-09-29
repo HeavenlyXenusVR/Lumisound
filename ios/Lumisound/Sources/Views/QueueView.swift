@@ -365,10 +365,7 @@ struct QueueView: View {
     /// "Playing from X" plus how much is left to play.
     private var contextHeaderSection: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text("PLAYING FROM")
-                .font(.caption2.weight(.heavy))
-                .tracking(1.2)
-                .foregroundStyle(AppTheme.textSecondary)
+            // The label already reads "Playing from …".
             Text(player.playingFromContextLabel(library: library))
                 .font(.headline)
                 .foregroundStyle(AppTheme.textPrimary)
