@@ -607,22 +607,30 @@ struct LibraryHubView: View {
     // the total CPU time spent, but it lets the run loop interleave a frame
     // draw / touch event between each pass instead of blocking through all
     // of them at once, turning one long stall into several much smaller ones.
+    //
+    // Update: the shelves no longer need the main actor. `HubContentBuilder`
+    // works on a copy of the songs and play history, so all of them are now
+    // built in one detached task — the main thread only takes the snapshot
+    // and assigns the results. Shortcuts (playlists/folders) still build
+    // here; they're a single cheap pass.
     private func reload() async {
         shortcuts = Self.buildShortcuts(library: library)
         await Task.yield()
-        recentlyAdded = library.recentlyAddedSongs(limit: 20)
-        mostPlayed = library.mostPlayedSongs(limit: 20)
-        await Task.yield()
-        forgottenFavorites = library.forgottenFavoriteSongs(limit: 20)
-        recentlyPlayed = library.recentlyPlayedSongs(limit: 20)
-        await Task.yield()
-        genreGroups = library.genreGroups(limit: 12)
-        topArtistGroups = library.topArtistGroups(limit: 12)
-        await Task.yield()
-        decadeGroups = library.decadeGroups(limit: 10)
-        deeperCutsSongs = library.deeperCutsSongs(limit: 20)
-        await Task.yield()
-        weeklyRecap = library.weeklyRecap()
+        let builder = library.hubContent
+        let favorites = library.favoriteSongs
+        let snapshot = await Task.detached(priority: .userInitiated) {
+            builder.snapshot(favorites: favorites)
+        }.value
+        guard !Task.isCancelled else { return }
+        recentlyAdded = snapshot.recentlyAdded
+        mostPlayed = snapshot.mostPlayed
+        forgottenFavorites = snapshot.forgottenFavorites
+        recentlyPlayed = snapshot.recentlyPlayed
+        genreGroups = snapshot.genreGroups
+        topArtistGroups = snapshot.topArtistGroups
+        decadeGroups = snapshot.decadeGroups
+        deeperCutsSongs = snapshot.deeperCuts
+        weeklyRecap = snapshot.weeklyRecap
         songsPlayedToday = library.songsPlayedTodayCount()
         if !hasLoadedOnce {
             withAnimation(.easeInOut(duration: 0.35)) { hasLoadedOnce = true }

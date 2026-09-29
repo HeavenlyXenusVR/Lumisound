@@ -122,6 +122,24 @@ final class ArtworkService {
         // main cache so a huge Apple Music library can't accumulate freely.
         mediaQueryCache.countLimit = 200
         mediaQueryCache.totalCostLimit = 100 * 1024 * 1024
+
+        // Give memory back explicitly rather than trusting NSCache's own
+        // pressure handling, which can lag behind jetsam for an app holding
+        // ~250 MB of decoded art. Backgrounded, the app is usually just
+        // playing audio (the lock-screen art is already handed to
+        // MPNowPlayingInfoCenter), so the full-size caches go; row
+        // thumbnails stay so returning to a list doesn't flash. A memory
+        // warning clears everything — it all reloads from the disk cache.
+        let center = NotificationCenter.default
+        center.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: nil) { [weak self] _ in
+            self?.memoryCache.removeAllObjects()
+            self?.mediaQueryCache.removeAllObjects()
+            self?.thumbnailCache.removeAllObjects()
+        }
+        center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: nil) { [weak self] _ in
+            self?.memoryCache.removeAllObjects()
+            self?.mediaQueryCache.removeAllObjects()
+        }
     }
 
     /// Wipes previously-cached artwork files once per `cacheFormatVersion` bump,

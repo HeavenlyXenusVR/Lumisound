@@ -4,8 +4,10 @@ import MediaPlayer
 // MARK: - Song sort order
 
 /// Backs `SongsTab`'s sort-chip row — persisted via `@AppStorage` so the
-/// chosen order survives relaunches, same as `library_songs_columns`.
-private enum SongSortOrder: String {
+/// chosen order survives relaunches, same as `library_songs_columns`. The
+/// Library toolbar's sort menu writes the same `library_songs_sort` key, so
+/// the chips and the menu are one setting.
+enum SongSortOrder: String {
     case title
     case artist
     case dateAdded
@@ -94,15 +96,37 @@ struct SongsTab: View {
     /// (rather than showing an empty list) matters because the very first
     /// `body` evaluation renders the list/grid content synchronously, before
     /// any `.onAppear`/`.onChange` modifier has had a chance to run.
-    private var sortedSongs: [Song] { sortedSongsCache ?? computeSortedSongs() }
+    ///
+    /// Falls back to `songs` as passed in (already in the Library's order),
+    /// not a fresh sort: the body reads this ~8 times, so a sorting fallback
+    /// meant ~8 full sorts on the first frame.
+    private var sortedSongs: [Song] { sortedSongsCache ?? songs }
 
     @State private var sortedSongsCache: [Song]? = nil
     @State private var recomputeDebounceTask: Task<Void, Never>?
 
+    /// Synchronous — only for the first appearance, so the list opens in its
+    /// final order without a visible reshuffle.
     private func recomputeSortedSongs() {
-        sortedSongsCache = computeSortedSongs()
-        recomputeIndexCache()
-        alphaSectionsCache = computeAlphaSections()
+        applyLayout(Self.buildLayout(from: layoutInputs()))
+    }
+
+    /// Everything after the first appearance: the sort, index and sections
+    /// are built off the main thread and swapped in when ready.
+    private func recomputeSortedSongsInBackground(after delay: UInt64 = 0) {
+        recomputeDebounceTask?.cancel()
+        recomputeDebounceTask = Task {
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: delay)
+                guard !Task.isCancelled else { return }
+            }
+            let inputs = layoutInputs()
+            let layout = await Task.detached(priority: .userInitiated) {
+                Self.buildLayout(from: inputs)
+            }.value
+            guard !Task.isCancelled else { return }
+            applyLayout(layout)
+        }
     }
 
     /// Debounced entry point for `songs` changing — used ONLY for that
@@ -119,17 +143,47 @@ struct SongsTab: View {
     /// via a screen recording's frame-diff timeline showing the same pattern
     /// as the Home hub's identical `allSongs.count`-driven storm).
     private func scheduleRecompute() {
-        recomputeDebounceTask?.cancel()
-        recomputeDebounceTask = Task {
-            try? await Task.sleep(nanoseconds: 400_000_000)
-            guard !Task.isCancelled else { return }
-            recomputeSortedSongs()
-        }
+        recomputeSortedSongsInBackground(after: 400_000_000)
     }
 
-    private func computeSortedSongs() -> [Song] {
+    private struct LayoutInputs {
+        let songs: [Song]
+        let order: SongSortOrder
+        let history: [String: PlayHistoryEntry]
+        /// Favourite song IDs when "pin favourites first" is on, else nil.
+        let pinnedIDs: Set<String>?
+    }
+
+    private struct Layout {
+        let sorted: [Song]
+        let index: [String: Int]
+        let sections: [(letter: String, songs: [Song])]
+    }
+
+    /// Snapshots what the sort needs on the main thread (the play history
+    /// and favourites live on main-actor objects), so `buildLayout` can run
+    /// anywhere.
+    private func layoutInputs() -> LayoutInputs {
+        LayoutInputs(
+            songs: songs,
+            order: sortOrder,
+            history: sortOrder == .playCount ? PlayHistoryStore.shared.entries : [:],
+            pinnedIDs: pinFavoritesFirst
+                ? Set(songs.lazy.filter { library.isFavorite(songID: $0.id) }.map(\.id))
+                : nil
+        )
+    }
+
+    private func applyLayout(_ layout: Layout) {
+        sortedSongsCache = layout.sorted
+        songIndexCache = layout.index
+        alphaSectionsCache = layout.sections
+    }
+
+    nonisolated private static func buildLayout(from inputs: LayoutInputs) -> Layout {
+        let songs = inputs.songs
         let base: [Song]
-        switch sortOrder {
+        switch inputs.order {
         case .title:
             base = songs.sortedByDisplayName()
         case .artist:
@@ -137,19 +191,32 @@ struct SongsTab: View {
         case .dateAdded:
             base = songs.sorted { ($0.dateAdded ?? .distantPast) > ($1.dateAdded ?? .distantPast) }
         case .playCount:
-            base = songs.sorted { PlayHistoryStore.shared.playCount(for: $0.id) > PlayHistoryStore.shared.playCount(for: $1.id) }
+            let history = inputs.history
+            base = songs.sorted { (history[$0.id]?.playCount ?? 0) > (history[$1.id]?.playCount ?? 0) }
         case .duration:
             base = songs.sorted { $0.duration > $1.duration }
         }
-        guard pinFavoritesFirst else { return base }
-        // `.sorted` on a Bool key is stable in practice here since we only
-        // ever compare across the two favorite/non-favorite partitions —
-        // done via an explicit stable filter+filter split (not `.sorted`)
-        // so the relative order within each group from `base` above is
-        // preserved exactly.
-        let favorites = base.filter { library.isFavorite(songID: $0.id) }
-        let rest = base.filter { !library.isFavorite(songID: $0.id) }
-        return favorites + rest
+
+        // Pinned favourites first, keeping `base`'s order within each group
+        // (a filter+filter split, not a sort, so it's stable).
+        let sorted: [Song]
+        if let pinned = inputs.pinnedIDs {
+            sorted = base.filter { pinned.contains($0.id) } + base.filter { !pinned.contains($0.id) }
+        } else {
+            sorted = base
+        }
+
+        var index: [String: Int] = [:]
+        index.reserveCapacity(sorted.count)
+        for (i, song) in sorted.enumerated() { index[song.id] = i }
+
+        let sections: [(letter: String, songs: [Song])]
+        switch inputs.order {
+        case .title:  sections = alphabeticalSections(of: sorted) { $0.displayName }
+        case .artist: sections = alphabeticalSections(of: sorted) { $0.artistName }
+        default:      sections = []
+        }
+        return Layout(sorted: sorted, index: index, sections: sections)
     }
 
     private var gridColumns: [GridItem] {
@@ -261,13 +328,6 @@ struct SongsTab: View {
     private var alphaSections: [(letter: String, songs: [Song])] { alphaSectionsCache }
     @State private var alphaSectionsCache: [(letter: String, songs: [Song])] = []
 
-    private func computeAlphaSections() -> [(letter: String, songs: [Song])] {
-        switch sortOrder {
-        case .title:  return alphabeticalSections(of: sortedSongs) { $0.displayName }
-        case .artist: return alphabeticalSections(of: sortedSongs) { $0.artistName }
-        default:      return []
-        }
-    }
     private var showsIndexRail: Bool { !alphaSectionsCache.isEmpty && songColumns == 1 && sortedSongs.count > 20 }
 
     /// Flat song id → position in `sortedSongs`, recomputed alongside
@@ -279,11 +339,6 @@ struct SongsTab: View {
     /// that avoids turning a 1,000-song library into an O(n²) render.
     @State private var songIndexCache: [String: Int] = [:]
 
-    private func recomputeIndexCache() {
-        var map: [String: Int] = [:]
-        for (i, song) in sortedSongs.enumerated() { map[song.id] = i }
-        songIndexCache = map
-    }
 
     @ViewBuilder
     private func songRowContent(_ song: Song, flatIndex: Int) -> some View {
@@ -470,11 +525,20 @@ struct SongsTab: View {
         // having already run first, which holds true here since SwiftUI
         // fires same-event `.onAppear`/`.onChange` modifiers on one view in
         // the order they're attached.
-        .onAppear { recomputeSortedSongs() }
+        .onAppear {
+            if sortedSongsCache == nil {
+                recomputeSortedSongs()
+            } else {
+                recomputeSortedSongsInBackground()
+            }
+        }
         .onChange(of: songs) { _ in scheduleRecompute() }
-        .onChange(of: sortOrderRaw) { _ in recomputeSortedSongs() }
-        .onChange(of: pinFavoritesFirst) { _ in recomputeSortedSongs() }
-        .onChange(of: library.favoriteSongIDs) { _ in recomputeSortedSongs() }
+        .onChange(of: sortOrderRaw) { _ in recomputeSortedSongsInBackground() }
+        .onChange(of: pinFavoritesFirst) { _ in recomputeSortedSongsInBackground() }
+        .onChange(of: library.favoriteSongIDs) { _ in
+            // Only reorders anything when favourites are pinned.
+            if pinFavoritesFirst { recomputeSortedSongsInBackground() }
+        }
         .onAppear {
             // Warm the first 30 songs' artwork at background priority so
             // rows/cells have images ready before the user scrolls to them.

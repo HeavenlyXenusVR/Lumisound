@@ -51,82 +51,6 @@ enum LibraryTab: String, CaseIterable {
     }
 }
 
-// MARK: - Sort enum (Songs tab)
-
-private enum LibrarySortOption: String, CaseIterable, Identifiable {
-    case titleAZ          = "title_az"
-    case artistAZ         = "artist_az"
-    case dateAddedNewest  = "date_added_newest"
-    case dateAddedOldest  = "date_added_oldest"
-    case durationLongest  = "duration_longest"
-    case durationShortest = "duration_shortest"
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .titleAZ:          return "Title (A–Z)"
-        case .artistAZ:         return "Artist (A–Z)"
-        case .dateAddedNewest:  return "Date Added (Newest)"
-        case .dateAddedOldest:  return "Date Added (Oldest)"
-        case .durationLongest:  return "Duration (Longest)"
-        case .durationShortest: return "Duration (Shortest)"
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .titleAZ, .artistAZ:            return "textformat"
-        case .dateAddedNewest, .dateAddedOldest: return "calendar"
-        case .durationLongest, .durationShortest: return "clock"
-        }
-    }
-
-    /// Applies this sort to a song list. `.dateAdded*` falls back to the local
-    /// file's creation/modification date (there's no persisted "date added"
-    /// field on `Song`) — streamed/cloud-only songs with no local file URL
-    /// sort to the end under `.distantPast`.
-    func apply(to songs: [Song]) -> [Song] {
-        switch self {
-        case .titleAZ:
-            return songs.sortedByDisplayName()
-        case .artistAZ:
-            return songs.sorted { $0.artistName.localizedCaseInsensitiveCompare($1.artistName) == .orderedAscending }
-        case .dateAddedNewest:
-            return songs.sorted { Self.fileDate($0) > Self.fileDate($1) }
-        case .dateAddedOldest:
-            return songs.sorted { Self.fileDate($0) < Self.fileDate($1) }
-        case .durationLongest:
-            return songs.sorted { $0.duration > $1.duration }
-        case .durationShortest:
-            return songs.sorted { $0.duration < $1.duration }
-        }
-    }
-
-    /// Cached by song ID — `filteredSongs` recomputes on every `LibraryView`
-    /// re-render (including ones triggered by unrelated `AudioPlayerManager`
-    /// publishes like a track change or play/pause toggle), and without this
-    /// cache each of those re-renders re-ran `FileManager.attributesOfItem`
-    /// synchronously on the main thread for every song in the library when
-    /// sorted by date added — a real stat-the-whole-library cost on every
-    /// trigger, not just when the query/sort/library actually changed.
-    private static var fileDateCache: [String: Date] = [:]
-
-    private static func fileDate(_ song: Song) -> Date {
-        if let cached = fileDateCache[song.id] { return cached }
-        let date: Date
-        if let url = song.url, url.isFileURL,
-           let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-           let resolved = (attrs[.creationDate] as? Date) ?? (attrs[.modificationDate] as? Date) {
-            date = resolved
-        } else {
-            date = .distantPast
-        }
-        fileDateCache[song.id] = date
-        return date
-    }
-}
-
 // MARK: - LibraryView
 
 struct LibraryView: View {
@@ -138,7 +62,11 @@ struct LibraryView: View {
     @EnvironmentObject private var streaming: StreamingService
 
     @AppStorage("autoCloudBackup") private var autoCloudBackup: Bool = false
-    @AppStorage("library_sort_option") private var sortOptionRaw: String = LibrarySortOption.titleAZ.rawValue
+    /// Shared with SongsTab's sort chips (and Lua presets' default sort) —
+    /// the toolbar menu and the chips are the same setting. This used to be
+    /// its own "library_sort_option" that LibraryView applied before
+    /// SongsTab re-sorted by the chips, so the menu barely did anything.
+    @AppStorage("library_songs_sort") private var songSortRaw: String = SongSortOrder.title.rawValue
     // Mirrors SongsTab's own @AppStorage of the same key — multi-select is
     // only supported in the single-column List layout (see SongsTab), so the
     // toolbar's Select entry point is gated on it too.
@@ -156,20 +84,36 @@ struct LibraryView: View {
     @State private var isSelecting = false
     @State private var selectedSongIDs: Set<String> = []
 
-    private var sortOption: LibrarySortOption {
-        LibrarySortOption(rawValue: sortOptionRaw) ?? .titleAZ
+    private var songSort: SongSortOrder {
+        SongSortOrder(rawValue: songSortRaw) ?? .title
     }
 
     // MARK: Filtered songs for Songs tab (uses debounced search)
 
-    private func recomputeFilteredSongs() {
-        let query = debouncedSearch.trimmingCharacters(in: .whitespacesAndNewlines)
-        let base = query.isEmpty ? library.allSongs : library.allSongs.filter { song in
+    nonisolated private static func filter(_ songs: [Song], query: String) -> [Song] {
+        guard !query.isEmpty else { return songs }
+        return songs.filter { song in
             song.displayName.localizedCaseInsensitiveContains(query)
                 || song.artistName.localizedCaseInsensitiveContains(query)
                 || song.albumName.localizedCaseInsensitiveContains(query)
         }
-        filteredSongsState = sortOption.apply(to: base)
+    }
+
+    /// Filters off the main thread — three localized substring checks per
+    /// song ran on the main thread for every (debounced) keystroke. Sorting
+    /// is SongsTab's job (by the shared sort setting), so it isn't done here.
+    private func recomputeFilteredSongs() async {
+        let query = debouncedSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        let songs = library.allSongs
+        guard !query.isEmpty else {
+            filteredSongsState = songs
+            return
+        }
+        let result = await Task.detached(priority: .userInitiated) {
+            Self.filter(songs, query: query)
+        }.value
+        guard !Task.isCancelled else { return }
+        filteredSongsState = result
     }
 
     // MARK: Body
@@ -237,11 +181,11 @@ struct LibraryView: View {
                 prompt: "Search songs, artists, albums…"
             )
             .toolbar { toolbarItems }
-            .task(id: "\(library.allSongs.count)|\(debouncedSearch)|\(sortOptionRaw)") {
+            .task(id: "\(library.allSongs.count)|\(debouncedSearch)") {
                 // Keep the O(n log n) Songs-tab query out of SwiftUI body
                 // evaluation. Player progress and navigation state can
                 // invalidate this root many times without changing the data.
-                recomputeFilteredSongs()
+                await recomputeFilteredSongs()
             }
             .safeAreaInset(edge: .bottom) {
                 if isSelecting {
@@ -387,12 +331,12 @@ struct LibraryView: View {
         ToolbarItemGroup(placement: .navigationBarTrailing) {
             if selectedTab == .songs && !filteredSongsState.isEmpty {
                 Menu {
-                    ForEach(LibrarySortOption.allCases) { option in
+                    ForEach(SongSortOrder.allCases, id: \.self) { option in
                         Button {
-                            sortOptionRaw = option.rawValue
+                            songSortRaw = option.rawValue
                         } label: {
                             Label(option.label, systemImage: option.icon)
-                            if sortOption == option {
+                            if songSort == option {
                                 Image(systemName: "checkmark")
                             }
                         }
