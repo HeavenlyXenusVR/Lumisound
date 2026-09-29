@@ -40,7 +40,7 @@ struct AppleMusicTab: View {
     // MARK: Sorted songs
 
     /// Sorted once per change of the Apple Music songs or the sort order
-    /// (see `.task(id:)` in `body`). This used to be a computed property —
+    /// (see the `.onChange`s in `body`). This used to be a computed property —
     /// a full sort of every Apple Music song on each of the ~18 reads per
     /// render, and this tab re-renders on every player update.
     @State private var songs: [Song] = []
@@ -89,9 +89,9 @@ struct AppleMusicTab: View {
             }
         }
         .background(GalleryBackgroundView().ignoresSafeArea())
-        .task(id: "\(library.mediaSongs.count)|\(library.allSongs.count)|\(sortOrder.rawValue)") {
-            songs = sortedMediaSongs()
-        }
+        .onAppear { songs = sortedMediaSongs() }
+        .onChange(of: library.mediaSongs) { songs = sortedMediaSongs() }
+        .onChange(of: sortOrder) { songs = sortedMediaSongs() }
         .navigationTitle("Apple Music")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

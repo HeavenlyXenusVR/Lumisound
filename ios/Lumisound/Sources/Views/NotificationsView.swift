@@ -130,18 +130,28 @@ struct NotificationsView: View {
         Task { await account.markAllNotificationsRead() }
     }
 
-    private func relativeDate(_ iso: String?) -> String? {
-        guard let iso else { return nil }
+    // Shared: this runs for every notification row on every render, and
+    // formatters are expensive to create.
+    private static let isoWithFraction: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        var date = formatter.date(from: iso)
-        if date == nil {
-            formatter.formatOptions = [.withInternetDateTime]
-            date = formatter.date(from: iso)
-        }
-        guard let date else { return nil }
-        let relative = RelativeDateTimeFormatter()
-        relative.unitsStyle = .abbreviated
-        return relative.localizedString(for: date, relativeTo: Date())
+        return formatter
+    }()
+    private static let isoPlain: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter
+    }()
+
+    private func relativeDate(_ iso: String?) -> String? {
+        guard let iso,
+              let date = Self.isoWithFraction.date(from: iso) ?? Self.isoPlain.date(from: iso)
+        else { return nil }
+        return Self.relativeFormatter.localizedString(for: date, relativeTo: Date())
     }
 }

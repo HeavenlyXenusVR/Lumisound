@@ -60,7 +60,7 @@ struct ListeningHeatmapView: View {
     // MARK: - Derived data
 
     private var playsByDate: [String: Int] {
-        Dictionary(uniqueKeysWithValues: days.map { ($0.date, $0.plays) })
+        Dictionary(days.map { ($0.date, $0.plays) }, uniquingKeysWith: +)
     }
 
     private var maxPlays: Int { days.map(\.plays).max() ?? 0 }

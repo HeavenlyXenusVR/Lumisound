@@ -65,8 +65,8 @@ extension NowPlayingView {
                     Text("Up Next")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(AppTheme.textPrimary)
-                    if !upNextSongs.isEmpty {
-                        Text("\(upNextSongs.count)")
+                    if player.upNextCount > 0 {
+                        Text("\(player.upNextCount)")
                             .font(.caption2.weight(.bold))
                             .foregroundStyle(.white)
                             .padding(.horizontal, 6)
@@ -95,19 +95,29 @@ extension NowPlayingView {
             if let current = player.currentSong {
                 compactRow(song: current, isCurrent: true)
             }
-            if !manualUpNextSongs.isEmpty {
+            // Read each list once: both copy the rest of the queue, which
+            // can be the whole library.
+            let manual = manualUpNextSongs
+            let auto = autoUpNextSongs
+            if !manual.isEmpty {
                 compactSectionLabel("Manually Queued", icon: "person.fill.badge.plus")
-                ForEach(manualUpNextSongs) { song in
+                ForEach(manual.prefix(10)) { song in
                     compactRow(song: song, isCurrent: false)
+                }
+                if manual.count > 10 {
+                    Text("+ \(manual.count - 10) more — see full queue")
+                        .font(.caption2)
+                        .foregroundStyle(AppTheme.textSecondary)
+                        .padding(.leading, 4)
                 }
             }
-            if !autoUpNextSongs.isEmpty {
+            if !auto.isEmpty {
                 compactSectionLabel("Up Next", icon: nil)
-                ForEach(autoUpNextSongs.prefix(10)) { song in
+                ForEach(auto.prefix(10)) { song in
                     compactRow(song: song, isCurrent: false)
                 }
-                if autoUpNextSongs.count > 10 {
-                    Text("+ \(autoUpNextSongs.count - 10) more — see full queue")
+                if auto.count > 10 {
+                    Text("+ \(auto.count - 10) more — see full queue")
                         .font(.caption2)
                         .foregroundStyle(AppTheme.textSecondary)
                         .padding(.leading, 4)

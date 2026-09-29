@@ -23,18 +23,40 @@ extension AudioPlayerManager {
         // thread made every playback action feel laggy. Encode + write off-main, wrapped
         // in a background task so it still finishes if this races app suspension
         // (e.g. the didEnterBackground save).
-        let key = playbackStateKey
+        //
+        // Written to its own file rather than UserDefaults: a queue of a few
+        // thousand songs is megabytes of JSON, and UserDefaults rewrites and
+        // loads its whole plist — every preference write in the app and every
+        // launch paid for it. The generation check keeps an older save that
+        // finishes late from overwriting a newer one.
+        let generation = PlaybackStateFile.nextGeneration()
         Task.detached(priority: .utility) {
             try? await BackgroundDownloadManager.run(named: "SavePlaybackState") {
                 guard let data = try? JSONEncoder().encode(snapshot) else { return }
-                UserDefaults.standard.set(data, forKey: key)
+                PlaybackStateFile.write(data, generation: generation)
             }
         }
     }
 
+    /// Forgets the saved queue, in both the file and the old UserDefaults
+    /// location.
+    func clearSavedPlaybackState() {
+        UserDefaults.standard.removeObject(forKey: playbackStateKey)
+        PlaybackStateFile.remove()
+    }
+
     func restorePlaybackState() {
+        // One-time move from UserDefaults: copy the old snapshot into the
+        // file (unless a newer file already exists), then drop it from the
+        // plist.
+        if let legacyData = UserDefaults.standard.data(forKey: playbackStateKey) {
+            if PlaybackStateFile.read() == nil {
+                PlaybackStateFile.write(legacyData, generation: PlaybackStateFile.nextGeneration())
+            }
+            UserDefaults.standard.removeObject(forKey: playbackStateKey)
+        }
         guard
-            let data = UserDefaults.standard.data(forKey: playbackStateKey),
+            let data = PlaybackStateFile.read(),
             let snapshot = try? JSONDecoder().decode(PlaybackSnapshot.self, from: data),
             !snapshot.queue.isEmpty
         else { return }
@@ -42,7 +64,7 @@ extension AudioPlayerManager {
         // Discard snapshots written by an older schema version to prevent crashes or
         // unexpected state from stale / incompatible data.
         if snapshot.version != PlaybackSnapshot.currentVersion {
-            UserDefaults.standard.removeObject(forKey: playbackStateKey)
+            clearSavedPlaybackState()
             appLog("PlaybackSnapshot version mismatch (\(snapshot.version) vs \(PlaybackSnapshot.currentVersion)) — cleared stale snapshot", category: "general")
             return
         }
@@ -97,7 +119,7 @@ extension AudioPlayerManager {
             appWarn("restorePlaybackState: dropped \(droppedCount) queued song(s) with missing backing files before resuming", category: "audio")
         }
         guard !liveQueue.isEmpty else {
-            UserDefaults.standard.removeObject(forKey: playbackStateKey)
+            clearSavedPlaybackState()
             return
         }
 
@@ -112,5 +134,48 @@ extension AudioPlayerManager {
         shuffleEnabled = snapshot.shuffleEnabled
         // Do not autoplay on restore; just prepare the node so a resume() works.
         prepareCurrent()
+    }
+}
+
+// MARK: - PlaybackStateFile
+
+/// The saved queue/position, as a JSON file in Application Support.
+enum PlaybackStateFile {
+    private static let lock = NSLock()
+    private nonisolated(unsafe) static var latestGeneration = 0
+
+    static var url: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return dir.appendingPathComponent("playback_state_v1.json")
+    }
+
+    /// Call on the main actor when a save starts; pass the result to `write`.
+    static func nextGeneration() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        latestGeneration += 1
+        return latestGeneration
+    }
+
+    /// Writes unless a newer save has started since `generation` was taken.
+    static func write(_ data: Data, generation: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard generation == latestGeneration else { return }
+        let url = self.url
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: url, options: .atomic)
+    }
+
+    static func read() -> Data? {
+        try? Data(contentsOf: url)
+    }
+
+    static func remove() {
+        lock.lock()
+        defer { lock.unlock() }
+        latestGeneration += 1
+        try? FileManager.default.removeItem(at: url)
     }
 }

@@ -16,12 +16,19 @@ struct LibraryHealthView: View {
 
     private var songs: [Song] { library.allSongs }
 
-    private var missingMetadataCount: Int {
-        songs.filter { $0.artist.isEmpty || $0.album.isEmpty || $0.genre.isEmpty || $0.year.isEmpty }.count
-    }
+    /// Filtered once per library change (see `.task(id:)`), not on every
+    /// read — the score, rows and destinations read these several times a
+    /// render, and the corrupt-file scan re-renders this view as it runs.
+    @State private var missingMetadataSongs: [Song] = []
+    @State private var lowBitrateSongs: [Song] = []
 
-    private var lowBitrateCount: Int {
-        songs.filter { $0.bitrate > 0 && $0.bitrate < 128 }.count
+    private var missingMetadataCount: Int { missingMetadataSongs.count }
+    private var lowBitrateCount: Int { lowBitrateSongs.count }
+
+    private func refreshIssueLists() {
+        let all = songs
+        missingMetadataSongs = all.filter { $0.artist.isEmpty || $0.album.isEmpty || $0.genre.isEmpty || $0.year.isEmpty }
+        lowBitrateSongs = all.filter { $0.bitrate > 0 && $0.bitrate < 128 }
     }
 
     /// 100 minus the percentage of the library affected by a missing-
@@ -64,7 +71,7 @@ struct LibraryHealthView: View {
                 Section("Metadata") {
                     NavigationLink(destination: LibraryHealthSongListView(
                         title: "Missing Metadata",
-                        songs: songs.filter { $0.artist.isEmpty || $0.album.isEmpty || $0.genre.isEmpty || $0.year.isEmpty }
+                        songs: missingMetadataSongs
                     )) {
                         healthRow(
                             icon: "text.badge.xmark",
@@ -75,7 +82,7 @@ struct LibraryHealthView: View {
                     }
                     NavigationLink(destination: LibraryHealthSongListView(
                         title: "Low Bitrate",
-                        songs: songs.filter { $0.bitrate > 0 && $0.bitrate < 128 }
+                        songs: lowBitrateSongs
                     )) {
                         healthRow(
                             icon: "waveform.badge.exclamationmark",
@@ -115,6 +122,11 @@ struct LibraryHealthView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(GalleryBackgroundView().ignoresSafeArea())
+        // `onChange(of: allSongs)`, not a count — fixing a song's metadata
+        // keeps the count but should drop it from the list. The comparison
+        // is a buffer-identity check unless the library really changed.
+        .onAppear(perform: refreshIssueLists)
+        .onChange(of: library.allSongs) { refreshIssueLists() }
         .navigationTitle("Library Health")
         .navigationBarTitleDisplayMode(.inline)
     }

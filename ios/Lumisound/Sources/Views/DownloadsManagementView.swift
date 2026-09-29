@@ -172,9 +172,14 @@ struct DownloadsManagementView: View {
         } message: {
             Text("This permanently deletes the file from your device. This can't be undone.")
         }
-        // Keyed on the count, not `downloadedSongs.map(\.id)` — that filtered
-        // and mapped the whole imported library on every render to diff it.
-        .task(id: library.importedSongs.count) {
+        // Watches `importedSongs` directly rather than
+        // `downloadedSongs.map(\.id)`, which filtered and mapped the whole
+        // imported library on every render just to diff it.
+        .onAppear {
+            sortedSongs = sorted()
+            computeSizes()
+        }
+        .onChange(of: library.importedSongs) {
             sortedSongs = sorted()
             computeSizes()
         }

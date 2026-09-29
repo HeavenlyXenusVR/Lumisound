@@ -217,7 +217,7 @@ extension NowPlayingView {
                 icon: "list.bullet",
                 label: "Queue",
                 isActive: false,
-                badge: upNextSongs.isEmpty ? nil : upNextSongs.count
+                badge: player.upNextCount == 0 ? nil : player.upNextCount
             ) {
                 showPanel(.queue)
             }

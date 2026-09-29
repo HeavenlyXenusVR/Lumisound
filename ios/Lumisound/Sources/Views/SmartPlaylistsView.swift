@@ -249,7 +249,14 @@ struct SmartPlaylistDetailView: View {
 
     private var playlist: SmartPlaylist? { store.playlists.first { $0.id == playlistID } }
 
-    private var matched: [Song] {
+    /// Evaluated once per change of the library, favourites or rules (see
+    /// `.task(id:)`/`.onChange` below). It was a computed property read
+    /// about six times a render — each read ran every rule over the whole
+    /// library and sorted the result, and this view re-renders on every
+    /// player change.
+    @State private var matched: [Song] = []
+
+    private func evaluateMatched() -> [Song] {
         guard let playlist else { return [] }
         return playlist.evaluate(over: library.allSongs, favorites: library.favoriteSongIDs)
     }
@@ -325,6 +332,10 @@ struct SmartPlaylistDetailView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(GalleryBackgroundView().ignoresSafeArea())
+        .onAppear { matched = evaluateMatched() }
+        .onChange(of: library.allSongs) { matched = evaluateMatched() }
+        .onChange(of: library.favoriteSongIDs) { matched = evaluateMatched() }
+        .onChange(of: playlist) { matched = evaluateMatched() }
         .navigationTitle(playlist?.name ?? "Smart Playlist")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

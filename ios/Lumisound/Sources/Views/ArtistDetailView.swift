@@ -12,7 +12,7 @@ struct ArtistDetailView: View {
 
     /// Songs sorted by album name then track number, grouped by album in
     /// the order they first appear. Built once per library change (see
-    /// `.task(id:)` below) — these were computed properties, so every render
+    /// `.onChange` below) — these were computed properties, so every render
     /// re-sorted the artist's songs several times over and re-filtered them
     /// once per album section, and this view re-renders on player updates.
     private struct AlbumGroup {
@@ -113,9 +113,10 @@ struct ArtistDetailView: View {
         .navigationTitle(artist)
         .navigationBarTitleDisplayMode(.large)
         .safeAreaInset(edge: .bottom) { MiniPlayerBar() }
-        .task(id: "\(artist)|\(library.allSongs.count)") {
-            contents = buildContents()
-        }
+        // Watches the list itself, not its count, so an edited tag moves a
+        // song between albums (or off this artist) straight away.
+        .onAppear { contents = buildContents() }
+        .onChange(of: library.allSongs) { contents = buildContents() }
         .task(id: artist) {
             bio = await account.fetchArtistBio(name: artist)
         }
