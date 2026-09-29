@@ -15,6 +15,9 @@ extension LibraryManager {
 
     func isFavorite(songID: String) -> Bool {
         if favoriteSongIDs.contains(songID) { return true }
+        // No favourites at all: skip building the filename key below, which
+        // allocates — this runs for every song in `favoriteSongs` and per row.
+        guard !favoriteKeyCache.isEmpty else { return false }
         // Cross-device fallback. This app ids a song by its own on-device path
         // ("local:Imported Music/<folder>/<file>"); the Apple TV sees the same
         // song as a cloud track keyed by a server-side content hash. Those are
