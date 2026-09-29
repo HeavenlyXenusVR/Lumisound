@@ -44,6 +44,8 @@ enum FavoritesSortOrder: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Main actor: Most Played reads `PlayHistoryStore`, which is.
+    @MainActor
     func apply(to songs: [Song]) -> [Song] {
         let byTitle: (Song, Song) -> Bool = {
             $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
