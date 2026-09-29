@@ -25,7 +25,7 @@ on:
         required: false
         default: 'all'
         type: choice
-        options: [ all, main, folders, albums ]
+        options: [ all, main, folders, albums, library ]
       appearance:
         description: 'System appearance'
         required: false
@@ -123,6 +123,7 @@ jobs:
             main)    ONLY_TESTING="LumisoundUITests/ScreenshotTests/testCaptureScreens" ;;
             folders) ONLY_TESTING="LumisoundUITests/ScreenshotTests/testCaptureFolderScreens" ;;
             albums)  ONLY_TESTING="LumisoundUITests/ScreenshotTests/testCaptureAlbumAndNowPlayingScreens" ;;
+            library) ONLY_TESTING="LumisoundUITests/ScreenshotTests/testCaptureLibraryAndQueueScreens" ;;
             *)       ONLY_TESTING="LumisoundUITests/ScreenshotTests" ;;
           esac
 

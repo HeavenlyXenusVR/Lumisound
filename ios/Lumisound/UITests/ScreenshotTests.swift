@@ -134,6 +134,43 @@ final class ScreenshotTests: XCTestCase {
         }
     }
 
+    /// The loading screen (while loading, then with the account prompt),
+    /// Favorites, Artists and Queue. Workflow input `tests: library`.
+    func testCaptureLibraryAndQueueScreens() {
+        seedDemoLibrary()
+
+        app.terminate()
+        sleep(2)
+        app.launchArguments = ["-LumisoundScreenshotMode", "-selected_tab", "0", "-LumisoundScreenshotLibraryTab", "Favorites"]
+        app.launch()
+        sleep(1)
+        snap("40-launch")
+        if app.buttons["Continue without account"].waitForExistence(timeout: 30) {
+            sleep(1)
+            snap("41-launch-prompt")
+        }
+        continueWithoutAccount()
+        sleep(3)
+        snap("42-favorites")
+        app.swipeUp()
+        sleep(2)
+        snap("43-favorites-scrolled")
+
+        relaunch(libraryTab: "Artists")
+        sleep(2)
+        snap("44-artists")
+        app.swipeUp()
+        sleep(2)
+        snap("45-artists-scrolled")
+
+        relaunch(libraryTab: nil, mainTab: 2)
+        sleep(3)
+        snap("46-queue")
+        app.swipeUp()
+        sleep(2)
+        snap("47-queue-scrolled")
+    }
+
     /// Pass 1: the app scans the demo library and ScreenshotMode seeds play
     /// history, favorites and playlists. Seeding is idempotent, so every
     /// test can start with this.
