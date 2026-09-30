@@ -48,15 +48,45 @@ enum LumisoundThumbnailBackfillService {
     /// bounds the network burst.
     private static let maxPerPass = 100
 
-    private static var backfilledIDs: Set<String> {
-        get { Set(UserDefaults.standard.stringArray(forKey: backfilledIDsKey) ?? []) }
-        set { UserDefaults.standard.set(Array(newValue), forKey: backfilledIDsKey) }
+    /// BUG FIXED (2026-09-30): this was a COMPUTED property whose getter read
+    /// the whole `stringArray` out of `UserDefaults` and built a fresh
+    /// `Set<String>` from it — and `runIfNeeded`'s candidate `filter` below
+    /// called it once PER SONG. That is O(songs x backfilled-IDs) string
+    /// hashes plus one `UserDefaults` round trip per song, all on the main
+    /// actor, every single 5-minute foreground pass — so on a library of a few
+    /// thousand tracks it lands in the millions of operations. Field telemetry
+    /// caught it exactly: 24 logged main-thread stalls of 12.9-18.0s in 13
+    /// hours, 19 of which start in the instruction right after
+    /// `LumisoundTrackVaultService`'s conversion pass returns — i.e. here —
+    /// and the duration grew steadily (12.89s -> 17.74s) as the set filled,
+    /// which is the O(n*m) signature. The set is now read ONCE per pass into a
+    /// local, mutated in memory, and written back once
+    /// (`persistBackfilledIDs`).
+    private static func loadBackfilledIDs() -> Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: backfilledIDsKey) ?? [])
+    }
+
+    private static func persistBackfilledIDs(_ ids: Set<String>) {
+        UserDefaults.standard.set(Array(ids), forKey: backfilledIDsKey)
     }
 
     static func runIfNeeded() async {
         guard let library = LibraryManager.shared, let streaming = StreamingService.shared,
               let account = AccountService.shared, let token = account.token, account.isLoggedIn
         else { return }
+
+        // Read once, not once per song (see `loadBackfilledIDs`). Every
+        // mutation below goes into this local set; `persist` writes it back.
+        var backfilledIDs = loadBackfilledIDs()
+        var backfilledIDsDirty = false
+        // One write per pass instead of one per insert (the old setter
+        // re-serialized the entire array to `UserDefaults` on every single
+        // `insert`, up to `maxPerPass` times). `defer` so progress is still
+        // persisted on every exit path — the early returns below and the
+        // `break` once `maxPerPass` is reached.
+        defer {
+            if backfilledIDsDirty { persistBackfilledIDs(backfilledIDs) }
+        }
 
         let candidates = library.importedSongs.filter { song in
             guard let url = song.url, LumisoundExclusiveExtensionService.isConverted(url) else { return false }
@@ -83,7 +113,7 @@ enum LumisoundThumbnailBackfillService {
             }
             processed += 1
             guard cloudTrack.hasArtwork else {
-                backfilledIDs.insert(song.id)  // genuinely nothing to backfill
+                backfilledIDs.insert(song.id); backfilledIDsDirty = true  // genuinely nothing to backfill
                 continue
             }
             // Embedded JPEG bytes first, then the embedded thumbnail URL.
@@ -114,12 +144,12 @@ enum LumisoundThumbnailBackfillService {
                 jpeg = await Self.thumbnailDataFromEmbeddedURL(fileURL: url)
             }
             guard let jpeg else {
-                backfilledIDs.insert(song.id)  // genuinely no artwork of any kind
+                backfilledIDs.insert(song.id); backfilledIDsDirty = true  // genuinely no artwork of any kind
                 continue
             }
             do {
                 try await streaming.uploadArtworkThumbnail(jpeg, forMetadataID: cloudTrack.id, token: token)
-                backfilledIDs.insert(song.id)
+                backfilledIDs.insert(song.id); backfilledIDsDirty = true
             } catch {
                 appWarn("LumisoundThumbnailBackfillService: upload failed for \(url.lastPathComponent): \(error.localizedDescription)", category: "network")
                 // Left unmarked — retried on the next pass.
@@ -139,8 +169,17 @@ enum LumisoundThumbnailBackfillService {
     /// The file is unlocked first: a `.lms` track's bytes are XOR-masked and
     /// AVURLAsset can't read metadata off them directly.
     private static func thumbnailDataFromEmbeddedURL(fileURL: URL) async -> Data? {
-        let readableURL = LumisoundExclusiveExtensionService.playableURL(for: fileURL)
+        // BUG FIXED (2026-09-30): `playableURL(for:)` was called HERE, in this
+        // `@MainActor`-isolated function's own body, rather than inside the
+        // detached task below. It is a synchronous full-file XOR unlock that
+        // writes a complete unlocked copy of the track to disk on a cold
+        // cache — so it ran on the main thread, up to `maxPerPass` (100) times
+        // per 5-minute pass. This is the same main-thread-unlock bug
+        // `runLegacyRelockPass` and `convert(fileURL:)` were each fixed for;
+        // this call site never got it. Moved inside the detached task so the
+        // unlock genuinely happens off-main.
         let remoteURL: URL? = await Task.detached(priority: .utility) {
+            let readableURL = LumisoundExclusiveExtensionService.playableURL(for: fileURL)
             let asset = AVURLAsset(url: readableURL)
             guard let allMeta = try? await asset.load(.metadata) else { return nil as URL? }
             for item in allMeta {
