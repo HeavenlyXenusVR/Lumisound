@@ -12462,12 +12462,20 @@ async def user_music_artwork(
             except Exception as exc:
                 # Caching is an optimisation; serving the image is the job.
                 logger.warning("user_music_artwork: could not cache recovered artwork for %s: %s", path, exc)
-            from fastapi.responses import Response
+            # NOTE: no `from fastapi.responses import Response` here. `Response`
+            # is imported at module level (see the top of this file); a local
+            # import made `Response` a function-local name for the WHOLE
+            # function, so the two EARLIER `return Response(...)` paths above
+            # (the artwork cache hit and the pre-uploaded thumbnail) raised
+            # `UnboundLocalError` instead of serving the image. That turned
+            # every cache hit into a 500 — 4,185 of them in five hours of
+            # client telemetry, on the single hottest endpoint in the app.
             return Response(content=data, media_type="image/jpeg")
 
         raise HTTPException(status_code=404, detail="No embedded artwork found")
 
-    from fastapi.responses import Response
+    # Module-level `Response` — see the note above on why this must not be a
+    # local import.
     return Response(content=stdout_bytes, media_type="image/jpeg")
 
 
