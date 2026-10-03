@@ -364,14 +364,10 @@ final class BackgroundService: ObservableObject {
                 // the app IS killed before finishing, the next launch's
                 // resumeIncompleteCloudGallerySyncIfNeeded() picks up where it
                 // left off instead of silently staying incomplete forever.
-                let bgTaskID = await MainActor.run {
-                    UIApplication.shared.beginBackgroundTask(withName: "GalleryCloudUpload")
+                let bgTask = await MainActor.run {
+                    BackgroundTaskToken(name: "GalleryCloudUpload")
                 }
-                defer {
-                    if bgTaskID != .invalid {
-                        Task { @MainActor in UIApplication.shared.endBackgroundTask(bgTaskID) }
-                    }
-                }
+                defer { bgTask.end() }
 
                 let startOrder = self.images.count - newImages.count
                 for (offset, image) in newImages.enumerated() {

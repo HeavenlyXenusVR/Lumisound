@@ -58,15 +58,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
                 completionHandler(.noData)
                 return
             }
-            let bgTask = application.beginBackgroundTask(withName: "lumisound.download.reconcile") {
-                // Expiration fallback — nothing to cancel cleanly mid-fetch here,
-                // just make sure the background task itself always ends.
-            }
+            // Ended by whichever comes first, the import or iOS reclaiming the
+            // time — see `BackgroundTaskToken` for why an empty expiration
+            // handler got the app killed.
+            let bgTask = BackgroundTaskToken(name: "lumisound.download.reconcile")
             Task {
                 let imported = await streaming.reconcilePendingDownloads()
-                if bgTask != .invalid {
-                    application.endBackgroundTask(bgTask)
-                }
+                bgTask.end()
                 completionHandler(imported > 0 ? .newData : .noData)
             }
 
@@ -108,11 +106,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             youtubeURL: data["track_url"] as? String ?? ""
         )
 
-        let bgTask = application.beginBackgroundTask(withName: "lumisound.playback.transfer") {}
+        let bgTask = BackgroundTaskToken(name: "lumisound.playback.transfer")
         Task {
-            defer {
-                if bgTask != .invalid { application.endBackgroundTask(bgTask) }
-            }
+            defer { bgTask.end() }
             do {
                 let url = try await streaming.streamURL(for: track)
                 let song = streaming.toSong(track: track, streamURL: url)
