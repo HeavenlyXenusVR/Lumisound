@@ -24,9 +24,14 @@ struct AmbientArtworkBackground: View {
     static let canvasSide: CGFloat = 560
 
     var body: some View {
-        // 30fps: a drift that takes 7–9s per leg looks identical at half the
-        // frame rate, and this is the largest blurred layer on the screen.
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !isPlaying)) { timeline in
+        // 10fps. Each frame re-blurs and re-rasterizes the largest layer on the
+        // screen (a 70pt blur over a 560pt canvas, through `drawingGroup`), for
+        // as long as Now Playing is open with music playing — sustained GPU
+        // work that warms the phone over a long session. The blobs move about
+        // 4pt a second under that blur, under half a point per frame even at
+        // 10fps, so the lower rate is not visible; it was 30fps, and before
+        // that 60.
+        TimelineView(.animation(minimumInterval: 1.0 / 10.0, paused: !isPlaying)) { timeline in
             let drift = ArtworkClock.pingPong(timeline.date, legDuration: 9) * 36
             let pulse = 1.0 + ArtworkClock.pingPong(timeline.date, legDuration: 7) * 0.18
 

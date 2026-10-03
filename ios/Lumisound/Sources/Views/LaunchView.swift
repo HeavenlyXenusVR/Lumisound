@@ -452,28 +452,40 @@ struct LaunchView: View {
 // MARK: - LaunchCoverWall
 
 /// The library's own covers in a tilted grid that drifts slowly upward,
-/// darkened and blurred into a backdrop. 30fps: the drift is a few points a
-/// second.
+/// darkened and blurred into a backdrop.
+///
+/// The grid is built once and drifted by a Core Animation loop. It used to be
+/// rebuilt 30 times a second in a `TimelineView` — around sixty artwork views
+/// per frame, under a full-screen blur re-applied each frame — which was
+/// continuous main-thread and GPU work for as long as the loading screen
+/// showed, and froze whenever loading itself held the main thread. Now the
+/// blurred grid is rasterized once and only its position changes.
 private struct LaunchCoverWall: View {
     let songs: [Song]
     let animate: Bool
 
     private let tile: CGFloat = 118
     private let gap: CGFloat = 10
+    private let columns = 4
+    /// The pattern repeats every `period` rows (covers and the brick offset
+    /// both), so drifting exactly that far and jumping back is seamless.
+    private let period = 6
+    /// Points per second, as before.
+    private let speed: CGFloat = 9
 
     var body: some View {
         GeometryReader { geo in
-            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !animate)) { timeline in
-                let rowHeight = tile + gap
-                // The pattern repeats every `period` rows (covers and the
-                // brick offset both), and the drift wraps after exactly that
-                // distance — so the wrap is seamless.
-                let period = 6
-                let drift = CGFloat(timeline.date.timeIntervalSinceReferenceDate * 9)
-                    .truncatingRemainder(dividingBy: rowHeight * CGFloat(period))
-                let columns = 4
-                let rows = Int(geo.size.height * 1.4 / rowHeight) + period + 1
+            let rowHeight = tile + gap
+            let rows = Int(geo.size.height * 1.4 / rowHeight) + period + 1
+            let gridWidth = CGFloat(columns) * tile + CGFloat(columns - 1) * gap + tile
+            let gridHeight = CGFloat(rows) * rowHeight
+            let loopDistance = rowHeight * CGFloat(period)
 
+            CoreAnimationLoop(
+                .driftUp(distance: loopDistance, period: TimeInterval(loopDistance / speed)),
+                isRunning: animate,
+                rasterize: true
+            ) {
                 VStack(spacing: gap) {
                     ForEach(0..<rows, id: \.self) { row in
                         HStack(spacing: gap) {
@@ -486,12 +498,13 @@ private struct LaunchCoverWall: View {
                         .offset(x: row.isMultiple(of: 2) ? -tile / 2 : 0)
                     }
                 }
-                .offset(y: -drift)
-                .rotationEffect(.degrees(-12))
-                .frame(width: geo.size.width, height: geo.size.height)
+                .blur(radius: 6)
+                .frame(width: gridWidth, height: gridHeight)
             }
+            .frame(width: gridWidth, height: gridHeight)
+            .rotationEffect(.degrees(-12))
+            .frame(width: geo.size.width, height: geo.size.height)
         }
-        .blur(radius: 6)
         .overlay(
             LinearGradient(
                 colors: [
@@ -518,74 +531,84 @@ private struct LaunchRecord: View {
     private let size: CGFloat = 210
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !spinning)) { timeline in
-            // 33⅓ rpm is a lot on a phone screen; a slower spin reads calmer.
-            let angle = spinning ? ArtworkClock.loop(timeline.date, cycleDuration: 6) * 360 : 0
-            ZStack {
-                // Accent glow behind the disc.
-                Circle()
-                    .fill(AppTheme.dynamicAccent)
-                    .frame(width: size * 0.9, height: size * 0.9)
-                    .blur(radius: 50)
-                    .opacity(0.45)
+        // The glow and spindle are circles centred on the axis, so only the
+        // disc needs to turn — and the whole disc can, as one layer, because
+        // the grooves are circles too. The spin runs as a Core Animation loop
+        // so it keeps going while the main thread is busy loading; see
+        // `CoreAnimationLoop`.
+        ZStack {
+            // Accent glow behind the disc.
+            Circle()
+                .fill(AppTheme.dynamicAccent)
+                .frame(width: size * 0.9, height: size * 0.9)
+                .blur(radius: 50)
+                .opacity(0.45)
 
-                // Disc and grooves.
-                Circle()
-                    .fill(Color(white: 0.06))
-                    .frame(width: size, height: size)
-                ForEach(0..<9, id: \.self) { i in
-                    Circle()
-                        .stroke(Color.white.opacity(i.isMultiple(of: 3) ? 0.09 : 0.04), lineWidth: 1)
-                        .frame(width: size - 24 - CGFloat(i) * 11, height: size - 24 - CGFloat(i) * 11)
-                }
-                // Rim light that turns with the disc.
-                Circle()
-                    .trim(from: 0.05, to: 0.22)
-                    .stroke(
-                        LinearGradient(colors: [.clear, .white.opacity(0.35), .clear], startPoint: .leading, endPoint: .trailing),
-                        style: StrokeStyle(lineWidth: 3, lineCap: .round)
-                    )
-                    .frame(width: size - 8, height: size - 8)
-                    .rotationEffect(.degrees(angle))
-                Circle()
-                    .trim(from: 0.55, to: 0.68)
-                    .stroke(AppTheme.dynamicAccent.opacity(0.7), style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                    .frame(width: size - 8, height: size - 8)
-                    .rotationEffect(.degrees(angle))
-
-                // Label: an accent disc with the app icon on it, turning with
-                // the record. The disc is there so the label reads as a
-                // label even where the icon art is dark.
-                ZStack {
-                    Circle()
-                        .fill(AppTheme.dynamicAccentGradient)
-                    // The icon when it loads; a waveform glyph when it doesn't
-                    // (it drew nothing in the simulator screenshot runs).
-                    if let icon = UIImage(named: "AppIconDisplay") {
-                        Image(uiImage: icon)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: size * 0.3, height: size * 0.3)
-                            .clipShape(RoundedRectangle(cornerRadius: size * 0.07, style: .continuous))
-                            .shadow(color: .black.opacity(0.35), radius: 4, y: 2)
-                    } else {
-                        Image(systemName: "waveform")
-                            .font(.system(size: size * 0.14, weight: .bold))
-                            .foregroundStyle(.white)
-                    }
-                }
-                .frame(width: size * 0.42, height: size * 0.42)
-                .overlay(Circle().stroke(.white.opacity(0.25), lineWidth: 1))
-                .rotationEffect(.degrees(angle))
-                // Spindle.
-                Circle()
-                    .fill(AppTheme.background)
-                    .frame(width: 8, height: 8)
+            CoreAnimationLoop(.spin(period: 6), isRunning: spinning) {
+                disc
             }
             .frame(width: size, height: size)
-            .shadow(color: .black.opacity(0.5), radius: 24, y: 14)
+
+            // Spindle.
+            Circle()
+                .fill(AppTheme.background)
+                .frame(width: 8, height: 8)
         }
+        .frame(width: size, height: size)
+        .shadow(color: .black.opacity(0.5), radius: 24, y: 14)
         .accessibilityHidden(true)
+    }
+
+    /// Everything that turns: disc, grooves, rim lights and label.
+    private var disc: some View {
+        ZStack {
+            // Disc and grooves.
+            Circle()
+                .fill(Color(white: 0.06))
+                .frame(width: size, height: size)
+            ForEach(0..<9, id: \.self) { i in
+                Circle()
+                    .stroke(Color.white.opacity(i.isMultiple(of: 3) ? 0.09 : 0.04), lineWidth: 1)
+                    .frame(width: size - 24 - CGFloat(i) * 11, height: size - 24 - CGFloat(i) * 11)
+            }
+            // Rim lights that turn with the disc.
+            Circle()
+                .trim(from: 0.05, to: 0.22)
+                .stroke(
+                    LinearGradient(colors: [.clear, .white.opacity(0.35), .clear], startPoint: .leading, endPoint: .trailing),
+                    style: StrokeStyle(lineWidth: 3, lineCap: .round)
+                )
+                .frame(width: size - 8, height: size - 8)
+            Circle()
+                .trim(from: 0.55, to: 0.68)
+                .stroke(AppTheme.dynamicAccent.opacity(0.7), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                .frame(width: size - 8, height: size - 8)
+
+            // Label: an accent disc with the app icon on it, turning with
+            // the record. The disc is there so the label reads as a
+            // label even where the icon art is dark.
+            ZStack {
+                Circle()
+                    .fill(AppTheme.dynamicAccentGradient)
+                // The icon when it loads; a waveform glyph when it doesn't
+                // (it drew nothing in the simulator screenshot runs).
+                if let icon = UIImage(named: "AppIconDisplay") {
+                    Image(uiImage: icon)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: size * 0.3, height: size * 0.3)
+                        .clipShape(RoundedRectangle(cornerRadius: size * 0.07, style: .continuous))
+                        .shadow(color: .black.opacity(0.35), radius: 4, y: 2)
+                } else {
+                    Image(systemName: "waveform")
+                        .font(.system(size: size * 0.14, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+            }
+            .frame(width: size * 0.42, height: size * 0.42)
+            .overlay(Circle().stroke(.white.opacity(0.25), lineWidth: 1))
+        }
+        .frame(width: size, height: size)
     }
 }
 
