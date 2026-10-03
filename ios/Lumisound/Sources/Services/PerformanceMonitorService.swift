@@ -262,9 +262,12 @@ private final class MetricSubscriber: NSObject, MXMetricManagerSubscriber {
                     "appVersion": hang.metaData.applicationBuildVersion,
                     "osVersion": hang.metaData.osVersion,
                 ]
-                if let json = try? hang.callStackTree.jsonRepresentation(),
-                   let frames = Self.heaviestPathFrames(json) {
-                    detail["leafFrames"] = frames
+                if let json = try? hang.callStackTree.jsonRepresentation() {
+                    if let frames = Self.heaviestPathFrames(json) {
+                        detail["leafFrames"] = frames
+                    }
+                    let appPaths = Self.heaviestAppPaths(json)
+                    if !appPaths.isEmpty { detail["appPaths"] = appPaths }
                 }
                 RemoteLogger.log(
                     category: "diagnostics", event: "hang_diagnostic", level: "warning",
@@ -280,9 +283,12 @@ private final class MetricSubscriber: NSObject, MXMetricManagerSubscriber {
                 var detail: [String: Any] = [
                     "writesCausedMB": exception.totalWritesCaused.converted(to: .megabytes).value,
                 ]
-                if let json = try? exception.callStackTree.jsonRepresentation(),
-                   let frames = Self.heaviestPathFrames(json) {
-                    detail["leafFrames"] = frames
+                if let json = try? exception.callStackTree.jsonRepresentation() {
+                    if let frames = Self.heaviestPathFrames(json) {
+                        detail["leafFrames"] = frames
+                    }
+                    let appPaths = Self.heaviestAppPaths(json)
+                    if !appPaths.isEmpty { detail["appPaths"] = appPaths }
                 }
                 RemoteLogger.log(
                     category: "diagnostics", event: "disk_write_exception", level: "warning",
@@ -319,6 +325,52 @@ private final class MetricSubscriber: NSObject, MXMetricManagerSubscriber {
         }
         guard !path.isEmpty else { return nil }
         return Array(path.reversed().prefix(limit))
+    }
+
+    /// The `limit` most-sampled stacks that pass through this app's own
+    /// binary, each as "<samples>x: frame <- frame <- ...", innermost first.
+    ///
+    /// `heaviestPathFrames` follows the single heaviest branch, and for disk
+    /// writes that branch can be pure system code: the first report with a
+    /// stack ended in a dispatch worker calling `write`, with no app frame on
+    /// it, because the bytes were written by a system queue on the app's
+    /// behalf (a download landing on disk, say). The app code that started the
+    /// work sits on lighter branches. This walks every leaf and keeps the
+    /// heaviest paths that contain an app frame.
+    static func heaviestAppPaths(_ json: Data, limit: Int = 3, framesPerPath: Int = 14) -> [String] {
+        guard let appBinary = Bundle.main.executableURL?.lastPathComponent,
+              let root = try? JSONSerialization.jsonObject(with: json) as? [String: Any],
+              let stacks = root["callStacks"] as? [[String: Any]]
+        else { return [] }
+        var found: [(samples: Int, frames: [String])] = []
+        func walk(_ level: [[String: Any]], _ path: [(name: String, frame: String)]) {
+            for node in level {
+                let binary = node["binaryName"] as? String
+                    ?? String((node["binaryUUID"] as? String ?? "?").prefix(8))
+                let offset = node["offsetIntoBinaryTextSegment"] as? Int ?? 0
+                let next = path + [(binary, "\(binary)+0x\(String(offset, radix: 16))")]
+                let children = node["subFrames"] as? [[String: Any]] ?? []
+                if children.isEmpty {
+                    let innermostFirst = Array(next.reversed())
+                    if let firstApp = innermostFirst.firstIndex(where: { $0.name == appBinary }) {
+                        // Always reach the innermost app frame, plus a few
+                        // callers above it for context.
+                        let keep = max(framesPerPath, firstApp + 4)
+                        found.append((node["sampleCount"] as? Int ?? 0,
+                                      innermostFirst.prefix(keep).map(\.frame)))
+                    }
+                } else {
+                    walk(children, next)
+                }
+            }
+        }
+        for stack in stacks {
+            walk(stack["callStackRootFrames"] as? [[String: Any]] ?? [], [])
+        }
+        return found
+            .sorted { $0.samples > $1.samples }
+            .prefix(limit)
+            .map { "\($0.samples)x: " + $0.frames.joined(separator: " <- ") }
     }
 
     private static func iso(_ date: Date) -> String {
