@@ -1,6 +1,7 @@
 import array
 import asyncio
 import contextlib
+import errno
 import base64
 import hashlib
 import html
@@ -606,6 +607,66 @@ def _penalise_pacer_if_rate_limited(stderr: bytes) -> bool:
             _YTDLP_LAUNCH_PACER.penalise(f"yt-dlp reported: {marker!r}")
             return True
     return False
+
+# Spawning a process can fail with EAGAIN ([Errno 11] "Resource temporarily
+# unavailable") when the host cannot hand out another task struct right then —
+# fork/clone hitting a pids cgroup, an RLIMIT_NPROC, or simply memory pressure.
+# This host is genuinely oversubscribed (container memory caps sum to ~13GB on
+# 7GB of RAM), so it happens in bursts under a heavy download queue.
+#
+# It used to propagate straight out of create_subprocess_exec and become a 500
+# with `detail=[Errno 11] Resource temporarily unavailable`, failing the job
+# outright. The field cost of that: 17,468 such errors over 2026-09-24..26 from
+# a single user working through a large playlist, each a download that simply
+# did not happen.
+#
+# EAGAIN is transient by definition — unlike a bad URL, the identical call
+# frequently succeeds moments later — so it is retried with backoff here, and
+# the launch pacer is penalised so the NEXT launches space themselves out
+# rather than re-colliding with the same wall. _AdaptiveLimiter already holds
+# slots back on low *host* memory, but it samples available MB and cannot see a
+# fork refusal coming; these two cover different halves of the same problem.
+_SPAWN_EAGAIN_RETRY_DELAYS = (0.5, 2.0, 5.0)
+
+
+async def _spawn_subprocess_resilient(cmd: list[str]) -> asyncio.subprocess.Process:
+    """create_subprocess_exec, retrying bounded-many times on EAGAIN."""
+    last_exc: OSError | None = None
+    for attempt, delay in enumerate(_SPAWN_EAGAIN_RETRY_DELAYS + (None,), start=1):
+        try:
+            return await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError as exc:
+            # Only EAGAIN. ENOENT (no such binary), EACCES and friends are
+            # permanent and must keep failing fast and loudly.
+            if exc.errno != errno.EAGAIN:
+                raise
+            last_exc = exc
+            if delay is None:
+                break
+            # Only a yt-dlp spawn widens the launch spacing. The same refusal
+            # on an ffprobe/ffmpeg helper (duration verification, artwork
+            # extraction) is the same local resource problem but carries no
+            # information about YouTube request volume, and throttling every
+            # download because an artwork probe could not fork would be the
+            # wrong lever on the wrong signal.
+            if cmd[0] == "yt-dlp":
+                _YTDLP_LAUNCH_PACER.penalise(
+                    f"spawn refused with EAGAIN (attempt {attempt}/{len(_SPAWN_EAGAIN_RETRY_DELAYS) + 1})"
+                )
+            logger.warning(
+                "spawn of %s refused with EAGAIN; retrying in %.1fs (attempt %d/%d)",
+                cmd[0], delay, attempt, len(_SPAWN_EAGAIN_RETRY_DELAYS) + 1,
+            )
+            await asyncio.sleep(delay)
+    assert last_exc is not None
+    logger.error("spawn of %s still refused with EAGAIN after %d attempts; giving up",
+                 cmd[0], len(_SPAWN_EAGAIN_RETRY_DELAYS) + 1)
+    raise last_exc
+
 
 # aria2c is enforced as yt-dlp's external downloader for every /api/download
 # (and the per-track segments yt-dlp fetches): -x/-s/-j open many parallel
@@ -2176,11 +2237,7 @@ async def _run_ytdlp(*args: str, timeout: float = 30.0) -> list[dict]:
     cmd = ["yt-dlp", *_YTDLP_NETWORK_ARGS, *args]
     logger.info("Running: %s", " ".join(cmd))
     async with _YTDLP_LIMITER.slot():
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        proc = await _spawn_subprocess_resilient(cmd)
         try:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout
@@ -4599,11 +4656,7 @@ async def _get_raw_url(
         logger.info("Running (raw): %s", " ".join(cmd))
         attempt_start = time.monotonic()
         async with _YTDLP_LIMITER.slot():
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            proc = await _spawn_subprocess_resilient(cmd)
             try:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=15.0)
             except asyncio.TimeoutError:
@@ -4992,11 +5045,7 @@ async def _do_download_job(
             if is_transcode:
                 await stack.enter_async_context(_TRANSCODE_LIMITER.slot())
 
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            proc = await _spawn_subprocess_resilient(cmd)
             try:
                 # /api/download is async (see _DOWNLOAD_JOBS comment above) — this
                 # no longer needs to fit inside the Cloudflare Tunnel's ~100s edge
@@ -5507,11 +5556,7 @@ async def _verify_downloaded_audio(path: pathlib.Path, expected_duration: Option
         str(path),
     ]
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        proc = await _spawn_subprocess_resilient(cmd)
         stdout_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=15.0)
     except (asyncio.TimeoutError, Exception):
         return False
@@ -11218,11 +11263,7 @@ async def server_artwork(
         "-",
     ]
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        proc = await _spawn_subprocess_resilient(cmd)
         stdout_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
     except asyncio.TimeoutError:
         raise HTTPException(status_code=408, detail="Artwork extraction timed out")
@@ -15169,6 +15210,41 @@ async def export_user_data(payload: dict = Depends(get_current_user)):
 # ---------------------------------------------------------------------------
 
 
+# Client log levels arrive in whatever vocabulary each platform's logger uses,
+# and this endpoint used to insert `level` verbatim. The iOS/tvOS clients send
+# "warning"; the Android client (TCL T767W, app 0.3.0-0.8.0) sends "warn" for
+# the same severity, so 6,613 rows over 2026-09-28..30 landed under a level
+# no dashboard queried -- /admin/api/errors and every ad-hoc
+# "WHERE level = 'warning'" silently dropped them. Normalising here rather
+# than in each client fixes every present and future client at once, including
+# ones whose build we do not control.
+#
+# Unknown values fall through unchanged (truncated) rather than being forced
+# to "info": a level we have not seen yet is worth noticing in the data, not
+# worth silently relabelling as routine.
+_LOG_LEVEL_ALIASES = {
+    "warn": "warning",
+    "warning": "warning",
+    "err": "error",
+    "error": "error",
+    "fatal": "error",
+    "critical": "error",
+    "fault": "error",
+    "severe": "error",
+    "info": "info",
+    "notice": "info",
+    "debug": "debug",
+    "trace": "debug",
+    "verbose": "debug",
+}
+
+
+def _normalise_log_level(value) -> str:
+    """Canonicalise a client-supplied log level to debug/info/warning/error."""
+    raw = str(value if value is not None else "info").strip().lower()
+    return _LOG_LEVEL_ALIASES.get(raw, raw[:10] or "info")
+
+
 def _parse_log_timestamp(value) -> Optional[str]:
     """Normalizes the iOS client's ISO-8601 timestamp (e.g.
     "2026-06-07T00:43:24.123Z", from Swift's `AppLogger.preciseISO8601Now()`)
@@ -15271,7 +15347,7 @@ async def ingest_logs(request: Request):
             return
         rows = [
             (
-                str(e.get("level", "info"))[:10],
+                _normalise_log_level(e.get("level")),
                 str(e.get("category", "general"))[:30],
                 str(e.get("message", ""))[:500],
                 str(e.get("file", ""))[:100],
