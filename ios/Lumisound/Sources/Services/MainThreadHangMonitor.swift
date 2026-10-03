@@ -31,6 +31,56 @@ final class ScanActivityIndicator: @unchecked Sendable {
     }
 }
 
+/// Named sections of main-thread work, so a stall report can say what was
+/// running instead of only that something was.
+///
+/// The hang monitor cannot sample the main thread's stack (see its `report`),
+/// and `libraryScanInFlight` turned out to be too coarse: it was true for ~90%
+/// of stalls, but a scan is mostly off-main work bracketed by a few main-actor
+/// steps, and the flag cannot say which step — or whether the stall was some
+/// unrelated work that merely overlapped a scan. Wrapping the known-heavy
+/// main-actor steps in `measure` gives the monitor a list of what actually ran
+/// during the stall. Labels are fixed strings naming code paths; nothing about
+/// the library's contents is recorded.
+final class MainThreadActivity: @unchecked Sendable {
+    static let shared = MainThreadActivity()
+    private let lock = NSLock()
+    private var recent: [(label: String, start: Date, end: Date)] = []
+    private var active: [(label: String, start: Date)] = []
+    private static let capacity = 64
+
+    @discardableResult
+    static func measure<T>(_ label: String, _ body: () throws -> T) rethrows -> T {
+        let start = Date()
+        shared.lock.lock(); shared.active.append((label, start)); shared.lock.unlock()
+        defer {
+            let end = Date()
+            shared.lock.lock()
+            if let i = shared.active.lastIndex(where: { $0.label == label && $0.start == start }) {
+                shared.active.remove(at: i)
+            }
+            shared.recent.append((label, start, end))
+            if shared.recent.count > capacity { shared.recent.removeFirst(shared.recent.count - capacity) }
+            shared.lock.unlock()
+        }
+        return try body()
+    }
+
+    /// Sections that overlapped `from...to`, longest first, as "label 1.23s".
+    /// Still-running sections are included with their duration so far.
+    func overlapping(from: Date, to: Date) -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        var hits: [(String, TimeInterval)] = recent
+            .filter { $0.end >= from && $0.start <= to }
+            .map { ($0.label, $0.end.timeIntervalSince($0.start)) }
+        hits += active.map { ($0.label + " (running)", to.timeIntervalSince($0.start)) }
+        return hits
+            .sorted { $0.1 > $1.1 }
+            .prefix(12)
+            .map { String(format: "%@ %.2fs", $0.0, $0.1) }
+    }
+}
+
 /// Whether the process is currently executing inside an OS-granted background
 /// window (a `BGAppRefreshTask` / `BGProcessingTask` handler).
 ///
@@ -193,11 +243,12 @@ final class MainThreadHangMonitor {
             // Reported back on the monitor's own queue: the main thread has just
             // been stuck for seconds and is about to have a backlog of real work
             // to get through, so this adds none of its own to it.
-            self.queue.async { self.report(elapsed: elapsed) }
+            let arrivedAt = Date()
+            self.queue.async { self.report(elapsed: elapsed, sentAt: sentAt, arrivedAt: arrivedAt) }
         }
     }
 
-    private func report(elapsed: TimeInterval) {
+    private func report(elapsed: TimeInterval, sentAt: Date, arrivedAt: Date) {
         // No stack trace is captured. `Thread.callStackSymbols` called from here
         // would give THIS queue's stack, not the blocked main thread's, and a
         // stack of the monitor itself is worse than none — it reads like evidence
@@ -207,6 +258,12 @@ final class MainThreadHangMonitor {
         // context that actually narrows it down — whether a library scan was in
         // flight, which is the operation this app's freezes keep tracing back to.
         let scanning = ScanActivityIndicator.shared.isActive
+        // Half a second of lead-in: SwiftUI re-renders on the run-loop turn
+        // AFTER the state change that caused it, so the change that set off a
+        // render-bound stall usually finishes just before the ping was sent.
+        let activity = MainThreadActivity.shared.overlapping(
+            from: sentAt.addingTimeInterval(-0.5), to: arrivedAt
+        )
         appError(String(format: "Main thread stalled for %.2fs (scanning: %@)", elapsed, scanning ? "yes" : "no"),
                  category: "performance")
         RemoteLogger.log(
@@ -221,6 +278,10 @@ final class MainThreadHangMonitor {
                 // the UI" from "something else is".
                 "libraryScanInFlight": scanning,
                 "thermalState": ProcessInfo.processInfo.thermalState.lumisoundDescription,
+                "mainThreadActivity": activity,
+                // Which root tab was on screen. UserDefaults is safe to read
+                // from this queue, unlike anything on the main actor.
+                "selectedTab": UserDefaults.standard.integer(forKey: "selected_tab"),
             ]
         )
     }

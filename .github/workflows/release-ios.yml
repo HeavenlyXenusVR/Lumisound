@@ -327,6 +327,22 @@ jobs:
 
       # Publish the release FIRST so the IPA is always delivered even if the
       # altstore-source.json housekeeping commit below loses a push race.
+      # Field crash and hang reports (MetricKit) carry only binary offsets.
+      # Without the dSYMs from this exact archive they can never be mapped back
+      # to a function, and the archive is discarded when the job ends.
+      - name: Package dSYMs
+        id: dsyms
+        continue-on-error: true
+        run: |
+          DSYM_DIR="ios/build/Lumisound.xcarchive/dSYMs"
+          if [ -d "$DSYM_DIR" ] && [ -n "$(ls -A "$DSYM_DIR")" ]; then
+            ZIP="Lumisound-v${{ steps.version.outputs.version }}-dSYMs.zip"
+            (cd "$DSYM_DIR" && zip -qr "$GITHUB_WORKSPACE/ios/build/$ZIP" .)
+            echo "zip=ios/build/$ZIP" >> "$GITHUB_OUTPUT"
+          else
+            echo "No dSYMs in the archive; skipping"
+          fi
+
       - name: Create GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -343,7 +359,8 @@ jobs:
           gh release create "$TAG" \
             --title "Lumisound iOS v${VERSION}" \
             --notes "$(printf '## Lumisound iOS v%s\n\n**Installation:** %s\n\n**AltStore users:** Add the source URL from Settings → Streaming to get automatic updates.' "$VERSION" "$INSTALL_NOTE")" \
-            "ios/build/$IPA_NAME"
+            "ios/build/$IPA_NAME" \
+            ${{ steps.dsyms.outputs.zip }}
 
       # Best-effort: never fail the build over this housekeeping commit.
       - name: Commit updated altstore-source.json

@@ -238,9 +238,13 @@ private final class MetricSubscriber: NSObject, MXMetricManagerSubscriber {
                 // The full tree is large and mostly addresses; the leading frames
                 // are what identify a crash site, and keeping this bounded means a
                 // crash report can never be too big to actually get uploaded.
-                if let json = try? crash.callStackTree.jsonRepresentation(),
-                   let text = String(data: json, encoding: .utf8) {
-                    detail["callStackPrefix"] = String(text.prefix(1800))
+                if let json = try? crash.callStackTree.jsonRepresentation() {
+                    if let frames = Self.heaviestPathFrames(json) {
+                        detail["leafFrames"] = frames
+                    }
+                    if let text = String(data: json, encoding: .utf8) {
+                        detail["callStackPrefix"] = String(text.prefix(1800))
+                    }
                 }
                 RemoteLogger.logError(
                     category: "diagnostics", event: "crash_diagnostic",
@@ -253,25 +257,68 @@ private final class MetricSubscriber: NSObject, MXMetricManagerSubscriber {
             // watchdog exit in the metrics above and a hang here are two views of
             // the same event, so both are needed to tell them apart.
             for hang in payload.hangDiagnostics ?? [] {
+                var detail: [String: Any] = [
+                    "hangSeconds": hang.hangDuration.converted(to: .seconds).value,
+                    "appVersion": hang.metaData.applicationBuildVersion,
+                    "osVersion": hang.metaData.osVersion,
+                ]
+                if let json = try? hang.callStackTree.jsonRepresentation(),
+                   let frames = Self.heaviestPathFrames(json) {
+                    detail["leafFrames"] = frames
+                }
                 RemoteLogger.log(
                     category: "diagnostics", event: "hang_diagnostic", level: "warning",
                     message: "main thread unresponsive for \(String(format: "%.1f", hang.hangDuration.converted(to: .seconds).value))s",
-                    detail: [
-                        "hangSeconds": hang.hangDuration.converted(to: .seconds).value,
-                        "appVersion": hang.metaData.applicationBuildVersion,
-                        "osVersion": hang.metaData.osVersion,
-                    ]
+                    detail: detail
                 )
             }
 
+            // Which code did the writing is the whole question with these, and
+            // only the stack answers it: one account was reported writing 4 GB
+            // and 17 GB in single days with nothing to say what wrote it.
             for exception in payload.diskWriteExceptionDiagnostics ?? [] {
+                var detail: [String: Any] = [
+                    "writesCausedMB": exception.totalWritesCaused.converted(to: .megabytes).value,
+                ]
+                if let json = try? exception.callStackTree.jsonRepresentation(),
+                   let frames = Self.heaviestPathFrames(json) {
+                    detail["leafFrames"] = frames
+                }
                 RemoteLogger.log(
                     category: "diagnostics", event: "disk_write_exception", level: "warning",
                     message: "excessive disk writes",
-                    detail: ["writesCausedMB": exception.totalWritesCaused.converted(to: .megabytes).value]
+                    detail: detail
                 )
             }
         }
+    }
+
+    /// The frames of the most-sampled path through a MetricKit call-stack
+    /// tree, innermost first, as `binary+0xoffset` (symbolicate with the dSYMs
+    /// attached to each release).
+    ///
+    /// The tree is stored root-first, so the old `callStackPrefix` (the first
+    /// 1,800 characters of its JSON) held only the outermost frames: thread
+    /// start, the run loop, `main`. Every watchdog report sent so far ended
+    /// there, before reaching the frame that was actually busy. Following the
+    /// heaviest child at each level reaches it; for a crash tree, which has one
+    /// sample, that is simply the crashing stack.
+    static func heaviestPathFrames(_ json: Data, limit: Int = 30) -> [String]? {
+        guard let root = try? JSONSerialization.jsonObject(with: json) as? [String: Any],
+              let stacks = root["callStacks"] as? [[String: Any]],
+              let stack = stacks.first(where: { ($0["threadAttributed"] as? Bool) == true }) ?? stacks.first,
+              var level = stack["callStackRootFrames"] as? [[String: Any]]
+        else { return nil }
+        var path: [String] = []
+        while let heaviest = level.max(by: { ($0["sampleCount"] as? Int ?? 0) < ($1["sampleCount"] as? Int ?? 0) }) {
+            let binary = heaviest["binaryName"] as? String
+                ?? String((heaviest["binaryUUID"] as? String ?? "?").prefix(8))
+            let offset = heaviest["offsetIntoBinaryTextSegment"] as? Int ?? 0
+            path.append("\(binary)+0x\(String(offset, radix: 16))")
+            level = heaviest["subFrames"] as? [[String: Any]] ?? []
+        }
+        guard !path.isEmpty else { return nil }
+        return Array(path.reversed().prefix(limit))
     }
 
     private static func iso(_ date: Date) -> String {
