@@ -346,11 +346,16 @@ extension LibraryManager {
             return
         }
 
-        let (cleanedCandidates, cleanedUpOrphans, existingURLs) = MainThreadActivity.measure("scan.orphans") {
-            let existingURLs = Set(importedSongs.compactMap { $0.url?.standardizedFileURL })
-            let cleaned = cleanUpConversionOrphans(among: candidates, existingURLs: existingURLs)
+        // Off the main actor. On a several-thousand-file library this took about
+        // a second of main-thread time on every scan (URL standardisation and
+        // conversion-target derivation per file, plus any deletes), measured by
+        // the hang monitor's `scan.orphans` label in a 2s freeze at launch.
+        let importedURLs = importedSongs.compactMap { $0.url }
+        let (cleanedCandidates, cleanedUpOrphans, existingURLs) = await Task.detached(priority: .userInitiated) {
+            let existingURLs = Set(importedURLs.map(\.standardizedFileURL))
+            let cleaned = Self.cleanUpConversionOrphans(among: candidates, existingURLs: existingURLs)
             return (cleaned.candidates, cleaned.cleanedUp, existingURLs)
-        }
+        }.value
         guard !cleanedCandidates.isEmpty else {
             if evicted || mergedDuplicates > 0 || cleanedUpOrphans > 0 { rebuildAllSongs() }
             return
@@ -460,7 +465,7 @@ extension LibraryManager {
     /// Every scan path used to import this leftover as if it were a
     /// genuinely separate file, which is exactly how "old file + .lms file,
     /// both showing up as separate library entries" duplicates happened.
-    func cleanUpConversionOrphans(among candidates: [URL], existingURLs: Set<URL>) -> (candidates: [URL], cleanedUp: Int) {
+    nonisolated static func cleanUpConversionOrphans(among candidates: [URL], existingURLs: Set<URL>) -> (candidates: [URL], cleanedUp: Int) {
         let allKnownConvertedURLs = existingURLs.union(
             candidates.filter { LumisoundExclusiveExtensionService.isConverted($0) }.map { $0.standardizedFileURL }
         )

@@ -71,9 +71,10 @@ extension LibraryManager {
                        byAlbum: [String: [Song]],
                        byGenre: [String: [Song]])? = await Task.detached(priority: .userInitiated) {
             guard let data = try? Data(contentsOf: url),
-                  let snapshot = try? JSONDecoder().decode(LibrarySnapshot.self, from: data),
-                  !snapshot.songs.isEmpty
+                  let decoded = try? JSONDecoder().decode(LibrarySnapshot.self, from: data),
+                  !decoded.songs.isEmpty
             else { return nil }
+            let snapshot = Self.reanchoredToCurrentContainer(decoded)
             let songs = snapshot.songs
             return (
                 snapshot: snapshot,
@@ -106,6 +107,45 @@ extension LibraryManager {
                    category: "library")
         }
         appLog("Loaded cached library snapshot: \(snapshot.songs.count) song(s)", category: "library")
+    }
+
+    /// The snapshot with every Documents file URL moved into this install's
+    /// Documents directory.
+    ///
+    /// Song URLs are stored absolute, and the absolute path of the app's data
+    /// container changes when the app is updated or reinstalled. After every
+    /// update, then, each restored URL pointed into a container that no longer
+    /// existed: the scan's eviction step found none of the files, emptied
+    /// `importedSongs`, and re-imported the whole library as new. Field
+    /// telemetry showed it on the first launch of a new version every time
+    /// (`librarySize: 0, newSongs: 5006`), once as a 45-minute background scan.
+    /// `ScanCacheService` already keys on Documents-relative paths for this
+    /// reason; this brings the snapshot in line.
+    nonisolated private static func reanchoredToCurrentContainer(_ snapshot: LibrarySnapshot) -> LibrarySnapshot {
+        guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            return snapshot
+        }
+        let docsPath = docs.standardizedFileURL.path
+        func reanchor(_ songs: [Song]) -> [Song] {
+            songs.map { song in
+                guard let url = song.url, url.isFileURL else { return song }
+                let path = url.path
+                guard !path.hasPrefix(docsPath),
+                      let marker = path.range(of: "/Documents/")
+                else { return song }
+                var moved = song
+                moved.url = URL(fileURLWithPath: docsPath)
+                    .appendingPathComponent(String(path[marker.upperBound...]))
+                return moved
+            }
+        }
+        return LibrarySnapshot(
+            songs: reanchor(snapshot.songs),
+            artists: snapshot.artists,
+            albums: snapshot.albums,
+            genres: snapshot.genres,
+            importedSongs: snapshot.importedSongs.map(reanchor)
+        )
     }
 
     /// Writes the current library state to disk so the next launch can show it
