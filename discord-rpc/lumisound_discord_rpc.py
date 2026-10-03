@@ -13,13 +13,24 @@ that the desktop client exposes to apps running on the same machine — it
 cannot be driven remotely from the iOS app itself.
 
 Setup:
-  1. Create a Discord application at https://discord.com/developers/applications
-     (only its name and optional icon matter for Rich Presence) and copy its
-     Client ID.
-  2. Copy config.example.json to ~/.config/lumisound-discord-rpc/config.json
-     and fill in discord_client_id, bridge_url, and either access_token or
-     username/password.
-  3. Run this script directly, or install the provided systemd user service.
+  Run the installer for your platform and sign in with your Lumisound
+  email/username + password:
+
+      ./install.sh              (Linux, systemd user service)
+      ./install-macos.sh        (macOS, LaunchAgent)
+      .\\install-windows.ps1     (Windows, logon scheduled task)
+
+  The installer exchanges your credentials for a 365-day Rich Presence token,
+  stores only that token (mode 0600), and never writes your password. It can
+  also complete a two-factor challenge, which this daemon cannot do on its own.
+
+  Manual alternative: copy config.example.json to the path reported by
+  default_config_path() and set either `access_token`, or `username`
+  (or email) + `password` for the daemon to log in with itself.
+
+  Discord application settings (client ID, art asset, on/off) are NOT set
+  here — they come from your account's server-side registration in
+  Lumisound -> Account -> Discord Rich Presence, fetched at startup.
 """
 
 from __future__ import annotations
@@ -45,7 +56,39 @@ OP_CLOSE = 2
 OP_PING = 3
 OP_PONG = 4
 
-DEFAULT_CONFIG_PATH = Path.home() / ".config" / "lumisound-discord-rpc" / "config.json"
+def default_config_path() -> Path:
+    """Where config.json lives, per platform.
+
+    This used to be unconditionally ~/.config/lumisound-discord-rpc/config.json
+    — including on Windows, where install-windows.ps1 writes to
+    %APPDATA%\\lumisound-discord-rpc\\config.json and sets no
+    LUMISOUND_RPC_CONFIG. The daemon therefore never found the config the
+    Windows installer had just written, and every Windows setup failed with
+    "No config found". %APPDATA% is now checked first there.
+
+    An existing ~/.config file still wins if the %APPDATA% one is absent, so
+    anyone who worked around the bug by hand-placing the file keeps working.
+    """
+    override = os.environ.get("LUMISOUND_RPC_CONFIG")
+    if override:
+        return Path(override)
+
+    legacy = Path.home() / ".config" / "lumisound-discord-rpc" / "config.json"
+
+    if os.name == "nt":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            win = Path(appdata) / "lumisound-discord-rpc" / "config.json"
+            return legacy if (legacy.exists() and not win.exists()) else win
+        return legacy
+
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    if xdg:
+        return Path(xdg) / "lumisound-discord-rpc" / "config.json"
+    return legacy
+
+
+DEFAULT_CONFIG_PATH = default_config_path()
 
 # The hosted Lumisound bridge. Almost everyone uses this — `bridge_url` only
 # needs to be set in config.json for people running their own ios-bridge
@@ -247,8 +290,15 @@ class BridgeClient:
         username = self.config.get("username")
         password = self.config.get("password")
         if not username or not password:
+            # Reached either on a fresh unconfigured install, or ~365 days in
+            # when the Rich Presence token finally expires -- by then the
+            # password has deliberately been removed (see below), so there is
+            # nothing to silently re-login with. Say what to actually do.
             raise DiscordIPCError(
-                "No access_token and no username/password configured — cannot authenticate"
+                "Cannot authenticate: no valid access_token, and no email/username + "
+                "password in config.json to log in with. Re-run the installer "
+                "(install.sh / install.ps1) to sign in again, or paste a fresh token from "
+                "Lumisound -> Account -> Discord Rich Presence -> Generate Rich Presence Token."
             )
         result = self._request(
             "POST", "/auth/login",
@@ -274,11 +324,38 @@ class BridgeClient:
         self.access_token = result["token"]
         log("Logged in to Lumisound bridge")
 
-        # Persist the fresh token so future restarts don't need to re-login
-        # (and so a password doesn't need to stay in the config forever).
+        # Trade the short-lived session token for a 365-day Rich Presence token
+        # and drop the password. Both this function's old comment and
+        # /user/rpc-token's ("avoid putting a password in a desktop config
+        # file") intended this, but the password was previously left in
+        # config.json forever -- a password grants full account access, while
+        # an RPC token is a single revocable session visible in
+        # Lumisound -> Account -> Sessions.
+        #
+        # Best-effort: if the upgrade fails the plain session token still
+        # works, so the daemon keeps running and retries on the next re-auth.
+        upgraded = False
+        try:
+            rpc = self._request("POST", "/user/rpc-token")
+            if rpc.get("token"):
+                self.access_token = rpc["token"]
+                upgraded = True
+                log(f"Upgraded to a Rich Presence token (expires {rpc.get('expires_at', 'in 365 days')})")
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError) as exc:
+            log(f"Warning: could not mint a Rich Presence token ({exc}); keeping session token")
+
         try:
             self.config["access_token"] = self.access_token
+            if upgraded:
+                # Only discard the password once a long-lived token is safely
+                # in hand, otherwise a failed upgrade would strip the only
+                # usable credential.
+                if self.config.pop("password", None) is not None:
+                    log("Removed the stored password from config.json -- the token replaces it")
             self.config_path.write_text(json.dumps(self.config, indent=2))
+            # write_text keeps an existing file's mode, but creates a new one
+            # at the process umask; the file holds a bearer credential.
+            os.chmod(self.config_path, 0o600)
         except OSError as exc:
             log(f"Warning: could not persist refreshed token: {exc}")
 
@@ -330,6 +407,10 @@ _BUTTON_LABELS = {
 # word — backgrounded, killed, or the device went to sleep — and its last known
 # state should not keep standing in for the present.
 STALE_AFTER_SECONDS = 120
+
+# While Discord is unreachable, how often to say so again. Often enough that a
+# long outage is visible in the journal, rarely enough not to drown it.
+OUTAGE_REMINDER_SECONDS = 30 * 60
 
 
 def build_activity(
@@ -510,6 +591,11 @@ def main() -> None:
 
     last_activity_signature: Optional[tuple] = None
 
+    # When the current Discord outage began, or None while connected — see the
+    # IPC error handling below for why an outage is not logged on every poll.
+    ipc_outage_started: Optional[float] = None
+    last_outage_reminder = 0.0
+
     while True:
         # --- Discord IPC connection -----------------------------------
         # Handled separately from the bridge request below: urllib's
@@ -521,8 +607,29 @@ def main() -> None:
         try:
             if not ipc.connected:
                 ipc.connect()
+                if ipc_outage_started is not None:
+                    down_for = int(time.time() - ipc_outage_started)
+                    log(f"Discord is back after {down_for // 60}m {down_for % 60}s — resuming Rich Presence")
+                    ipc_outage_started = None
+                    last_outage_reminder = 0.0
         except (DiscordIPCError, OSError) as exc:
-            log(f"Discord IPC error: {exc}")
+            # Logged when an outage BEGINS, then only as an occasional reminder.
+            #
+            # This used to log on every poll. With Discord closed — which is the
+            # normal state after a reboot, since Discord is a desktop app and
+            # this daemon is a service that restarts on its own — that meant a
+            # line every five seconds indefinitely: over eighteen hundred
+            # identical lines for one afternoon, burying the connect/disconnect
+            # history someone reading the journal actually needs.
+            now = time.time()
+            if ipc_outage_started is None:
+                ipc_outage_started = now
+                last_outage_reminder = now
+                log(f"Discord IPC unavailable: {exc} Will keep retrying quietly.")
+            elif now - last_outage_reminder >= OUTAGE_REMINDER_SECONDS:
+                last_outage_reminder = now
+                down_for = int(now - ipc_outage_started)
+                log(f"Still waiting for Discord ({down_for // 60}m so far): {exc}")
             if ipc.connected:
                 ipc.close()
             last_activity_signature = None

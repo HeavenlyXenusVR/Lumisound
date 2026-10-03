@@ -16,33 +16,39 @@ way around that part. What Lumisound *does* centralize is everything else:
 your Discord Application Client ID, Rich Presence art, and the on/off toggle
 all live on the Lumisound server (`/user/discord-rpc-config`, set from
 **Account → Discord Rich Presence**) and the daemon fetches them
-automatically. The only thing you need locally is **one token** and **one
-command/script** — see below.
+automatically. Locally you just **sign in and run one script** — see below.
 
-## 1. Get your Rich Presence token
+## 1. Register your Discord app (once)
 
-In the app, go to **Account → Discord Rich Presence** and:
+In the app, go to **Account → Discord Rich Presence** and enter a **Discord
+Application Client ID** (create one for free at
+https://discord.com/developers/applications — only the name/icon matter), plus
+optionally a Rich Presence art asset name, then save. This is stored
+server-side, so the daemon picks it up automatically — nothing to copy into a
+config file.
 
-1. Tap **Generate Rich Presence Token** — this only allows reading your own
-   playback state, not your password, and can be revoked any time from
-   **Account → Active Sessions** ("Discord RPC Bridge") without changing your
-   password.
-2. Enter a **Discord Application Client ID** (create one for free at
-   https://discord.com/developers/applications — only the name/icon matter)
-   and optionally a Rich Presence art asset name, then save. This is stored
-   server-side, so the daemon picks it up automatically — nothing to copy
-   into a config file.
+That's all you need here. You do **not** have to generate a token by hand
+anymore — the installer signs in for you.
 
 ## 2. Run the daemon
 
-Pick your platform. Each script needs **just the token from step 1** —
-everything else has a sensible default (the hosted Lumisound bridge) or comes
-from your server-side registration.
+Pick your platform and sign in with your **Lumisound email (or username) and
+password** when prompted. Everything else has a sensible default (the hosted
+Lumisound bridge) or comes from your server-side registration.
+
+Your password is **never saved**. The installer exchanges it for a 365-day
+Rich Presence token which is all that gets written to disk (mode `0600`). That
+token only allows reading your own playback state, and you can revoke it any
+time from **Account → Active Sessions** ("Discord RPC Bridge") without
+changing your password.
+
+If your account has **two-factor authentication**, the installer will prompt
+for your 6-digit code and complete the login normally.
 
 ### Linux (systemd --user service)
 
 ```sh
-./install.sh <rpc_token>
+./install.sh
 ```
 
 Manage it with:
@@ -52,10 +58,21 @@ systemctl --user status lumisound-discord-rpc.service
 journalctl --user -u lumisound-discord-rpc.service -f
 ```
 
+**On NixOS, home-manager, or Guix**, the unit is generated declaratively and a
+copy in `~/.config/systemd/user` would override it — so `install.sh` refuses
+and points you at:
+
+```sh
+./install.sh --config-only      # sign in, write config.json, touch no units
+systemctl --user restart lumisound-discord-rpc.service
+```
+
+Pass `--force` to shadow the managed unit anyway (rarely what you want).
+
 ### macOS (LaunchAgent, starts at login)
 
 ```sh
-./install-macos.sh <rpc_token>
+./install-macos.sh
 ```
 
 Manage it with:
@@ -71,7 +88,7 @@ Requires Python 3 from https://www.python.org/downloads/ (check "Add
 python.exe to PATH"). In PowerShell:
 
 ```powershell
-.\install-windows.ps1 -Token "<rpc_token>"
+.\install-windows.ps1
 ```
 
 Manage it with:
@@ -82,15 +99,41 @@ Get-ScheduledTask -TaskName LumisoundDiscordRPC
 
 ### Manual / any platform
 
+Sign in without installing a service, then run the daemon in the foreground:
+
 ```sh
-mkdir -p ~/.config/lumisound-discord-rpc
-echo '{"access_token": "<rpc_token>"}' > ~/.config/lumisound-discord-rpc/config.json
+python3 rpc_login.py          # writes config.json (mode 0600) for you
 python3 lumisound_discord_rpc.py
 ```
 
+### Still prefer a token?
+
+The old flow works unchanged. Generate one from **Account → Discord Rich
+Presence → Generate Rich Presence Token**, then:
+
+```sh
+./install.sh <rpc_token>                       # Linux
+./install-macos.sh <rpc_token>                 # macOS
+.\install-windows.ps1 -Token "<rpc_token>"     # Windows
+```
+
+Or write it yourself — note the config path differs on Windows:
+
+```sh
+# Linux / macOS
+mkdir -p ~/.config/lumisound-discord-rpc
+echo '{"access_token": "<rpc_token>"}' > ~/.config/lumisound-discord-rpc/config.json
+```
+
+```powershell
+# Windows: %APPDATA%\lumisound-discord-rpc\config.json
+```
+
+Set `LUMISOUND_RPC_CONFIG` to use a different path entirely.
+
 If you're self-hosting the ios-bridge instead of using the hosted one, add
-`"bridge_url": "https://your-bridge-host.example.com"` to `config.json` (or
-pass it as the second argument to the install scripts).
+`"bridge_url": "https://your-bridge-host.example.com"` to `config.json`, or
+pass `--bridge-url https://...` to the install scripts.
 
 ## How it works
 

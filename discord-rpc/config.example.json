@@ -1,7 +1,14 @@
 {
-  "access_token": "paste a token from Lumisound -> Account -> Generate Rich Presence Token",
+  "//": "You normally do NOT write this file by hand -- run install.sh (Linux), install-macos.sh, or install-windows.ps1 and sign in with your Lumisound email/username + password. The installer exchanges those for the token below and never stores your password.",
+
+  "access_token": "written for you by the installer; or paste one from Lumisound -> Account -> Discord Rich Presence -> Generate Rich Presence Token",
   "poll_interval_seconds": 5,
 
   "//show_when_paused": "Optional. Default false: while playback is paused, Rich Presence is cleared rather than leaving the track on screen. Set true to keep showing the paused track (without an elapsed timer).",
-  "show_when_paused": false
+  "show_when_paused": false,
+
+  "//bridge_url": "Optional. Only needed if you run your own ios-bridge instance; defaults to the hosted Lumisound bridge.",
+
+  "//username": "Optional fallback instead of access_token: set username (or email) + password and the daemon will log in itself, swap them for a 365-day Rich Presence token, write it to access_token, and delete the password from this file. Accounts with 2FA cannot use this -- the daemon can't prompt for a code, so run an installer (which can) or paste a token.",
+  "//password": "See //username above. Prefer the installers; this path exists for unattended/scripted setups."
 }

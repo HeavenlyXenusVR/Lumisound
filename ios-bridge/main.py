@@ -2891,6 +2891,9 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
+    # Either a username or an email address. Kept named `username` so existing
+    # app builds keep working unchanged; see login() for how it is resolved
+    # (username first, then email).
     username: str
     password: str
     device_name: Optional[str] = None
@@ -6534,21 +6537,43 @@ async def login(body: LoginRequest, request: Request):
     # Rate limit check (Fix 2)
     _check_auth_rate(_get_client_ip(request))
 
+    # The `username` field accepts either a username or an email address, so
+    # desktop clients (the Discord RPC daemon's installers) can ask for
+    # "email or username" instead of making people paste a 248-char token.
+    #
+    # Resolved username-first, then email -- NOT as a single
+    # "username = %s OR lower(email) = lower(%s)", because that can match two
+    # different rows if one account's username happens to equal another's
+    # email. Username-first keeps the historical behaviour byte-identical, so
+    # no existing login can change meaning; email is only consulted when no
+    # username matches. (Today there are zero such collisions, and an "@ means
+    # it's an email" shortcut would be wrong anyway -- 5 accounts have an '@'
+    # in their username.)
+    #
+    # lower(email) is backed by the ios_users_email_lower_key unique index, so
+    # the email lookup is a single index probe and case-insensitive. Accounts
+    # predating required emails have email IS NULL and simply never match here.
+    identifier = body.username.strip()
+    _USER_COLS = (
+        "SELECT id, username, email, display_name, avatar_url, created_at, "
+        "last_login, password_hash, is_active, totp_enabled FROM ios_users "
+    )
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT id, username, email, display_name, avatar_url, created_at, "
-                "last_login, password_hash, is_active, totp_enabled "
-                "FROM ios_users WHERE username = %s",
-                (body.username.strip(),),
-            )
+            await cur.execute(_USER_COLS + "WHERE username = %s", (identifier,))
             row = await cur.fetchone()
+            if not row:
+                await cur.execute(
+                    _USER_COLS + "WHERE email IS NOT NULL AND lower(email) = lower(%s)",
+                    (identifier,),
+                )
+                row = await cur.fetchone()
 
     if not row:
-        logger.warning("Login attempt for unknown username: %r", body.username.strip())
+        logger.warning("Login attempt for unknown username/email: %r", identifier)
         await log_event("auth", "login_failed", level="warn",
-                         message=f"unknown username: {body.username.strip()!r}")
+                         message=f"unknown username/email: {identifier!r}")
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
     (user_id, username, email, display_name, avatar_url,
@@ -19640,24 +19665,115 @@ async def validate_ytdlp_cookies(payload: dict = Depends(get_current_user)):
 RPC_TOKEN_EXPIRE_DAYS = 365
 
 
+DEFAULT_RPC_DEVICE_NAME = "Discord RPC Bridge"
+# A "(setup)" session is the throwaway /auth/login that rpc_login.py trades for
+# an RPC token and then logs out. It should live for seconds; anything older is
+# a leftover from a run that died between the two steps.
+STALE_SETUP_SESSION_MINUTES = 15
+
+
+class RpcTokenRequest(BaseModel):
+    # Optional so the in-app "Generate Rich Presence Token" button, which sends
+    # no body, keeps working exactly as before.
+    device_name: Optional[str] = None
+
+
 @app.post("/user/rpc-token")
-async def create_rpc_token(payload: dict = Depends(get_current_user)):
+async def create_rpc_token(
+    body: Optional[RpcTokenRequest] = None,
+    payload: dict = Depends(get_current_user),
+):
     user_id = payload["sub"]
+    current_token_id = payload.get("jti")
+    device_name = DEFAULT_RPC_DEVICE_NAME
+    if body is not None and body.device_name and body.device_name.strip():
+        device_name = body.device_name.strip()[:200]
+
     pool = await get_pool()
     token_id = str(uuid.uuid4())
     expires_at = datetime.now(timezone.utc) + timedelta(days=RPC_TOKEN_EXPIRE_DAYS)
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
+            # --- housekeeping, before issuing the replacement ---------------
+            #
+            # Sessions were only ever deleted explicitly (logout / revoke), so
+            # rows accumulated indefinitely: expired ones linger forever
+            # (get_current_user and /auth/sessions both just filter on
+            # expires_at > NOW(), so they are invisible but never reclaimed),
+            # and every re-run of an installer added another live 365-day
+            # "Discord RPC Bridge" row for the same machine.
+
+            # 1. Expired rows for this user — unambiguously dead.
+            await cur.execute(
+                "DELETE FROM ios_user_sessions WHERE user_id = %s AND expires_at <= NOW()",
+                (user_id,),
+            )
+            expired_removed = cur.rowcount or 0
+
+            # 2. Abandoned "(setup)" sessions past their useful life.
+            await cur.execute(
+                """
+                DELETE FROM ios_user_sessions
+                WHERE user_id = %s
+                  AND device_name LIKE %s
+                  AND created_at < NOW() - (%s * INTERVAL '1 minute')
+                  AND token_id <> COALESCE(%s, '')
+                """,
+                (user_id, "%(setup)", STALE_SETUP_SESSION_MINUTES, current_token_id),
+            )
+            stale_setup_removed = cur.rowcount or 0
+
+            # 3. The previous token for THIS SAME device, which the one we are
+            #    about to issue supersedes.
+            #
+            #    Matched on the exact device_name, never on "every session
+            #    named like an RPC bridge": a user can legitimately run the
+            #    daemon on a desktop and a laptop at once, and blanket-revoking
+            #    would silently kill the other machine's Rich Presence. The
+            #    client sends a hostname-qualified name for exactly this
+            #    reason. The authorizing session is excluded so this cannot
+            #    revoke the caller's own credential mid-request.
+            await cur.execute(
+                """
+                DELETE FROM ios_user_sessions
+                WHERE user_id = %s AND device_name = %s AND token_id <> COALESCE(%s, '')
+                """,
+                (user_id, device_name, current_token_id),
+            )
+            superseded_removed = cur.rowcount or 0
+
             await cur.execute(
                 """
                 INSERT INTO ios_user_sessions (token_id, user_id, expires_at, device_name)
                 VALUES (%s, %s, %s, %s)
                 """,
-                (token_id, user_id, expires_at, "Discord RPC Bridge"),
+                (token_id, user_id, expires_at, device_name),
             )
 
+    # The in-process validation cache would otherwise keep a just-deleted
+    # token_id looking valid until its TTL lapsed.
+    for removed in (expired_removed, stale_setup_removed, superseded_removed):
+        if removed:
+            _session_cache.clear()
+            break
+
+    if expired_removed or stale_setup_removed or superseded_removed:
+        logger.info(
+            "rpc-token housekeeping for user %s: %d expired, %d stale setup, %d superseded (%r)",
+            user_id, expired_removed, stale_setup_removed, superseded_removed, device_name,
+        )
+
     token = create_token(user_id, token_id, expire_days=RPC_TOKEN_EXPIRE_DAYS)
-    return {"token": token, "expires_at": expires_at.isoformat()}
+    return {
+        "token": token,
+        "expires_at": expires_at.isoformat(),
+        "device_name": device_name,
+        "cleaned_up": {
+            "expired": expired_removed,
+            "stale_setup": stale_setup_removed,
+            "superseded": superseded_removed,
+        },
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -3,49 +3,51 @@
 # (runs in the background, restarts on login).
 #
 # Usage:
-#   ./install-macos.sh <rpc_token> [bridge_url]
+#   ./install-macos.sh                     # sign in with email/username + password
+#   ./install-macos.sh <rpc_token>         # or paste a Rich Presence token
+#   ./install-macos.sh <rpc_token> <url>   # ...against a self-hosted bridge
+#   ./install-macos.sh --bridge-url <url>  # sign in against a self-hosted bridge
 #
-# Get <rpc_token> from Lumisound -> Account -> Discord Rich Presence ->
-# Generate Rich Presence Token.
+# Signing in is the default because the Rich Presence token is 248 characters
+# and pasting it reliably is awkward. Your password is exchanged for a 365-day
+# token and is never written to disk -- see rpc_login.py.
 
 set -euo pipefail
 
-if [ "$#" -lt 1 ]; then
-    echo "Usage: $0 <rpc_token> [bridge_url]" >&2
-    echo "Get <rpc_token> from Lumisound -> Account -> Discord Rich Presence -> Generate Rich Presence Token." >&2
-    exit 1
-fi
-
-ACCESS_TOKEN="$1"
-BRIDGE_URL="${2:-}"
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_DIR="$HOME/.config/lumisound-discord-rpc"
-CONFIG_FILE="$CONFIG_DIR/config.json"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 PLIST="$LAUNCH_AGENTS_DIR/com.lumisound.discord-rpc.plist"
 
-mkdir -p "$CONFIG_DIR" "$LAUNCH_AGENTS_DIR"
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "Error: python3 is required (the daemon itself runs on it)." >&2
+    exit 1
+fi
 
-python3 - "$CONFIG_FILE" "$ACCESS_TOKEN" "$BRIDGE_URL" <<'EOF'
-import json
-import sys
+LOGIN_ARGS=()
+case "${1:-}" in
+    "")
+        # Interactive sign-in.
+        ;;
+    --bridge-url)
+        [ "$#" -ge 2 ] || { echo "Error: --bridge-url needs a URL." >&2; exit 1; }
+        LOGIN_ARGS+=(--bridge-url "$2")
+        ;;
+    -h|--help)
+        sed -n '2,13p' "$0"
+        exit 0
+        ;;
+    *)
+        # Positional form, kept for anyone following the older instructions:
+        #   install-macos.sh <rpc_token> [bridge_url]
+        LOGIN_ARGS+=(--token "$1")
+        [ -n "${2:-}" ] && LOGIN_ARGS+=(--bridge-url "$2")
+        ;;
+esac
 
-config_file, access_token, bridge_url = sys.argv[1:4]
+mkdir -p "$LAUNCH_AGENTS_DIR"
 
-config = {
-    "access_token": access_token,
-    "poll_interval_seconds": 5,
-}
-if bridge_url:
-    config["bridge_url"] = bridge_url
-
-with open(config_file, "w") as f:
-    json.dump(config, f, indent=2)
-EOF
-
-chmod 600 "$CONFIG_FILE"
-echo "Wrote $CONFIG_FILE"
+# Writes the config (mode 0600) at the daemon's own default_config_path().
+python3 "$SCRIPT_DIR/rpc_login.py" "${LOGIN_ARGS[@]+"${LOGIN_ARGS[@]}"}"
 
 PYTHON3="$(command -v python3)"
 
