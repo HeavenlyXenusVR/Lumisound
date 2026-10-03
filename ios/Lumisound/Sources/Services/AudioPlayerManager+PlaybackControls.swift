@@ -99,6 +99,7 @@ extension AudioPlayerManager {
             // AVAudioEngine does; only the shared session needs releasing.
         } else if engine.isRunning {
             engine.stop()
+            engineReleasedWhileIdle = true
         }
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
@@ -134,6 +135,20 @@ extension AudioPlayerManager {
         // if playback should be active, so there's nothing for this to do
         // here anyway.
         guard !isSchedulingAsync else { return }
+        // The engine was stopped while paused (backgrounding while paused does
+        // this at once, otherwise after the idle grace period). Stopping the
+        // engine drops what was scheduled on its nodes, so `activeNode.play()`
+        // below would start a node with nothing to play: silence, `isPlaying`
+        // true, and the lock screen showing "playing" while nothing happened
+        // until the stall detector rescheduled it three seconds later. This is
+        // the "press play on the lock screen and nothing happens" case, since
+        // the lock screen is exactly where a paused, backgrounded app is
+        // resumed from. Schedule the track again from where it was paused.
+        if engineReleasedWhileIdle {
+            appLog("Resume after idle engine release — rescheduling from \(String(format: "%.1f", position))s", category: "audio")
+            playCurrent(from: position)
+            return
+        }
         if !activeNode.isPlaying {
             startEngineIfNeeded()
             activeNode.play()

@@ -1,0 +1,142 @@
+import AppIntents
+import Foundation
+import WidgetKit
+
+// MARK: - Transport buttons for widgets and the Live Activity
+//
+// Compiled into BOTH the app and the widget extension. That is what lets iOS
+// run these in the app's own process: an `AudioPlaybackIntent` attached to a
+// widget or Live Activity button is executed in the app (launching it in the
+// background if it is not running) when the app target contains the same
+// intent type.
+//
+// These lived in the widget extension alone and worked by posting a Darwin
+// notification for the app to pick up. A Darwin notification only reaches a
+// process that is running, and a paused app is suspended within seconds of
+// leaving the foreground, so Play on the Lock Screen / Dynamic Island usually
+// went nowhere: pause worked (audio keeps the app alive) and resume did not.
+//
+// The Darwin notification remains the fallback for when the intent does run in
+// the extension, which is what an older app build installed alongside a newer
+// widget would cause.
+
+enum WidgetNotificationNames {
+    static let togglePlayback = "com.lumisound.ios.widget.togglePlayback"
+    static let skipNext       = "com.lumisound.ios.widget.skipNext"
+    static let skipPrevious   = "com.lumisound.ios.widget.skipPrevious"
+    static let toggleFavorite = "com.lumisound.ios.widget.toggleFavorite"
+}
+
+enum LumisoundPlaybackCommand: Sendable {
+    case togglePlayback
+    case skipNext
+    case skipPrevious
+    case toggleFavorite
+
+    var darwinName: String {
+        switch self {
+        case .togglePlayback: return WidgetNotificationNames.togglePlayback
+        case .skipNext:       return WidgetNotificationNames.skipNext
+        case .skipPrevious:   return WidgetNotificationNames.skipPrevious
+        case .toggleFavorite: return WidgetNotificationNames.toggleFavorite
+        }
+    }
+}
+
+/// Where a command goes once its intent runs.
+@MainActor
+enum LumisoundPlaybackCommandRouter {
+    /// Installed by the app's player at launch; never set in the widget
+    /// extension. Returns whether the command was carried out.
+    static var handler: (@MainActor (LumisoundPlaybackCommand) -> Bool)?
+
+    static func perform(_ command: LumisoundPlaybackCommand) async {
+        // Inside the app the player may still be starting: a button tapped
+        // while the app was not running launches it to run this intent, and
+        // the handler is installed when the player is created. Give that a
+        // few seconds rather than dropping the tap.
+        if !isAppExtension {
+            for _ in 0..<50 where handler == nil {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+        if let handler, handler(command) { return }
+        CFNotificationCenterPostNotification(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            CFNotificationName(command.darwinName as CFString),
+            nil, nil, true
+        )
+    }
+
+    private static var isAppExtension: Bool {
+        Bundle.main.bundleURL.pathExtension == "appex"
+    }
+}
+
+// MARK: - Toggle Playback
+
+struct TogglePlaybackIntent: AudioPlaybackIntent {
+    static let title: LocalizedStringResource = "Toggle Playback"
+    static let description = IntentDescription("Play or pause Lumisound.")
+    static let openAppWhenRun: Bool = false
+    static let isDiscoverable: Bool = false
+
+    func perform() async throws -> some IntentResult {
+        await LumisoundPlaybackCommandRouter.perform(.togglePlayback)
+        return .result()
+    }
+}
+
+// MARK: - Skip Previous
+
+struct SkipPreviousIntent: AudioPlaybackIntent {
+    static let title: LocalizedStringResource = "Skip to Previous"
+    static let description = IntentDescription("Skip to the previous track in Lumisound.")
+    static let openAppWhenRun: Bool = false
+    static let isDiscoverable: Bool = false
+
+    func perform() async throws -> some IntentResult {
+        await LumisoundPlaybackCommandRouter.perform(.skipPrevious)
+        return .result()
+    }
+}
+
+// MARK: - Skip Next
+
+struct SkipNextIntent: AudioPlaybackIntent {
+    static let title: LocalizedStringResource = "Skip to Next"
+    static let description = IntentDescription("Skip to the next track in Lumisound.")
+    static let openAppWhenRun: Bool = false
+    static let isDiscoverable: Bool = false
+
+    func perform() async throws -> some IntentResult {
+        await LumisoundPlaybackCommandRouter.perform(.skipNext)
+        return .result()
+    }
+}
+
+// MARK: - Toggle Favorite
+
+/// Favorites/unfavorites the currently-playing track from a widget or the Live
+/// Activity.
+///
+/// Writes an optimistic flag to the App Group first so the heart flips at once
+/// even if the app cannot be reached, then routes the real toggle to the app,
+/// whose authoritative value overwrites that guess (see
+/// `AudioPlayerManager.toggleFavoriteFromWidget()`).
+struct ToggleFavoriteIntent: LiveActivityIntent {
+    static let title: LocalizedStringResource = "Toggle Favorite"
+    static let description = IntentDescription("Favorites or unfavorites the current track in Lumisound.")
+    static let openAppWhenRun: Bool = false
+    static let isDiscoverable: Bool = false
+
+    func perform() async throws -> some IntentResult {
+        let ud = UserDefaults(suiteName: AppGroup.id)
+        let newValue = !(ud?.bool(forKey: "widget_is_favorite") ?? false)
+        ud?.set(newValue, forKey: "widget_is_favorite")
+        WidgetCenter.shared.reloadAllTimelines()
+
+        await LumisoundPlaybackCommandRouter.perform(.toggleFavorite)
+        return .result()
+    }
+}

@@ -17,6 +17,8 @@ extension AudioPlayerManager {
         // Invalidate any pending completion callbacks BEFORE cancelCrossfade() or node.stop()
         // so that the stopped node's completion block never fires handleTrackEnded().
         scheduleGeneration &+= 1
+        // Whatever the engine held before, this schedules the track afresh.
+        engineReleasedWhileIdle = false
         crossfadeTriggerPosition = nil
         cancelCrossfade()
         // Clear before scheduling so failure can be detected below.

@@ -51,6 +51,12 @@ final class AudioPlayerManager: ObservableObject {
                 // session is active or when this change came FROM applying a
                 // remote participant's message (see SharePlayCoordinator).
                 SharePlayCoordinator.shared?.broadcastTrackChange(song: currentSong, isPlaying: isPlaying, position: position)
+            } else if currentSong?.displayName != oldValue?.displayName
+                        || currentSong?.artistName != oldValue?.artistName {
+                // Same track, corrected metadata. `updateNowPlaying()` only
+                // republishes on playback changes now, so tell it this counts.
+                invalidateNowPlaying()
+                updateNowPlaying()
             }
         }
     }
@@ -111,9 +117,32 @@ final class AudioPlayerManager: ObservableObject {
     /// working unchanged since these remain plain gettable/settable properties.
     let progress = PlaybackProgress()
 
+    /// The true playback position. `progress.position` mirrors it for views,
+    /// except while the app is in the background — see
+    /// `isProgressPublishingPaused`.
+    private var positionValue: TimeInterval = 0
+
     var position: TimeInterval {
-        get { progress.position }
-        set { progress.position = newValue }
+        get { positionValue }
+        set {
+            positionValue = newValue
+            if !isProgressPublishingPaused { progress.position = newValue }
+        }
+    }
+
+    /// True while the app is backgrounded. The position tick runs twice a
+    /// second for as long as music plays, and every publish re-evaluates each
+    /// view observing `progress` — the mini player, the Now Playing scrubber,
+    /// synced lyrics. SwiftUI keeps doing that work in the background even
+    /// though nothing is drawn, so hours of locked-screen listening paid for
+    /// thousands of invisible view updates. Paused while backgrounded and
+    /// caught up in one publish on return.
+    var isProgressPublishingPaused = false {
+        didSet {
+            if !isProgressPublishingPaused, progress.position != positionValue {
+                progress.position = positionValue
+            }
+        }
     }
     var duration: TimeInterval {
         get { progress.duration }
@@ -396,6 +425,17 @@ final class AudioPlayerManager: ObservableObject {
     /// running forever with nothing playing ("ghost audio engine").
     var idleTeardownTimer: Timer?
 
+    /// True once `teardownEngineIfIdle()` has stopped the engine for being
+    /// paused too long. A stopped engine does not keep what was scheduled on
+    /// its player nodes, so the next resume has to schedule the track again
+    /// rather than just pressing play on a node with nothing queued — see
+    /// `resume()`.
+    var engineReleasedWhileIdle = false
+
+    /// What `updateNowPlaying()` last handed the system, so the 0.5s position
+    /// tick only republishes when the lock screen would otherwise be wrong.
+    var lastNowPlayingPublish: NowPlayingPublish?
+
     /// BPM lookups resolved via `libraryManager?.bpm(for:)`, keyed by song ID.
     /// Populated ahead of time by `prewarmBPM` so `beginCrossfade` can read a
     /// tempo synchronously without blocking the fade on analysis.
@@ -448,6 +488,7 @@ final class AudioPlayerManager: ObservableObject {
     // never matches it (see the `tearDownOpusPlayer` comment for the full
     // explanation). These three must be removed by their captured tokens too.
     var backgroundObserver: NSObjectProtocol?
+    var foregroundObserver: NSObjectProtocol?
     var interruptionObserver: NSObjectProtocol?
     var routeChangeObserver: NSObjectProtocol?
     var engineConfigChangeObserver: NSObjectProtocol?
@@ -508,11 +549,20 @@ final class AudioPlayerManager: ObservableObject {
         configureRemoteCommands()
         restorePlaybackState()
 
+        foregroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.isProgressPublishingPaused = false }
+        }
+
         backgroundObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.didEnterBackgroundNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.isProgressPublishingPaused = true }
             Task { @MainActor in
                 self?.savePlaybackState()
                 // Backgrounded while paused: no grace period needed (unlike
@@ -536,7 +586,21 @@ final class AudioPlayerManager: ObservableObject {
             }
         }
 
-        // Receive playback control commands posted from the WidgetKit extension.
+        // Widget and Live Activity buttons run their intents in this process
+        // (see LumisoundPlaybackIntents.swift) and arrive here directly.
+        LumisoundPlaybackCommandRouter.handler = { [weak self] command in
+            guard let self else { return false }
+            switch command {
+            case .togglePlayback: self.togglePlayPause()
+            case .skipNext:       self.skipToNext()
+            case .skipPrevious:   self.skipToPrevious()
+            case .toggleFavorite: self.toggleFavoriteFromWidget()
+            }
+            return true
+        }
+
+        // Fallback: commands posted from the WidgetKit extension when the
+        // intent ran there instead.
         DarwinWidgetBridge.shared.addObserver(name: DarwinWidgetBridge.togglePlayback) { [weak self] in
             Task { @MainActor [weak self] in self?.togglePlayPause() }
         }
@@ -582,7 +646,7 @@ final class AudioPlayerManager: ObservableObject {
         vibratoLink?.invalidate()
         // `removeObserver(self)` is a no-op for closure-based registrations below
         // (they're keyed on an internal proxy, not `self`) — must remove by token.
-        for token in [backgroundObserver, interruptionObserver, routeChangeObserver, engineConfigChangeObserver, opusEndObserver, opusFailObserver] {
+        for token in [backgroundObserver, foregroundObserver, interruptionObserver, routeChangeObserver, engineConfigChangeObserver, opusEndObserver, opusFailObserver] {
             if let token { NotificationCenter.default.removeObserver(token) }
         }
         let center = MPRemoteCommandCenter.shared()
@@ -592,6 +656,9 @@ final class AudioPlayerManager: ObservableObject {
         center.nextTrackCommand.removeTarget(nil)
         center.previousTrackCommand.removeTarget(nil)
         center.changePlaybackPositionCommand.removeTarget(nil)
+        center.stopCommand.removeTarget(nil)
+        center.changeShuffleModeCommand.removeTarget(nil)
+        center.changeRepeatModeCommand.removeTarget(nil)
     }
 
 }
