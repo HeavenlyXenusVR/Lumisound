@@ -337,9 +337,7 @@ extension LibraryManager {
         // never against a sibling entry already sitting in the library).
         // Sweeps every scan (cheap — pure in-memory comparison over already-
         // loaded importedSongs, no disk I/O unless it actually finds a pair).
-        let mergedDuplicates = MainThreadActivity.measure("scan.mergeConversionDuplicates") {
-            mergeExistingConversionDuplicates()
-        }
+        let mergedDuplicates = await mergeExistingConversionDuplicates()
 
         guard !candidates.isEmpty else {
             if evicted || mergedDuplicates > 0 { rebuildAllSongs() }
@@ -499,28 +497,44 @@ extension LibraryManager {
     /// everywhere else in this pipeline); it's picked up on a later scan
     /// once it's no longer playing. Returns how many pairs were merged.
     @discardableResult
-    func mergeExistingConversionDuplicates() -> Int {
-        var convertedByTargetURL: [URL: Song] = [:]
-        for song in importedSongs {
-            guard let url = song.url, LumisoundExclusiveExtensionService.isConverted(url) else { continue }
-            convertedByTargetURL[url.standardizedFileURL] = song
-        }
-        guard !convertedByTargetURL.isEmpty else { return 0 }
+    func mergeExistingConversionDuplicates() async -> Int {
+        // Finding pairs is pure URL work over the whole library, and on the
+        // main actor it cost 0.5-1s of every scan (the hang monitor's
+        // `scan.mergeConversionDuplicates` label, in 3-4s launch freezes), to
+        // find nothing almost every time. It runs detached on a snapshot; only
+        // the rare pairs it finds are merged here, against live state.
+        let snapshot = importedSongs
+        let pairs: [(song: Song, survivor: Song, url: URL, target: URL)] = await Task.detached(priority: .userInitiated) {
+            var convertedByTargetURL: [URL: Song] = [:]
+            for song in snapshot {
+                guard let url = song.url, LumisoundExclusiveExtensionService.isConverted(url) else { continue }
+                convertedByTargetURL[url.standardizedFileURL] = song
+            }
+            guard !convertedByTargetURL.isEmpty else { return [] }
+            var pairs: [(song: Song, survivor: Song, url: URL, target: URL)] = []
+            for song in snapshot {
+                guard let url = song.url, !LumisoundExclusiveExtensionService.isConverted(url),
+                      let target = LumisoundExclusiveExtensionService.expectedConvertedURL(for: url),
+                      let survivor = convertedByTargetURL[target.standardizedFileURL]
+                else { continue }
+                pairs.append((song, survivor, url, target))
+            }
+            return pairs
+        }.value
+        guard !pairs.isEmpty else { return 0 }
 
         let currentlyPlayingID = AudioPlayerManager.shared?.currentSong?.id
+        let queuedIDs = Set(AudioPlayerManager.shared?.queue.map(\.id) ?? [])
         var merged = 0
 
-        for song in importedSongs {
-            guard let url = song.url, !LumisoundExclusiveExtensionService.isConverted(url) else { continue }
-            // See AudioPlayerManager.isInActiveQueue's doc comment — this
-            // loop runs synchronously (no per-song async gap the way the
-            // conversion pass has), but `currentlyPlayingID` is still only
-            // ONE song; the survivor's target `.lms` file could be earlier
-            // or later in the SAME queue as `song` without being the
-            // literal current index, so it needs the same whole-queue check.
-            guard song.id != currentlyPlayingID, AudioPlayerManager.shared?.isInActiveQueue(songID: song.id) != true else { continue }
-            guard let target = LumisoundExclusiveExtensionService.expectedConvertedURL(for: url) else { continue }
-            guard let survivor = convertedByTargetURL[target.standardizedFileURL] else { continue }
+        for (song, survivor, url, target) in pairs {
+            // Still present? Something may have changed it while the pairs
+            // were being found.
+            guard importedSongs.contains(where: { $0.id == song.id }) else { continue }
+            // See AudioPlayerManager.isInActiveQueue's doc comment: the
+            // survivor's target `.lms` file could be anywhere in the same
+            // queue as `song`, not just the current index.
+            guard song.id != currentlyPlayingID, !queuedIDs.contains(song.id) else { continue }
 
             if favoriteSongIDs.contains(song.id) {
                 favoriteSongIDs.remove(song.id)
