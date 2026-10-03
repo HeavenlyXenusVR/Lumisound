@@ -171,6 +171,27 @@ struct AudioSettings: Codable, Equatable {
     var crossfadeCurve: CrossfadeCurve? = .equalPower
 }
 
+extension AudioSettings {
+    /// These settings with every field that Auto EQ rewrites per track reset
+    /// to a fixed value, so two values compare equal when the only difference
+    /// is the preset Auto EQ picked.
+    ///
+    /// With Auto EQ on, `eqPreset`/`eqBands`/`equalizerEnabled` change on most
+    /// track changes, and each of those changes looked to the app like the
+    /// listener editing their settings: it re-saved them and pushed a full
+    /// account sync plus the whole library inventory to the server, once per
+    /// song. None of that is information worth syncing; the choice to use Auto
+    /// EQ is, and that is still compared.
+    var syncComparable: AudioSettings {
+        guard autoEQEnabled else { return self }
+        var copy = self
+        copy.eqPreset = .flat
+        copy.eqBands = Array(repeating: 0, count: eqBands.count)
+        copy.equalizerEnabled = false
+        return copy
+    }
+}
+
 /// Volume curve applied across a crossfade's overlap window. See
 /// `AudioPlayerManager.beginCrossfade`'s per-tick volume ramp.
 enum CrossfadeCurve: String, CaseIterable, Codable, Identifiable, Equatable {

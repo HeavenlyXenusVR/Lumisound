@@ -96,6 +96,16 @@ final class AccountService: ObservableObject {
 
     var syncDebounceTask: Task<Void, Never>?
 
+    /// The default audio settings as of the last push they caused, in the
+    /// form `AudioSettings.syncComparable` gives. See the `audioSettings`
+    /// `onChange` in LumisoundApp for why a change has to differ from this to
+    /// be worth a push.
+    var lastPushedAudioSettings: AudioSettings?
+
+    /// The source-id set last uploaded by `syncLibraryInventory`, so an
+    /// unchanged library is not uploaded again.
+    var lastUploadedInventory: Set<String>?
+
     // MARK: Auto-push timer
 
     var autoPushTimer: Timer?
@@ -205,10 +215,25 @@ final class AccountService: ObservableObject {
     /// and debounced via the schedulePush path that calls it.
     func syncLibraryInventory(library: LibraryManager) async {
         guard isLoggedIn else { return }
+        // The server replaces its copy with this upload, so uploading before
+        // the library has loaded tells it this device owns nothing. Five
+        // accounts sent exactly that — a count of 0 — within two days, each
+        // one wiping the dedup state every download decision relies on.
+        guard !library.allSongs.isEmpty else {
+            appLog("syncLibraryInventory skipped — library not loaded yet", category: "account")
+            return
+        }
         var ids = Set(library.allSongs.compactMap { $0.sourceTrackID }.filter { !$0.isEmpty })
         let presentFilenames = Set(library.allSongs.compactMap { $0.url?.lastPathComponent })
         for id in DownloadLedgerStore.shared.presentSourceIDs(presentFilenames: presentFilenames) {
             ids.insert(id)
+        }
+        // Same ids as the last successful upload: the server already has this
+        // exact set. This ran after every sync push, and on a several-thousand
+        // song library that was a multi-hundred-KB upload up to fifteen times an
+        // hour with nothing in it the server did not already hold.
+        if ids == lastUploadedInventory {
+            return
         }
         struct InventoryBody: Encodable { let source_ids: [String] }
         do {
@@ -227,6 +252,7 @@ final class AccountService: ObservableObject {
                                       body: InventoryBody(source_ids: Array(ids)),
                                       timeout: 90)
             }
+            lastUploadedInventory = ids
             appLog("syncLibraryInventory: uploaded \(ids.count) source id(s)", category: "account")
             // One event per debounced push, not per source id.
             RemoteLogger.log(category: "sync", event: "library_inventory_synced", detail: ["count": ids.count])

@@ -275,14 +275,16 @@ extension LibraryManager {
             }.value
 
             guard !Task.isCancelled else { return }
-            self.allSongs = combined
-            self.artists = artists
-            self.albums  = albums
-            self.genres  = genres
-            self.songsByID     = byID
-            self.songsByArtist = byArtist
-            self.songsByAlbum  = byAlbum
-            self.songsByGenre  = byGenre
+            MainThreadActivity.measure("library.publish") {
+                self.allSongs = combined
+                self.artists = artists
+                self.albums  = albums
+                self.genres  = genres
+                self.songsByID     = byID
+                self.songsByArtist = byArtist
+                self.songsByAlbum  = byAlbum
+                self.songsByGenre  = byGenre
+            }
             self.persistSnapshotIfSettled()
         }
     }

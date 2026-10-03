@@ -423,6 +423,13 @@ struct LumisoundApp: App {
                 }
                 .onChange(of: libraryManager.playlists) { _ in
                     account.schedulePush(library: libraryManager)
+                    SiriVocabularyRefresher.refreshSoon()
+                }
+                // Artist names are Siri vocabulary too ("Play <artist> in
+                // Lumisound"); this changes when the library loads or a scan
+                // finds a new artist.
+                .onChange(of: libraryManager.artists.count) { _ in
+                    SiriVocabularyRefresher.refreshSoon()
                 }
                 // Persist audio settings to local AND DB when they change. While a
                 // per-track override is active, `audioSettings` reflects that
@@ -430,12 +437,15 @@ struct LumisoundApp: App {
                 // the latter as the global default (`player.defaultAudioSettings`
                 // is unaffected by per-track overrides); the per-track values are
                 // persisted separately via `onTrackAudioSettingsChanged` above.
-                .onChange(of: player.audioSettings) { newSettings in
-                    if player.isUsingTrackAudioSettings {
-                        PersistenceService.shared.saveAudioSettings(player.defaultAudioSettings)
-                    } else {
-                        PersistenceService.shared.saveAudioSettings(newSettings)
-                    }
+                .onChange(of: player.audioSettings) { _ in
+                    // Only a change the listener made is saved and synced.
+                    // Auto EQ swapping the preset between songs is not one,
+                    // and treating it as one ran a full account sync on every
+                    // track change — see `AudioSettings.syncComparable`.
+                    let comparable = player.defaultAudioSettings.syncComparable
+                    guard comparable != account.lastPushedAudioSettings else { return }
+                    account.lastPushedAudioSettings = comparable
+                    PersistenceService.shared.saveAudioSettings(player.defaultAudioSettings)
                     account.schedulePush(
                         library: libraryManager,
                         audioSettings: player.defaultAudioSettings,
@@ -447,6 +457,7 @@ struct LumisoundApp: App {
                         for: UIApplication.didEnterBackgroundNotification
                     )
                 ) { _ in
+                    libraryManager.flushPendingSnapshot()
                     PersistenceService.shared.saveAudioSettings(player.defaultAudioSettings)
                 }
                 .onReceive(sleepTimer.$didExpire) { expired in

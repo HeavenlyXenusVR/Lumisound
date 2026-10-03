@@ -13,7 +13,10 @@ struct LibraryScanProgress: Equatable {
 @MainActor
 final class LibraryManager: ObservableObject {
     @Published var allSongs: [Song] = [] {
-        didSet { Self.recomputeAmbiguousTitles(from: allSongs) }
+        didSet {
+            favoriteSongsCache = nil
+            MainThreadActivity.measure("library.ambiguousTitles") { Self.recomputeAmbiguousTitles(from: allSongs) }
+        }
     }
 
     /// Recomputes the set of titles that don't identify anything — see
@@ -34,7 +37,10 @@ final class LibraryManager: ObservableObject {
     @Published var genres: [String] = []
     @Published var playlists: [Playlist] = []
     @Published var favoriteSongIDs: Set<String> = [] {
-        didSet { favoriteKeyCache = Set(favoriteSongIDs.map { Self.favoriteKey(for: $0) }) }
+        didSet {
+            favoriteKeyCache = Set(favoriteSongIDs.map { Self.favoriteKey(for: $0) })
+            favoriteSongsCache = nil
+        }
     }
 
     /// Filename-only forms of `favoriteSongIDs`, kept in step by the `didSet`
@@ -180,9 +186,19 @@ final class LibraryManager: ObservableObject {
     /// re-read eventually without ever doing a full-library pass in one go.
     var metadataRefreshCursor = 0
 
+    /// Cached because it is read on every Home reload, every Favorites
+    /// rebuild, the hub shortcuts and every sync push, and each read was a
+    /// full pass over the library with a string split per non-favourite song.
+    /// Invalidated by `allSongs` and `favoriteSongIDs`, the only two inputs.
     var favoriteSongs: [Song] {
-        allSongs.filter { isFavorite(songID: $0.id) }
+        if let cached = favoriteSongsCache { return cached }
+        let result = MainThreadActivity.measure("library.favoriteSongs") {
+            allSongs.filter { isFavorite(songID: $0.id) }
+        }
+        favoriteSongsCache = result
+        return result
     }
+    private var favoriteSongsCache: [Song]?
 
     init(persistence: PersistenceService = .shared, artwork: ArtworkService = .shared) {
         self.persistence = persistence

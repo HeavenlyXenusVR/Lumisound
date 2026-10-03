@@ -31,6 +31,34 @@ extension LibraryManager {
         } else {
             return
         }
-        rebuildAllSongs()
+        // Patched into the id index at once, so lookups see it immediately,
+        // while the full rebuild is batched.
+        //
+        // Every BPM result used to call `rebuildAllSongs()` directly: a re-sort
+        // and re-index of the whole library, a republish that re-rendered every
+        // screen observing it, and then a snapshot write. Analysis completes one
+        // track at a time, so that was the full cost once per song for as long
+        // as analysis ran — a steady source of both UI hitches and heat. Lists
+        // do not display BPM, so nothing visible is lost by folding a run of
+        // results into one rebuild.
+        if var song = songsByID[songID] {
+            song.bpm = bpm
+            songsByID[songID] = song
+        }
+        scheduleBatchedRebuild()
     }
+
+    /// Runs `rebuildAllSongs()` once, `batchedRebuildDelay` after the first
+    /// request, however many arrive in between.
+    func scheduleBatchedRebuild() {
+        guard Self.batchedRebuildTask == nil else { return }
+        Self.batchedRebuildTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.batchedRebuildDelay * 1_000_000_000))
+            Self.batchedRebuildTask = nil
+            self?.rebuildAllSongs()
+        }
+    }
+
+    private static var batchedRebuildTask: Task<Void, Never>?
+    private static let batchedRebuildDelay: TimeInterval = 30
 }

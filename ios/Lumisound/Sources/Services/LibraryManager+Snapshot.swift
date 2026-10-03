@@ -122,24 +122,61 @@ extension LibraryManager {
     /// several such mutations a few seconds apart — common while background
     /// BPM analysis works through a large library — now collapses into one
     /// disk write instead of one per mutation.
+    ///
+    /// Also rate-limited to one write per `minimumSnapshotInterval`. A 2s
+    /// debounce collapses a burst, but background analysis produces a steady
+    /// trickle — one BPM result, one metadata correction, every few seconds for
+    /// as long as it runs — and each of those still rewrote the whole snapshot
+    /// (every song, twice over, since it carries `importedSongs` beside the
+    /// combined list). MetricKit reported this app writing 4 to 17 GB in a day,
+    /// which is enough sustained flash and CPU work to warm the phone on its
+    /// own. The snapshot only has to be recent enough to make the next launch
+    /// instant; `flushPendingSnapshot()` writes anything still pending when the
+    /// app is backgrounded.
     func persistSnapshotIfSettled() {
         guard !isScanning else { return }
         pendingSnapshotPersistTask?.cancel()
+        Self.snapshotWritePending = true
+        let sinceLastWrite = Self.lastSnapshotWriteAt.map { Date().timeIntervalSince($0) } ?? .infinity
+        let delay = max(2, Self.minimumSnapshotInterval - sinceLastWrite)
         pendingSnapshotPersistTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard let self, !Task.isCancelled, !self.isScanning else { return }
-            let snapshot = LibrarySnapshot(
-                songs: self.allSongs,
-                artists: self.artists,
-                albums: self.albums,
-                genres: self.genres,
-                importedSongs: self.importedSongs
-            )
-            let destination = Self.snapshotURL
-            await Task.detached(priority: .utility) {
-                guard let data = try? JSONEncoder().encode(snapshot) else { return }
-                try? data.write(to: destination, options: .atomic)
-            }.value
+            await self.writeSnapshot()
         }
+    }
+
+    /// Writes a pending snapshot now instead of waiting out the rate limit.
+    /// Called when the app leaves the foreground, where a delayed write may
+    /// never get to run.
+    func flushPendingSnapshot() {
+        guard Self.snapshotWritePending, !isScanning else { return }
+        pendingSnapshotPersistTask?.cancel()
+        let assertion = BackgroundTaskToken(name: "LumisoundSnapshotFlush")
+        pendingSnapshotPersistTask = Task { [weak self] in
+            await self?.writeSnapshot()
+            assertion.end()
+        }
+    }
+
+    private static let minimumSnapshotInterval: TimeInterval = 60
+    private static var lastSnapshotWriteAt: Date?
+    private static var snapshotWritePending = false
+
+    private func writeSnapshot() async {
+        let snapshot = LibrarySnapshot(
+            songs: allSongs,
+            artists: artists,
+            albums: albums,
+            genres: genres,
+            importedSongs: importedSongs
+        )
+        Self.snapshotWritePending = false
+        Self.lastSnapshotWriteAt = Date()
+        let destination = Self.snapshotURL
+        await Task.detached(priority: .utility) {
+            guard let data = try? JSONEncoder().encode(snapshot) else { return }
+            try? data.write(to: destination, options: .atomic)
+        }.value
     }
 }

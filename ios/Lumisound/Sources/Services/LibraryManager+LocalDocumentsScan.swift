@@ -321,9 +321,11 @@ extension LibraryManager {
         // and the filter itself is cheap in-memory set membership now (no I/O),
         // so there's no cost to skip by short-circuiting here.
         let countBeforeEviction = importedSongs.count
-        importedSongs = importedSongs.filter { song in
-            guard let url = song.url else { return false }
-            return !missingURLs.contains(url)
+        MainThreadActivity.measure("scan.evict") {
+            importedSongs = importedSongs.filter { song in
+                guard let url = song.url else { return false }
+                return !missingURLs.contains(url)
+            }
         }
         let evicted = countBeforeEviction != importedSongs.count
 
@@ -335,15 +337,20 @@ extension LibraryManager {
         // never against a sibling entry already sitting in the library).
         // Sweeps every scan (cheap — pure in-memory comparison over already-
         // loaded importedSongs, no disk I/O unless it actually finds a pair).
-        let mergedDuplicates = mergeExistingConversionDuplicates()
+        let mergedDuplicates = MainThreadActivity.measure("scan.mergeConversionDuplicates") {
+            mergeExistingConversionDuplicates()
+        }
 
         guard !candidates.isEmpty else {
             if evicted || mergedDuplicates > 0 { rebuildAllSongs() }
             return
         }
 
-        let existingURLs = Set(importedSongs.compactMap { $0.url?.standardizedFileURL })
-        let (cleanedCandidates, cleanedUpOrphans) = cleanUpConversionOrphans(among: candidates, existingURLs: existingURLs)
+        let (cleanedCandidates, cleanedUpOrphans, existingURLs) = MainThreadActivity.measure("scan.orphans") {
+            let existingURLs = Set(importedSongs.compactMap { $0.url?.standardizedFileURL })
+            let cleaned = cleanUpConversionOrphans(among: candidates, existingURLs: existingURLs)
+            return (cleaned.candidates, cleaned.cleanedUp, existingURLs)
+        }
         guard !cleanedCandidates.isEmpty else {
             if evicted || mergedDuplicates > 0 || cleanedUpOrphans > 0 { rebuildAllSongs() }
             return
@@ -356,10 +363,17 @@ extension LibraryManager {
             // for files that actually changed on disk — so in-place tag edits
             // are finally picked up, which the new-files-only path below misses.
             let resolved = await resolveSongs(for: cleanedCandidates)
-            importedSongs = Array(
-                Dictionary(grouping: resolved, by: { song in song.url.map { $0.standardizedFileURL.absoluteString } ?? song.id })
-                    .compactMap { $0.value.first }
-            )
+            // Deduplicated off the main actor: on the Refresh path this covers
+            // the whole library, and URL standardisation plus a grouping
+            // dictionary over thousands of songs was part of the multi-second
+            // freeze on pull-to-refresh. Same first-wins result as before.
+            importedSongs = await Task.detached(priority: .userInitiated) {
+                var seen = Set<String>()
+                seen.reserveCapacity(resolved.count)
+                return resolved.filter { song in
+                    seen.insert(song.url.map { $0.standardizedFileURL.absoluteString } ?? song.id).inserted
+                }
+            }.value
             appLog("Local scan (force) complete: \(importedSongs.count) song(s)", category: "library")
             rebuildAllSongs()
             return
@@ -421,11 +435,13 @@ extension LibraryManager {
         // the first element of each away — thousands of short-lived arrays to
         // produce a result that only ever needed one pass and one set. Same
         // output, same first-wins ordering, without the garbage.
-        var seenKeys = Set<String>()
-        seenKeys.reserveCapacity(importedSongs.count)
-        importedSongs = importedSongs.filter { song in
-            let key = song.url.map { $0.standardizedFileURL.absoluteString } ?? song.id
-            return seenKeys.insert(key).inserted
+        MainThreadActivity.measure("scan.dedupe") {
+            var seenKeys = Set<String>()
+            seenKeys.reserveCapacity(importedSongs.count)
+            importedSongs = importedSongs.filter { song in
+                let key = song.url.map { $0.standardizedFileURL.absoluteString } ?? song.id
+                return seenKeys.insert(key).inserted
+            }
         }
         rebuildAllSongs()
     }

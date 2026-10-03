@@ -13,26 +13,58 @@ extension AccountService {
         trackAudioSettings: [String: AudioSettings]? = nil
     ) async {
         guard isLoggedIn else { return }
+        // The server REPLACES favorites and playlist tracks with whatever this
+        // push carries. Playlist tracks are resolved against the loaded library
+        // below, so a push that goes out before the library has loaded sends
+        // every playlist empty and wipes it server-side. Field telemetry caught
+        // the favourites version of this: one push replaced the account's set
+        // with nothing, and the next launch re-added 243 of them one request at
+        // a time. Wait for a library before saying what is in it.
+        let hasLocalState = !library.favoriteSongIDs.isEmpty
+            || library.playlists.contains { !$0.songIDs.isEmpty }
+        if library.allSongs.isEmpty && hasLocalState {
+            appLog("Push sync skipped — library not loaded yet", category: "account")
+            return
+        }
         appLog("Push sync started (favorites: \(library.favoriteSongIDs.count), playlists: \(library.playlists.count))", category: "account")
         isSyncing = true
         errorMessage = nil
         defer { isSyncing = false }
 
-        // Build favorites from library
-        let favorites = library.favoriteSongs.map { song in
-            SyncFavorite(
+        // Every favourite id is sent, whether or not its song is in the
+        // library right now.
+        //
+        // This used to send only `favoriteSongs` — favourites whose song is
+        // currently loaded. A favourite for a file that had been renamed, moved
+        // or not yet re-downloaded was left out, so the server (which replaces
+        // the set) deleted it, and the next launch's merge saw it missing and
+        // POSTed it back. Every launch, forever: 46 favourites re-added each
+        // time for one account, 1,800 requests in five days. Favourites matched
+        // only by filename (see `isFavorite`) are included under the library's
+        // own id as well, as they were before.
+        var favoritesByID: [String: SyncFavorite] = [:]
+        for id in library.favoriteSongIDs {
+            let song = library.songsByID[id]
+            favoritesByID[id] = SyncFavorite(
+                songId: id,
+                title: song?.title,
+                artist: song?.artistName,
+                album: song?.albumName
+            )
+        }
+        for song in library.favoriteSongs where favoritesByID[song.id] == nil {
+            favoritesByID[song.id] = SyncFavorite(
                 songId: song.id,
                 title: song.title,
                 artist: song.artistName,
                 album: song.albumName
             )
         }
+        let favorites = Array(favoritesByID.values)
 
         // Build playlists from library
         let playlists = library.playlists.map { playlist -> SyncPlaylist in
-            let songs = playlist.songIDs.compactMap { id in
-                library.allSongs.first { $0.id == id }
-            }
+            let songs = playlist.songIDs.compactMap { library.songsByID[$0] }
             let tracks = songs.enumerated().map { idx, song in
                 SyncTrack(
                     localSongId: song.id,

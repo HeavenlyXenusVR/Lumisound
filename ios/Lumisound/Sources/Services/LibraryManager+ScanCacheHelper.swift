@@ -23,11 +23,13 @@ extension LibraryManager {
         var uncached: [(url: URL, stamp: ScanCacheService.FileStamp)] = []
 
         // Pure in-memory dictionary lookups — cheap enough to stay on the main actor.
-        for entry in stamps {
-            if let cached = ScanCacheService.shared.cachedSong(for: entry.url, stamp: entry.stamp) {
-                cachedSongs.append(cached)
-            } else {
-                uncached.append(entry)
+        MainThreadActivity.measure("scan.cacheLookup") {
+            for entry in stamps {
+                if let cached = ScanCacheService.shared.cachedSong(for: entry.url, stamp: entry.stamp) {
+                    cachedSongs.append(cached)
+                } else {
+                    uncached.append(entry)
+                }
             }
         }
 
@@ -48,6 +50,16 @@ extension LibraryManager {
         // batch — at most ~100 files of repeated work instead of thousands.
         // Concurrency within each batch is unchanged (maxConcurrent = 8).
         let checkpointSize = 100
+        // The cache is written at most this often while batches complete, plus
+        // once at the end. Writing it after every 100-file batch re-encoded and
+        // rewrote the WHOLE cache each time, so a full rescan of N files did
+        // N/100 writes of a file that grows toward N entries — quadratic CPU and
+        // disk on exactly the kind of scan that already runs hot. MetricKit
+        // reported this app writing several GB a day. A time-based checkpoint
+        // keeps the crash-resume property (at most ~20s of work is repeated)
+        // without the quadratic cost.
+        let checkpointInterval: TimeInterval = 20
+        var lastCheckpoint = Date()
         var newSongs: [Song] = []
         newSongs.reserveCapacity(uncached.count)
         var batchStart = 0
@@ -86,7 +98,11 @@ extension LibraryManager {
                     ScanCacheService.shared.store(song: song, for: url, stamp: stamp)
                 }
             }
-            ScanCacheService.shared.persist()
+            let isLastBatch = batchEnd >= uncached.count
+            if isLastBatch || Date().timeIntervalSince(lastCheckpoint) >= checkpointInterval {
+                ScanCacheService.shared.persist()
+                lastCheckpoint = Date()
+            }
 
             newSongs.append(contentsOf: batchSongs)
             batchStart = batchEnd
