@@ -475,6 +475,19 @@ final class AudioPlayerManager: ObservableObject {
     // (i.e. only when a genuinely new track starts, not by the retry itself).
     var opusRetriedThisLoad = false
 
+    // How many automatic retries the *current* track's load has already used.
+    // Separate from `opusRetriedThisLoad` (which stays the one-shot gate for
+    // ordinary remote failures) because a bridge "no stream URL found" 404 —
+    // surfacing to AVFoundation as NSURLErrorDomain -1100 — is a different
+    // animal: it means server-side extraction produced nothing AT THAT MOMENT,
+    // typically because the YouTube cookie jar had just gone stale, a yt-dlp
+    // concurrency slot was contended, or a POT fetch timed out. All of those
+    // clear on their own in seconds-to-minutes, but the old single 1.5s replay
+    // was far too eager to outlast any of them, so the track was skipped and
+    // the user saw "Couldn't play". 681 of these hit 42 distinct users.
+    // Reset alongside `opusRetriedThisLoad` when a genuinely new track starts.
+    var opusTransientRetryCount = 0
+
     // AVPlayer fallback for containers (e.g. .opus) that AVAssetReader cannot decode.
     // When active, this player owns audio output instead of the AVAudioEngine nodes.
     var opusPlayer: AVPlayer?

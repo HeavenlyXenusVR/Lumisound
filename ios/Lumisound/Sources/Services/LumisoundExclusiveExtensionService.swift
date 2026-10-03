@@ -235,6 +235,28 @@ enum LumisoundExclusiveExtensionService {
     }
     private static let convertLimiter = ConvertConcurrencyLimiter()
 
+    /// Verify an already-present `.lms` destination and either adopt it
+    /// (returns it) or delete it as a corrupt leftover (returns nil, meaning
+    /// "re-lock from scratch"). Runs off-main: `unlock` XORs the whole file
+    /// and the decode check reads it back, the same reason `convert`'s own
+    /// lock work is pushed off the calling actor's executor.
+    private static func adoptExistingLockedFile(at newURL: URL, plainURL: URL, startedAt: Date) async -> URL? {
+        await Task.detached(priority: .utility) { () -> URL? in
+            let fm = FileManager.default
+            let verifyURL = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension(plainURL.pathExtension)
+            defer { try? fm.removeItem(at: verifyURL) }
+            guard LumisoundLockFormat.unlock(lockedURL: newURL, to: verifyURL),
+                  CorruptFileFinderService.isValidAudioFile(at: verifyURL) else {
+                appWarn("LumisoundExclusiveExtensionService: existing \(newURL.lastPathComponent) failed round-trip verification after \(String(format: "%.2f", Date().timeIntervalSince(startedAt)))s — discarding it and re-locking", category: "background")
+                try? fm.removeItem(at: newURL)
+                return nil
+            }
+            appLog("LumisoundExclusiveExtensionService: adopted already-locked \(newURL.lastPathComponent) for \(plainURL.lastPathComponent) — no re-lock needed", category: "background")
+            return newURL
+        }.value
+    }
+
     /// LOCKS `fileURL`'s existing bytes (see `LumisoundLockFormat`) as-is
     /// into `<original-name>.<original-ext>.lms` — no re-encode, so the
     /// user's actual downloaded format (opus/flac/mp3/m4a/whatever the
@@ -243,21 +265,54 @@ enum LumisoundExclusiveExtensionService {
     /// (unlocks correctly AND the unlocked result passes
     /// `CorruptFileFinderService.isValidAudioFile`) before removing
     /// `fileURL`, and never leaves a locked file behind that failed that
-    /// check. Returns the new URL — or `nil` if `fileURL` is already
-    /// converted, the destination somehow already exists, or the lock/
-    /// verify step fails (all logged, never thrown — this is always called
-    /// from a best-effort background pass). Extended attributes (the
+    /// check. Returns a locked, verified URL — or `nil` only when the lock/
+    /// verify step genuinely FAILED (all logged, never thrown — this is
+    /// always called from a best-effort background pass).
+    ///
+    /// "Already locked" is deliberately NOT a nil: `fileURL` already being
+    /// `.lms`, or its `.lms` destination already existing and verifying, are
+    /// both successful outcomes and return that locked URL. Returning nil for
+    /// them made all three callers log a failure for a track that was
+    /// correctly locked — in the field that was ~15 "synchronous lock failed
+    /// after 0.00s" warnings per track (the 0.00s being the tell: nil came
+    /// back before any work started) — and, worse, made
+    /// `finalizeAndLockDownload` hand its caller the PLAIN file path while a
+    /// perfectly good locked file sat right next to it, so the download was
+    /// never recorded as locked and got retried again on the next pass.
+    /// Extended attributes (the
     /// LumisoundTrackVault tag) are re-applied by the caller after this
     /// returns, since this produces a brand new inode rather than
     /// preserving the original's xattrs the way a rename would have.
     static func convert(fileURL: URL) async -> URL? {
-        guard !isConverted(fileURL), let newURL = expectedConvertedURL(for: fileURL) else { return nil }
+        // Already a `.lms` file: nothing to do, nothing failed. Note
+        // `expectedConvertedURL` returns nil for exactly this case too, so
+        // handling it first means the guard below can only fail for a URL
+        // that genuinely has no derivable destination.
+        if isConverted(fileURL) { return fileURL }
+        guard let newURL = expectedConvertedURL(for: fileURL) else { return nil }
         let fm = FileManager.default
-        guard !fm.fileExists(atPath: newURL.path) else { return nil }
         let startedAt = Date()
 
         await convertLimiter.acquire()
         defer { Task { await convertLimiter.release() } }
+
+        // Destination already present. Re-checked AFTER taking the limiter,
+        // not before: a sibling convert for the same track may have finished
+        // while this call was queued behind the cap, which is precisely how
+        // the duplicate-work case arises.
+        //
+        // Adopting it unverified would be a real hazard — an interrupted or
+        // half-written lock from a previous run leaves a `.lms` of exactly
+        // this name — so it gets the same unlock + decode round-trip a
+        // freshly locked file does. Verified: adopt it. Corrupt: delete it
+        // and fall through to lock afresh, which is strictly better than the
+        // old behaviour of bailing and leaving the bad artifact in place
+        // forever.
+        if fm.fileExists(atPath: newURL.path) {
+            if let adopted = await adoptExistingLockedFile(at: newURL, plainURL: fileURL, startedAt: startedAt) {
+                return adopted
+            }
+        }
 
         // The actual lock/verify work below is synchronous CPU+I/O (XOR
         // over the WHOLE file — up to hundreds of MB for a lossless FLAC

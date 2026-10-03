@@ -77,6 +77,7 @@ extension AudioPlayerManager {
     func resetReplayGainForNewTrack() {
         recentLoadFailureTimestamps.removeAll()
         opusRetriedThisLoad = false
+        opusTransientRetryCount = 0
         replayGainLinearGain = 1.0
         // Every fresh (stop()+play()) schedule restarts the node's sample clock
         // at 0, so the gapless position baseline must reset too. The gapless

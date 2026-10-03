@@ -8,11 +8,27 @@ extension AudioPlayerManager {
 
     // MARK: - AVPlayer fallback (Opus / WebM / OGG)
 
+    /// Codes meaning "the bridge had nothing to serve us *right now*", as
+    /// opposed to "this media is broken". -1100 (NSURLErrorFileDoesNotExist)
+    /// is what /api/stream/proxy's only 404 — `"No stream URL found"` — looks
+    /// like through AVFoundation; -1008 (NSURLErrorResourceUnavailable) is its
+    /// mid-stream sibling. An expired stream ticket is NOT in here on purpose:
+    /// that path answers 401, never 404, so it needs credentials and not
+    /// patience.
+    static let transientStreamErrorCodes: Set<Int> = [-1100, -1008]
+
+    /// Backoff for `transientStreamErrorCodes`, in seconds. Deliberately
+    /// longer than the old flat 1.5s: server-side extraction recovery (cookie
+    /// jar refresh, a freed yt-dlp concurrency slot, a POT retry) takes longer
+    /// than that, so the first attempt used to land while the bridge was still
+    /// in the failing state and burn the only retry the track got.
+    static let transientStreamRetryDelays: [Double] = [3.0, 9.0]
+
     /// Records an AVPlayer load/playback failure and either advances to the next track or, if
     /// failures are arriving in a tight loop (4+ within 5 seconds — e.g. a stale stream URL that
     /// fails instantly and `repeatMode == .one`/`.all` keeps re-triggering the same failure),
     /// stops playback entirely instead of spinning forever.
-    func handleLoadFailure(message: String, userFacingMessage: String, retryURL: URL? = nil) {
+    func handleLoadFailure(message: String, userFacingMessage: String, retryURL: URL? = nil, errorCode: Int? = nil) {
         appError(message, category: "audio")
         tearDownOpusPlayer()
         isPlaying = false
@@ -76,6 +92,29 @@ extension AudioPlayerManager {
             return
         }
 
+        // A transient bridge-side extraction failure gets its own, more
+        // patient schedule. The proxy URL is deterministic (same id/source/
+        // format every time — see StreamingService.streamURL), so there is
+        // nothing to re-resolve: the identical URL is exactly the right thing
+        // to ask for again, just not 1.5s later.
+        if let retryURL, !retryURL.isFileURL,
+           let errorCode, Self.transientStreamErrorCodes.contains(errorCode),
+           opusTransientRetryCount < Self.transientStreamRetryDelays.count {
+            let delay = Self.transientStreamRetryDelays[opusTransientRetryCount]
+            opusTransientRetryCount += 1
+            let attempt = opusTransientRetryCount
+            let retrySongID = currentSong?.id
+            let retryPosition = position
+            appWarn("Stream load failed with \(errorCode) (bridge had no stream yet) — retry \(attempt)/\(Self.transientStreamRetryDelays.count) in \(String(format: "%.0f", delay))s: \(retryURL.lastPathComponent)", category: "audio")
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                guard let self, self.currentSong?.id == retrySongID else { return }
+                self.isPlaying = true
+                self.scheduleWithOpusPlayer(url: retryURL, startTime: retryPosition)
+            }
+            return
+        }
+
         // One automatic retry for remote streams only — a corrupt local file
         // (also routed through this same handler, see scheduleWithOpusPlayer's
         // callers) fails identically every time, but a bridge stream-proxy
@@ -103,6 +142,25 @@ extension AudioPlayerManager {
             ToastCenter.shared.show("Couldn't play \"\(failedTrackName)\" — skipping", category: .error, icon: "exclamationmark.triangle.fill")
         }
         skipToNext()
+    }
+
+    /// The `NSURLErrorDomain` code anywhere in an error's underlying chain.
+    ///
+    /// Reading `(error as NSError).code` off the TOP level is not enough: a
+    /// transport failure frequently arrives wrapped, e.g.
+    /// `AVFoundationErrorDomain -11800 ← NSURLErrorDomain -1100`, where the
+    /// outer -11800 ("operation could not be completed") carries no retry
+    /// signal at all and the -1100 that does is one level down. Returns nil
+    /// when no URL-domain error is involved (a genuinely broken container, a
+    /// missing local file), which correctly declines the transient retry.
+    static func underlyingURLErrorCode(_ error: Error?) -> Int? {
+        guard let error else { return nil }
+        var current: NSError? = error as NSError
+        while let node = current {
+            if node.domain == NSURLErrorDomain { return node.code }
+            current = node.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return nil
     }
 
     /// `error?.localizedDescription` alone is frequently a useless generic
@@ -273,7 +331,8 @@ extension AudioPlayerManager {
                     self.handleLoadFailure(
                         message: "AVPlayer failed to load track — skipping. \(detail)",
                         userFacingMessage: "Could not play this track.",
-                        retryURL: url
+                        retryURL: url,
+                        errorCode: Self.underlyingURLErrorCode(item.error)
                     )
                 }
             } else if item.status == .readyToPlay {
@@ -305,7 +364,8 @@ extension AudioPlayerManager {
                 self.handleLoadFailure(
                     message: "AVPlayer playback failed — skipping. \(Self.describeLoadError(err))",
                     userFacingMessage: "Playback error.",
-                    retryURL: url
+                    retryURL: url,
+                    errorCode: Self.underlyingURLErrorCode(err)
                 )
             }
         }
