@@ -18,65 +18,52 @@ struct TVPlaylistsView: View {
     @ObservedObject var client: TVBridgeClient
     let token: String
 
-    private var columns: [GridItem] { TVGridLayout.columns() }
     @State private var showNewPlaylist = false
     @State private var renamingPlaylist: TVPlaylist?
 
-    var body: some View {
-        ScrollView {
-            if client.isLoadingPlaylists {
-                ProgressView("Loading your playlists…").padding(.top, 100)
-            } else if let err = client.playlistsError {
-                VStack(spacing: 20) {
-                    Image(systemName: "exclamationmark.icloud").font(.system(size: 70)).foregroundStyle(.secondary)
-                    Text(err).font(.title3).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                    Button("Retry") { Task { await client.fetchPlaylists(token: token) } }
-                        .frame(width: 260)
-                }
-                .padding(.top, 100)
-            } else if client.playlists.isEmpty {
-                VStack(spacing: 16) {
-                    Image(systemName: "music.note.list").font(.system(size: 70)).foregroundStyle(.secondary)
-                    Text("No playlists yet.")
-                        .font(.title3).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                    newPlaylistButton
-                }
-                .padding(.top, 120)
-            } else {
-                VStack(alignment: .leading, spacing: 40) {
-                    if let featured = client.playlists.first, !featured.tracks.isEmpty {
-                        featuredHero(featured)
-                    }
+    /// The first playlist with something in it gets the hero; the grid holds
+    /// the rest so nothing is shown twice.
+    private var featured: TVPlaylist? {
+        guard let first = client.playlists.first, !first.tracks.isEmpty else { return nil }
+        return first
+    }
 
-                    let rest = client.playlists.first?.tracks.isEmpty == false
-                        ? Array(client.playlists.dropFirst())
-                        : client.playlists
-                    LazyVGrid(columns: columns, spacing: 48) {
-                        newPlaylistCard
-                        ForEach(rest) { playlist in
-                            NavigationLink {
-                                TVPlaylistDetailView(client: client, token: token, playlist: playlist)
-                            } label: {
-                                playlistCard(playlist)
-                            }
-                            .buttonStyle(.card)
-                            .contextMenu {
-                                Button {
-                                    renamingPlaylist = playlist
-                                } label: {
-                                    Label("Rename", systemImage: "pencil")
-                                }
-                                Button(role: .destructive) {
-                                    Task { await client.deletePlaylist(id: playlist.id, token: token) }
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
-                            }
+    private var gridPlaylists: [TVPlaylist] {
+        featured == nil ? client.playlists : Array(client.playlists.dropFirst())
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            ScrollView {
+                if client.isLoadingPlaylists {
+                    TVLoadingState(text: "Loading your playlists…")
+                } else if let err = client.playlistsError {
+                    TVEmptyState(systemImage: "exclamationmark.icloud",
+                                 title: "Couldn't load playlists",
+                                 message: err) {
+                        Button {
+                            Task { await client.fetchPlaylists(token: token) }
+                        } label: {
+                            TVPillLabel(title: "Try Again", systemImage: "arrow.clockwise")
                         }
+                        .buttonStyle(.plain)
+                        .focusEffectDisabled()
                     }
-                    .padding(.horizontal, 60)
+                } else if client.playlists.isEmpty {
+                    TVEmptyState(systemImage: "music.note.list",
+                                 title: "No playlists yet",
+                                 message: "Make one here, or on your iPhone — playlists sync across your devices.") {
+                        Button {
+                            showNewPlaylist = true
+                        } label: {
+                            TVPillLabel(title: "New Playlist", systemImage: "plus")
+                        }
+                        .buttonStyle(.plain)
+                        .focusEffectDisabled()
+                    }
+                } else {
+                    content(width: geo.size.width)
                 }
-                .padding(.vertical, 50)
             }
         }
         .task {
@@ -94,74 +81,125 @@ struct TVPlaylistsView: View {
         }
     }
 
-    private var newPlaylistButton: some View {
-        Button {
-            showNewPlaylist = true
-        } label: {
-            Label("New Playlist", systemImage: "plus")
-        }
-        .buttonStyle(.card)
-    }
+    private func content(width: CGFloat) -> some View {
+        // Definite cell widths, for the same reason as TVCardGrid — that view
+        // owns its own ScrollView, so it can't sit under the hero here.
+        let count = max(2, min(4, TVAudioSettings.shared.gridColumns + 1))
+        let spacing: CGFloat = 40
+        let usable = width - TVMetrics.margin * 2 - spacing * CGFloat(count - 1)
+        let cell = max(140, usable / CGFloat(count))
 
-    private var newPlaylistCard: some View {
-        Button {
-            showNewPlaylist = true
-        } label: {
-            VStack(spacing: 10) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .strokeBorder(Color.accentColor.opacity(0.6), style: StrokeStyle(lineWidth: 2, dash: [10, 8]))
-                    Image(systemName: "plus").font(.system(size: 50)).foregroundStyle(Color.accentColor)
+        return VStack(alignment: .leading, spacing: TVMetrics.section) {
+            VStack(alignment: .leading, spacing: 0) {
+                TVScreenTitle(title: "Playlists",
+                              detail: "\(client.playlists.count) \(client.playlists.count == 1 ? "playlist" : "playlists")")
+                if let featured {
+                    featuredHero(featured)
                 }
-                .frame(maxWidth: .infinity)
-                    .aspectRatio(1, contentMode: .fit)
-                Text("New Playlist").font(.headline)
             }
-            .frame(maxWidth: .infinity)
+
+            VStack(alignment: .leading, spacing: 24) {
+                TVSectionHeader(title: featured == nil ? "Your Playlists" : "More Playlists")
+                    .padding(.horizontal, TVMetrics.margin)
+
+                LazyVGrid(
+                    columns: Array(repeating: GridItem(.fixed(cell), spacing: spacing), count: count),
+                    alignment: .leading,
+                    spacing: spacing + 16
+                ) {
+                    newPlaylistCard(width: cell)
+                    ForEach(gridPlaylists) { playlist in
+                        NavigationLink {
+                            TVPlaylistDetailView(client: client, token: token, playlist: playlist)
+                        } label: {
+                            playlistCard(playlist, width: cell)
+                        }
+                        .buttonStyle(.plain)
+                        .focusEffectDisabled()
+                        .contextMenu { playlistMenu(playlist) }
+                    }
+                }
+                .padding(.horizontal, TVMetrics.margin)
+            }
         }
-        .buttonStyle(.card)
+        .padding(.bottom, 80)
     }
 
-    /// A big top-of-screen treatment for the first (most recently created)
-    /// playlist — same `TVHeroBanner` component the Home hub uses, so
-    /// Playlists doesn't read as "just a grid" either.
+    @ViewBuilder
+    private func playlistMenu(_ playlist: TVPlaylist) -> some View {
+        Button {
+            renamingPlaylist = playlist
+        } label: {
+            Label("Rename", systemImage: "pencil")
+        }
+        Button(role: .destructive) {
+            Task { await client.deletePlaylist(id: playlist.id, token: token) }
+        } label: {
+            Label("Delete", systemImage: "trash")
+        }
+    }
+
+    private func newPlaylistCard(width: CGFloat) -> some View {
+        Button {
+            showNewPlaylist = true
+        } label: {
+            TVArtworkCardLabel(title: "New Playlist", subtitle: "Start from scratch", width: width) {
+                ZStack {
+                    Color.white.opacity(0.04)
+                    RoundedRectangle(cornerRadius: TVMetrics.cardCorner, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.25),
+                                      style: StrokeStyle(lineWidth: 2, dash: [12, 10]))
+                    Image(systemName: "plus")
+                        .font(.system(size: width * 0.2, weight: .semibold))
+                        .foregroundStyle(TVPalette.brandVertical)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+    }
+
+    /// The first playlist as the hero — same component Home uses.
+    @ViewBuilder
     private func featuredHero(_ playlist: TVPlaylist) -> some View {
         let queue = playlist.tracks.compactMap { client.playable(from: $0, token: token) }
-        return Group {
-            if let first = queue.first {
-                TVHeroBanner(
-                    eyebrow: "Featured Playlist",
-                    title: playlist.name,
-                    subtitle: "\(playlist.tracks.count) \(playlist.tracks.count == 1 ? "song" : "songs")",
-                    art: {
-                        TVArtPlaceholder(systemImage: "music.note.list", iconScale: 2.4)
-                    },
-                    playButton: {
+        if let first = queue.first {
+            TVHeroBanner(
+                eyebrow: "Featured Playlist",
+                title: playlist.name,
+                subtitle: playlist.description.flatMap { $0.isEmpty ? nil : $0 }
+                    ?? tvSongCount(playlist.tracks.count),
+                art: {
+                    TVPlaylistArtwork(name: playlist.name,
+                                      artworkURLs: client.artworkURLs(for: playlist, token: token),
+                                      token: token)
+                },
+                playButton: {
+                    HStack(spacing: 22) {
                         NavigationLink(value: TVPlayContext(queue: queue, startID: first.id)) {
-                            Label("Play", systemImage: "play.fill")
-                                .font(.system(size: 24, weight: .bold))
-                                .padding(.horizontal, 12)
+                            TVPillLabel(title: "Play", systemImage: "play.fill")
                         }
-                        .buttonStyle(.card)
+                        .buttonStyle(.plain)
+                        .focusEffectDisabled()
+                        NavigationLink {
+                            TVPlaylistDetailView(client: client, token: token, playlist: playlist)
+                        } label: {
+                            TVPillLabel(title: "Open", systemImage: "list.bullet", style: .secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .focusEffectDisabled()
                     }
-                )
-            }
+                }
+            )
         }
     }
 
-    private func playlistCard(_ playlist: TVPlaylist) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            TVArtPlaceholder(systemImage: "music.note.list", iconScale: 1.15)
-                .frame(maxWidth: .infinity)
-                    .aspectRatio(1, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
-
-            Text(playlist.name).font(.headline).lineLimit(2, reservesSpace: true)
-            Text("\(playlist.tracks.count) \(playlist.tracks.count == 1 ? "song" : "songs")")
-                .font(.subheadline).foregroundStyle(.secondary)
+    private func playlistCard(_ playlist: TVPlaylist, width: CGFloat) -> some View {
+        TVArtworkCardLabel(title: playlist.name, subtitle: tvSongCount(playlist.tracks.count), width: width) {
+            TVPlaylistArtwork(name: playlist.name,
+                              artworkURLs: client.artworkURLs(for: playlist, token: token),
+                              token: token)
         }
-        .frame(width: 210)
     }
 }
 
@@ -185,70 +223,77 @@ struct TVPlaylistDetailView: View {
         current.tracks.compactMap { client.playable(from: $0, token: token) }
     }
 
+    private var meta: String {
+        let playable = queue.count
+        let total = current.tracks.count
+        if playable == total { return tvSongCount(total) }
+        return "\(tvSongCount(total)) · \(playable) playable on Apple TV"
+    }
+
     var body: some View {
+        let urls = client.artworkURLs(for: current, token: token)
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(current.name).font(.system(size: 40, weight: .bold))
-                    if let description = current.description, !description.isEmpty {
-                        Text(description).font(.title3).foregroundStyle(.secondary)
-                    }
+            VStack(alignment: .leading, spacing: 40) {
+                TVDetailHeader(
+                    eyebrow: "Playlist",
+                    title: current.name,
+                    subtitle: current.description,
+                    meta: meta
+                ) {
+                    TVPlaylistArtwork(name: current.name, artworkURLs: urls, token: token, showsTitle: false)
+                } actions: {
                     if let first = queue.first {
                         NavigationLink(value: TVPlayContext(queue: queue, startID: first.id)) {
-                            Label("Play", systemImage: "play.fill")
+                            TVPillLabel(title: "Play", systemImage: "play.fill")
                         }
-                        .buttonStyle(.card)
-                        .padding(.top, 10)
+                        .buttonStyle(.plain)
+                        .focusEffectDisabled()
                     }
                 }
 
                 if current.tracks.isEmpty {
-                    Text("This playlist is empty.").font(.title3).foregroundStyle(.secondary)
+                    TVEmptyState(systemImage: "music.note.list",
+                                 title: "This playlist is empty",
+                                 message: "Press and hold Select on any song and choose Add to Playlist.")
                 } else {
-                    VStack(spacing: 0) {
+                    TVTrackList {
                         ForEach(current.tracks) { track in
                             row(for: track)
                         }
                     }
                 }
             }
-            .padding(TVMetrics.margin)
+            .padding(.bottom, 80)
         }
-        .tvAmbientBackground()
+        .background(TVCollectionBackdrop(url: urls.first, token: token))
     }
 
     @ViewBuilder
     private func row(for track: TVPlaylistTrack) -> some View {
-        let content = HStack(spacing: 24) {
-            Image(systemName: track.isRemotelyPlayable ? "music.note" : "iphone.slash")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-                .frame(width: 44)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(track.title).font(.title3)
-                Text(track.artist?.isEmpty == false ? track.artist! : "Unknown Artist")
-                    .font(.callout).foregroundStyle(.secondary)
-            }
-            Spacer()
-            if !track.isRemotelyPlayable {
-                Text("Not available on Apple TV")
-                    .font(.callout).foregroundStyle(.secondary)
-            }
-        }
-        .padding(.vertical, 14)
-        .padding(.horizontal, 20)
-        .contentShape(Rectangle())
+        let playable = client.playable(from: track, token: token)
+        let label = TVTrackRow(
+            artworkURL: playable?.artworkURL,
+            token: token,
+            title: track.title,
+            artist: track.artist ?? "",
+            detail: track.durationSeconds.flatMap { Double($0).tvDurationText },
+            unavailableReason: playable == nil ? "Only on iPhone" : nil
+        )
 
         Group {
-            if track.isRemotelyPlayable, let playable = client.playable(from: track, token: token) {
+            if let playable {
                 NavigationLink(value: TVPlayContext(queue: queue, startID: playable.id)) {
-                    content
+                    label
                 }
-                .buttonStyle(.card)
             } else {
-                content.opacity(0.5)
+                // Still focusable, so the context menu (Remove) can reach it —
+                // a dead row you can see but not act on is worse than one that
+                // explains itself.
+                Button {} label: { label }
             }
         }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
         .contextMenu {
             Button(role: .destructive) {
                 Task { await client.removeTrack(track.id, fromPlaylist: playlist.id, token: token) }

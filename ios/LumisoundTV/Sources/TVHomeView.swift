@@ -34,14 +34,28 @@ struct TVHomeView: View {
 
     private var heroTrack: UserMusicTrack? { recentlyAdded.first }
 
+    /// "Good evening, Sam" — the one line of Home that is about the person
+    /// rather than the library.
+    private var greeting: String {
+        let hour = Calendar.current.component(.hour, from: Date())
+        let part = hour < 5 ? "Good night" : hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"
+        if let name = TVAccount.shared.user?.name, !name.isEmpty, name != "You" {
+            return "\(part), \(name)"
+        }
+        return part
+    }
+
     private var discoverQueue: [TVPlayable] {
         client.discoverMix.compactMap { client.playable(from: $0) }
     }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 56) {
-                hero
+            VStack(alignment: .leading, spacing: TVMetrics.section) {
+                VStack(alignment: .leading, spacing: 0) {
+                    TVScreenTitle(title: greeting, eyebrow: "Home")
+                    hero
+                }
                 ariaShelf
                 recentlyAddedShelf
                 yourPlaylistsShelf
@@ -90,8 +104,8 @@ struct TVHomeView: View {
     @ViewBuilder
     private var ariaShelf: some View {
         if let pick = aria.dailyPick, pick.isPresent {
-            VStack(alignment: .leading, spacing: 20) {
-                TVSectionHeader(title: "From Aria")
+            VStack(alignment: .leading, spacing: 22) {
+                TVSectionHeader(title: "From Aria", subtitle: "Picked for you today")
                     .padding(.horizontal, TVMetrics.margin)
                 TVAriaDailyPickCard(pick: pick)
                     .padding(.horizontal, TVMetrics.margin)
@@ -115,34 +129,40 @@ struct TVHomeView: View {
                 },
                 playButton: {
                     NavigationLink(value: TVPlayContext(queue: libraryQueue, startID: first.id)) {
-                        Label("Play", systemImage: "play.fill")
-                            .font(.system(size: 24, weight: .bold))
-                            .padding(.horizontal, 12)
+                        TVPillLabel(title: "Play", systemImage: "play.fill")
                     }
-                    .buttonStyle(.card)
+                    .buttonStyle(.plain)
+                    .focusEffectDisabled()
                 }
             )
         } else if client.isLoadingLibrary {
-            VStack {
-                ProgressView("Loading your library…")
-            }
-            .frame(height: 620)
-            .frame(maxWidth: .infinity)
+            TVLoadingState(text: "Loading your library…")
+                .frame(height: 400)
         } else {
             emptyHero
         }
     }
 
     private var emptyHero: some View {
-        VStack(spacing: 18) {
-            Image(systemName: "sparkles.tv").font(.system(size: 80)).foregroundStyle(.secondary)
-            Text("Welcome to Lumisound").font(.system(size: 40, weight: .bold))
-            Text("Add music to your Personal Cloud Library from the iPhone app to see it here.")
-                .font(.title3).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                .frame(maxWidth: 700)
+        VStack(spacing: 26) {
+            TVBrandMark(height: 70)
+            Text("Welcome to Lumisound")
+                .font(.system(size: 48, weight: .heavy, design: .rounded))
+            Text("Add music to your Personal Cloud Library from the iPhone app and it will appear here, ready to play.")
+                .font(TVType.body)
+                .foregroundStyle(TVPalette.textSecondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 760)
         }
-        .frame(height: 620)
+        .frame(height: 460)
         .frame(maxWidth: .infinity)
+        .background {
+            RoundedRectangle(cornerRadius: 36, style: .continuous)
+                .fill(TVPalette.brand)
+                .opacity(0.18)
+        }
+        .padding(.horizontal, TVMetrics.margin)
+        .padding(.top, 36)
     }
 
     // MARK: Recently Added
@@ -161,7 +181,8 @@ struct TVHomeView: View {
                         NavigationLink(value: TVPlayContext(queue: libraryQueue, startID: track.id)) {
                             libraryCard(track)
                         }
-                        .buttonStyle(.card)
+                        .buttonStyle(.plain)
+                        .focusEffectDisabled()
                         .tvTrackActions(client: client, token: token, track: track)
                     }
                 },
@@ -171,20 +192,15 @@ struct TVHomeView: View {
     }
 
     private func libraryCard(_ track: UserMusicTrack) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        TVArtworkCardLabel(
+            title: track.displayTitle,
+            subtitle: track.artist.isEmpty ? "Unknown Artist" : track.artist,
+            width: TVMetrics.shelfCard
+        ) {
             TVAuthImage(url: client.userMusicArtworkURL(for: track), token: token) {
                 TVArtPlaceholder(systemImage: "music.note")
             }
-            .frame(width: 210, height: 210)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
-
-            Text(track.displayTitle)
-                .font(.headline).lineLimit(2, reservesSpace: true)
-            Text(track.artist.isEmpty ? "Unknown Artist" : track.artist)
-                .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
         }
-        .frame(width: 210)
     }
 
     // MARK: Your Playlists
@@ -201,7 +217,8 @@ struct TVHomeView: View {
                         } label: {
                             playlistCard(playlist)
                         }
-                        .buttonStyle(.card)
+                        .buttonStyle(.plain)
+                        .focusEffectDisabled()
                     }
                 },
                 seeAll: { TVPlaylistsView(client: client, token: token) }
@@ -210,17 +227,15 @@ struct TVHomeView: View {
     }
 
     private func playlistCard(_ playlist: TVPlaylist) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            TVArtPlaceholder(systemImage: "music.note.list", iconScale: 1.15)
-                .frame(width: 210, height: 210)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
-
-            Text(playlist.name).font(.headline).lineLimit(2, reservesSpace: true)
-            Text("\(playlist.tracks.count) \(playlist.tracks.count == 1 ? "song" : "songs")")
-                .font(.subheadline).foregroundStyle(.secondary)
+        TVArtworkCardLabel(
+            title: playlist.name,
+            subtitle: tvSongCount(playlist.tracks.count),
+            width: TVMetrics.shelfCard
+        ) {
+            TVPlaylistArtwork(name: playlist.name,
+                              artworkURLs: client.artworkURLs(for: playlist, token: token),
+                              token: token)
         }
-        .frame(width: 210)
     }
 
     // MARK: Discover Mix
@@ -236,7 +251,8 @@ struct TVHomeView: View {
                         NavigationLink(value: TVPlayContext(queue: discoverQueue, startID: track.id)) {
                             TVTrackCard(track: track)
                         }
-                        .buttonStyle(.card)
+                        .buttonStyle(.plain)
+                        .focusEffectDisabled()
                         .tvSearchTrackActions(client: client, token: token, track: track)
                     }
                 },
@@ -260,7 +276,8 @@ struct TVHomeView: View {
                         } label: {
                             smartPlaylistCard(bucket)
                         }
-                        .buttonStyle(.card)
+                        .buttonStyle(.plain)
+                        .focusEffectDisabled()
                     }
                 },
                 seeAll: { TVDiscoverView(client: client, token: token) }
@@ -269,28 +286,16 @@ struct TVHomeView: View {
     }
 
     private func smartPlaylistCard(_ bucket: TVSmartPlaylistBucket) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            TVArtPlaceholder(systemImage: smartPlaylistIcon(bucket.key), iconScale: 1.15)
-                .frame(width: 210, height: 210)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
-
-            Text(bucket.name).font(.headline)
-            Text("\(bucket.tracks.count) \(bucket.tracks.count == 1 ? "song" : "songs")")
-                .font(.subheadline).foregroundStyle(.secondary)
-        }
-        .frame(width: 210)
-    }
-
-    private func smartPlaylistIcon(_ key: String) -> String {
-        switch key {
-        case "energetic": return "bolt.fill"
-        case "focus": return "brain.head.profile"
-        case "chill": return "cloud.fill"
-        case "sleep": return "moon.zzz.fill"
-        default: return "music.note.list"
+        TVArtworkCardLabel(
+            title: bucket.name,
+            subtitle: tvSongCount(bucket.tracks.count),
+            width: TVMetrics.shelfCard
+        ) {
+            TVGeneratedArt(seed: bucket.key, systemImage: tvSmartPlaylistIcon(bucket.key),
+                           title: bucket.name)
         }
     }
+
 
     // MARK: On This Day
 
@@ -305,7 +310,8 @@ struct TVHomeView: View {
                         NavigationLink(value: TVPlayContext(queue: queue, startID: track.id)) {
                             TVTrackCard(track: track)
                         }
-                        .buttonStyle(.card)
+                        .buttonStyle(.plain)
+                        .focusEffectDisabled()
                         .tvSearchTrackActions(client: client, token: token, track: track)
                     }
                 },

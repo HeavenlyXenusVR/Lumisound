@@ -22,10 +22,10 @@ struct TVAvatarView: View {
     var body: some View {
         TVAuthImage(url: user?.avatarURL(baseURL: baseURL), token: nil) {
             ZStack {
-                Circle().fill(TVPalette.surface)
-                Image(systemName: "person.fill")
-                    .font(.system(size: diameter * 0.46, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.55))
+                TVGeneratedArt(seed: user?.name ?? "", systemImage: "person.fill")
+                Text(String((user?.name ?? "?").prefix(1)).uppercased())
+                    .font(.system(size: diameter * 0.42, weight: .heavy, design: .rounded))
+                    .foregroundStyle(.white)
             }
         }
         .frame(width: diameter, height: diameter)
@@ -33,16 +33,12 @@ struct TVAvatarView: View {
         .overlay {
             if showsRing {
                 Circle()
-                    .strokeBorder(
-                        LinearGradient(colors: [TVPalette.neon, TVPalette.neonAlt],
-                                       startPoint: .topLeading, endPoint: .bottomTrailing),
-                        lineWidth: 3
-                    )
+                    .strokeBorder(TVPalette.brand, lineWidth: 4)
             } else {
                 Circle().strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
             }
         }
-        .shadow(color: showsRing ? TVPalette.neon.opacity(0.45) : .clear, radius: 20)
+        .shadow(color: showsRing ? TVPalette.violet.opacity(0.5) : .clear, radius: 24, y: 8)
     }
 }
 
@@ -143,10 +139,17 @@ struct TVSocialActivityFeed: View {
     var body: some View {
         VStack(alignment: .leading, spacing: TVMetrics.row) {
             if activity.isEmpty {
-                Text("No shared listening activity yet.\nActivity appears here when people you listen alongside opt in.")
-                    .font(TVType.rowDetail)
-                    .foregroundStyle(.white.opacity(0.4))
-                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 20) {
+                    Image(systemName: "person.2.wave.2.fill")
+                        .font(.system(size: 26))
+                        .foregroundStyle(TVPalette.brandVertical)
+                    Text("No shared listening activity yet. Activity appears here when people you listen alongside opt in.")
+                        .font(TVType.rowDetail)
+                        .foregroundStyle(TVPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(24)
+                .tvNeonCard(cornerRadius: 22)
             } else {
                 // Not focusable: a feed of what other people played is a
                 // readout, and nothing here has an action behind it — their
@@ -157,10 +160,9 @@ struct TVSocialActivityFeed: View {
                     HStack(spacing: 18) {
                         TVAuthImage(url: entry.avatarLink, token: nil) {
                             ZStack {
-                                Circle().fill(TVPalette.surface)
-                                Image(systemName: "person.fill")
-                                    .font(.system(size: 22))
-                                    .foregroundStyle(.white.opacity(0.5))
+                                TVGeneratedArt(seed: entry.name, systemImage: "person.fill")
+                                Text(String(entry.name.prefix(1)).uppercased())
+                                    .font(.system(size: 24, weight: .heavy, design: .rounded))
                             }
                         }
                         .frame(width: 56, height: 56)
@@ -173,7 +175,7 @@ struct TVSocialActivityFeed: View {
                                 .lineLimit(1)
                             Text("\(entry.name) · \(entry.artist ?? "Unknown Artist")")
                                 .font(.system(size: 19))
-                                .foregroundStyle(.white.opacity(0.45))
+                                .foregroundStyle(TVPalette.textTertiary)
                                 .lineLimit(1)
                         }
 
@@ -181,11 +183,11 @@ struct TVSocialActivityFeed: View {
 
                         Text(entry.relativeTime)
                             .font(TVType.meta)
-                            .foregroundStyle(.white.opacity(0.4))
+                            .foregroundStyle(TVPalette.textTertiary)
                     }
                     .padding(.horizontal, 20)
                     .padding(.vertical, 12)
-                    .tvNeonCard()
+                    .tvNeonCard(cornerRadius: 22)
                 }
             }
         }

@@ -16,19 +16,22 @@ struct TVStatsView: View {
     var body: some View {
         ScrollView {
             if client.isLoadingStats && client.stats == nil {
-                ProgressView("Loading your stats…").padding(.top, 100)
+                TVLoadingState(text: "Loading your stats…")
             } else {
-                VStack(alignment: .leading, spacing: 50) {
+                VStack(alignment: .leading, spacing: TVMetrics.section) {
+                    TVScreenTitle(title: "Listening Stats", eyebrow: "Account")
                     lifetimeSection.padding(.horizontal, TVMetrics.margin)
-                    topArtistsShelf
-                    topTracksShelf
-                    VStack(alignment: .leading, spacing: 50) {
+                    HStack(alignment: .top, spacing: 40) {
                         weeklySection
-                        badgesSection
+                        streakCard
                     }
                     .padding(.horizontal, TVMetrics.margin)
+                    topArtistsShelf
+                    topTracksShelf
+                    badgesSection
+                        .padding(.horizontal, TVMetrics.margin)
                 }
-                .padding(.vertical, 60)
+                .padding(.bottom, 80)
             }
         }
         .tvAmbientBackground()
@@ -39,15 +42,72 @@ struct TVStatsView: View {
 
     // MARK: Lifetime summary
 
+    /// The two headline numbers, big. Everything else on the screen is detail
+    /// under these.
     private var lifetimeSection: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            TVSectionHeader(title: "Listening Stats")
+        HStack(spacing: 30) {
+            heroNumber(value: "\(client.stats?.totalPlays ?? 0)", label: "Total plays",
+                       systemImage: "play.fill")
+            heroNumber(value: formattedListenTime(client.stats?.totalListenSeconds ?? 0),
+                       label: "Time listening", systemImage: "clock.fill")
+        }
+    }
 
-            HStack(spacing: 40) {
-                statTile("Total Plays", value: "\(client.stats?.totalPlays ?? 0)")
-                statTile("Listening Time", value: formattedListenTime(client.stats?.totalListenSeconds ?? 0))
-                statTile("Current Streak", value: streakLabel(client.achievements?.currentStreakDays ?? 0))
-                statTile("Longest Streak", value: streakLabel(client.achievements?.longestStreakDays ?? 0))
+    private func heroNumber(value: String, label: String, systemImage: String) -> some View {
+        HStack(spacing: 26) {
+            Image(systemName: systemImage)
+                .font(.system(size: 30, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 76, height: 76)
+                .background(Circle().fill(TVPalette.brand))
+                .shadow(color: TVPalette.violet.opacity(0.5), radius: 16, y: 6)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(value)
+                    .font(.system(size: 64, weight: .heavy, design: .rounded).monospacedDigit())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
+                Text(label.uppercased())
+                    .font(TVType.eyebrow)
+                    .tracking(2)
+                    .foregroundStyle(TVPalette.textTertiary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(30)
+        .frame(maxWidth: .infinity)
+        .tvGlassPanel()
+    }
+
+    private var streakCard: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            Text("STREAKS")
+                .font(TVType.eyebrow)
+                .tracking(2.4)
+                .foregroundStyle(TVPalette.neonAlt)
+            streakLine(days: client.achievements?.currentStreakDays ?? 0, label: "Current",
+                       systemImage: "flame.fill",
+                       color: Color(red: 1.0, green: 0.55, blue: 0.3))
+            streakLine(days: client.achievements?.longestStreakDays ?? 0, label: "Longest",
+                       systemImage: "trophy.fill",
+                       color: Color(red: 1.0, green: 0.80, blue: 0.32))
+        }
+        .padding(30)
+        .frame(width: 380, height: 300, alignment: .topLeading)
+        .tvGlassPanel()
+    }
+
+    private func streakLine(days: Int, label: String, systemImage: String, color: Color) -> some View {
+        HStack(spacing: 18) {
+            Image(systemName: systemImage)
+                .font(.system(size: 28))
+                .foregroundStyle(color)
+                .frame(width: 40)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(streakLabel(days))
+                    .font(.system(size: 34, weight: .bold, design: .rounded).monospacedDigit())
+                Text(label)
+                    .font(TVType.rowDetail)
+                    .foregroundStyle(TVPalette.textTertiary)
             }
         }
     }
@@ -55,7 +115,7 @@ struct TVStatsView: View {
     @ViewBuilder
     private var topArtistsShelf: some View {
         if let stats = client.stats, !stats.topArtists.isEmpty {
-            TVShelfSection(title: "Top Artists") {
+            TVShelfSection(title: "Top Artists", subtitle: "Who you play most") {
                 ForEach(Array(stats.topArtists.enumerated()), id: \.element.id) { index, artist in
                     rankCard(rank: index + 1, primary: artist.artist, secondary: nil, count: artist.playCount)
                 }
@@ -66,7 +126,7 @@ struct TVStatsView: View {
     @ViewBuilder
     private var topTracksShelf: some View {
         if let stats = client.stats, !stats.topTracks.isEmpty {
-            TVShelfSection(title: "Top Tracks") {
+            TVShelfSection(title: "Top Tracks", subtitle: "Your most-played songs") {
                 ForEach(Array(stats.topTracks.enumerated()), id: \.element.id) { index, track in
                     rankCard(rank: index + 1, primary: track.title, secondary: track.artist, count: track.playCount)
                 }
@@ -74,70 +134,78 @@ struct TVStatsView: View {
         }
     }
 
+    /// A ranked entry: the big numeral IS the design — generated art seeded by
+    /// the name gives each card its own colour so a row of them isn't a row of
+    /// identical grey boxes.
     private func rankCard(rank: Int, primary: String, secondary: String?, count: Int) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("#\(rank)")
-                    .font(.system(size: 30, weight: .heavy).monospacedDigit())
-                    .foregroundStyle(Color.accentColor)
-                Spacer()
+        ZStack(alignment: .bottomLeading) {
+            TVGeneratedArt(seed: primary, systemImage: secondary == nil ? "music.mic" : "music.note")
+            LinearGradient(colors: [.clear, .black.opacity(0.65)], startPoint: .center, endPoint: .bottom)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(rank)")
+                    .font(.system(size: 64, weight: .heavy, design: .rounded))
+                    .foregroundStyle(.white)
+                    .shadow(color: .black.opacity(0.3), radius: 8, y: 3)
+                Spacer(minLength: 0)
+                Text(primary)
+                    .font(.system(size: 22, weight: .bold))
+                    .lineLimit(2)
+                if let secondary, !secondary.isEmpty {
+                    Text(secondary)
+                        .font(.system(size: 18))
+                        .foregroundStyle(.white.opacity(0.75))
+                        .lineLimit(1)
+                }
                 Text("\(count) plays")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(TVType.meta)
+                    .foregroundStyle(.white.opacity(0.75))
             }
-            Spacer(minLength: 4)
-            Text(primary).font(.headline).lineLimit(2)
-            if let secondary, !secondary.isEmpty {
-                Text(secondary).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-            }
+            .padding(22)
         }
-        .padding(20)
-        .frame(width: 240, height: 200, alignment: .topLeading)
-        .tvGlassPanel()
-    }
-
-    private func statTile(_ label: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(value)
-                .font(.system(size: 30, weight: .bold).monospacedDigit())
-                .foregroundStyle(
-                    LinearGradient(colors: [.white, Color.accentColor],
-                                   startPoint: .leading, endPoint: .trailing)
-                )
-            Text(label).font(.callout).foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(20)
-        .tvGlassPanel()
+        .frame(width: 250, height: 250)
+        .clipShape(RoundedRectangle(cornerRadius: TVMetrics.cardCorner, style: .continuous))
+        .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
     }
 
     // MARK: Weekly activity
 
     private var weeklySection: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            TVSectionHeader(title: "This Week")
+        VStack(alignment: .leading, spacing: 22) {
+            Text("THIS WEEK")
+                .font(TVType.eyebrow)
+                .tracking(2.4)
+                .foregroundStyle(TVPalette.neonAlt)
             if client.weeklyStats.isEmpty {
                 Text("No listening activity in the last 7 days yet.")
-                    .font(.title3).foregroundStyle(.secondary)
+                    .font(TVType.body)
+                    .foregroundStyle(TVPalette.textTertiary)
+                    .frame(maxHeight: .infinity)
             } else {
                 let maxSeconds = max(1, client.weeklyStats.map(\.listenSeconds).max() ?? 1)
-                HStack(alignment: .bottom, spacing: 24) {
+                HStack(alignment: .bottom, spacing: 28) {
                     ForEach(client.weeklyStats) { day in
                         VStack(spacing: 10) {
                             Text("\(day.plays)")
-                                .font(.callout.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(Color.accentColor.opacity(day.listenSeconds > 0 ? 0.85 : 0.15))
-                                .frame(width: 44, height: max(6, 140 * CGFloat(day.listenSeconds) / CGFloat(maxSeconds)))
+                                .font(TVType.meta)
+                                .foregroundStyle(TVPalette.textSecondary)
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(day.listenSeconds > 0 ? AnyShapeStyle(TVPalette.brandVertical)
+                                      : AnyShapeStyle(Color.white.opacity(0.1)))
+                                .frame(width: 54, height: max(8, 150 * CGFloat(day.listenSeconds) / CGFloat(maxSeconds)))
+                                .shadow(color: day.listenSeconds > 0 ? TVPalette.violet.opacity(0.4) : .clear,
+                                        radius: 10, y: 4)
                             Text(weekdayLabel(day.date))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                                .foregroundStyle(TVPalette.textTertiary)
                         }
                     }
                 }
-                .frame(height: 190, alignment: .bottom)
+                .frame(height: 200, alignment: .bottom)
             }
         }
+        .padding(30)
+        .frame(maxWidth: .infinity, minHeight: 300, maxHeight: 300, alignment: .topLeading)
+        .tvGlassPanel()
     }
 
     private func weekdayLabel(_ isoDate: String) -> String {
@@ -153,11 +221,12 @@ struct TVStatsView: View {
     // MARK: Achievements
 
     private var badgesSection: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            TVSectionHeader(title: "Achievements")
-            let unlocked = Set(client.achievements?.badges ?? [])
-            let columns = [GridItem(.adaptive(minimum: 160), spacing: 24)]
-            LazyVGrid(columns: columns, spacing: 24) {
+        let unlocked = Set(client.achievements?.badges ?? [])
+        let unlockedCount = TVBadge.all.filter { unlocked.contains($0.id) }.count
+        return VStack(alignment: .leading, spacing: 24) {
+            TVSectionHeader(title: "Achievements",
+                            subtitle: "\(unlockedCount) of \(TVBadge.all.count) unlocked")
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 24)], spacing: 30) {
                 ForEach(TVBadge.all) { badge in
                     badgeCell(badge, isUnlocked: unlocked.contains(badge.id))
                 }
@@ -166,20 +235,25 @@ struct TVStatsView: View {
     }
 
     private func badgeCell(_ badge: TVBadge, isUnlocked: Bool) -> some View {
-        VStack(spacing: 10) {
-            Image(systemName: badge.icon)
-                .font(.system(size: 34))
-                .foregroundStyle(isUnlocked ? Color.accentColor : Color.secondary)
-                .frame(width: 90, height: 90)
-                .background(.white.opacity(isUnlocked ? 0.12 : 0.05), in: Circle())
-                .shadow(color: isUnlocked ? Color.accentColor.opacity(0.55) : .clear, radius: isUnlocked ? 16 : 0)
+        VStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(isUnlocked ? AnyShapeStyle(TVPalette.brand) : AnyShapeStyle(Color.white.opacity(0.06)))
+                Circle()
+                    .strokeBorder(Color.white.opacity(isUnlocked ? 0.3 : 0.1), lineWidth: 1)
+                Image(systemName: isUnlocked ? badge.icon : "lock.fill")
+                    .font(.system(size: isUnlocked ? 36 : 26, weight: .semibold))
+                    .foregroundStyle(isUnlocked ? Color.white : TVPalette.textTertiary)
+            }
+            .frame(width: 100, height: 100)
+            .shadow(color: isUnlocked ? TVPalette.violet.opacity(0.5) : .clear, radius: 18, y: 6)
             Text(badge.title)
-                .font(.callout)
+                .font(.system(size: 18, weight: .semibold, design: .rounded))
                 .multilineTextAlignment(.center)
-                .foregroundStyle(isUnlocked ? Color.primary : Color.secondary)
+                .lineLimit(2, reservesSpace: true)
+                .foregroundStyle(isUnlocked ? Color.white : TVPalette.textTertiary)
         }
-        .opacity(isUnlocked ? 1 : 0.5)
-        .frame(width: 160)
+        .frame(width: 170)
     }
 
     private func streakLabel(_ days: Int) -> String {

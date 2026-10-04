@@ -26,8 +26,10 @@ import SwiftUI
 // rail's items): read `isFocused` off the environment inside a `.plain` button's
 // label rather than having the row manage focus itself.
 //
-// The row is a neon card (see `TVNeonCard`) whose rim lights on focus, with a
-// play affordance on the trailing edge. Focus does NOT invert the row to a white
+// Prism pass: a resting row has no card at all — just artwork and text on the
+// backdrop — and the focused row lifts onto a lit surface with a gradient play
+// affordance. Thirty outlined boxes down a screen made the outlines the most
+// visible thing in the list. Focus does NOT invert the row to a white
 // fill, which is what it did when rows were introduced: at 10 feet a white bar
 // across the screen is a flashbulb, it flattens the depth the rest of the layout
 // has, and it forced every piece of text on the row to carry a second colour for
@@ -44,41 +46,29 @@ struct TVTrackRow: View {
     /// Shown in place of artwork when there is none worth loading.
     var placeholderSymbol: String = "music.note"
     /// Position in an ordered set (album track 1, 2, 3…). When set, the number
-    /// takes the artwork's place: inside a single album or genre every row would
-    /// otherwise show the *same* cover repeated down the screen, which fills the
-    /// most prominent column with the least informative thing on the row.
+    /// takes the artwork's place: inside a single album every row would
+    /// otherwise show the *same* cover repeated down the screen.
     var trackNumber: Int? = nil
+    /// Greys the row out and replaces the play affordance with a note — for
+    /// playlist entries that only exist on another device.
+    var unavailableReason: String? = nil
 
     @Environment(\.isFocused) private var isFocused
 
+    private var isAvailable: Bool { unavailableReason == nil }
+
     var body: some View {
         HStack(spacing: 24) {
-            if let trackNumber {
-                Text("\(trackNumber)")
-                    .font(TVType.meta)
-                    .foregroundStyle(isFocused ? Color.white : Color.white.opacity(0.45))
-                    .frame(width: 46, alignment: .trailing)
-            } else {
-                TVAuthImage(url: artworkURL, token: token) {
-                    TVArtPlaceholder(systemImage: placeholderSymbol, iconScale: 0.5)
-                }
-                .frame(width: 72, height: 72)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
-                }
-                .shadow(color: .black.opacity(0.45), radius: isFocused ? 14 : 6, y: 4)
-            }
+            leading
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(TVType.rowTitle)
                     .foregroundStyle(.white)
                     .lineLimit(1)
                 Text(artist.isEmpty ? "Unknown Artist" : artist)
                     .font(TVType.rowDetail)
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(isFocused ? TVPalette.textSecondary : TVPalette.textTertiary)
                     .lineLimit(1)
             }
 
@@ -86,37 +76,73 @@ struct TVTrackRow: View {
 
             if isFavorite {
                 Image(systemName: "star.fill")
-                    .font(.system(size: 20))
-                    .foregroundStyle(TVPalette.neonAlt)
-                    .shadow(color: TVPalette.neonAlt.opacity(0.8), radius: 8)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(TVPalette.brand)
             }
-            if let detail {
+            if let unavailableReason {
+                Text(unavailableReason)
+                    .font(TVType.meta)
+                    .foregroundStyle(TVPalette.textTertiary)
+            } else if let detail {
                 Text(detail)
                     .font(TVType.meta)
-                    .foregroundStyle(.white.opacity(0.45))
+                    .foregroundStyle(isFocused ? TVPalette.textSecondary : TVPalette.textTertiary)
+                    .frame(minWidth: 64, alignment: .trailing)
             }
 
             // Not a separate button — a second focusable element per row would
-            // double the presses needed to get down a list, and the row already
-            // plays on select. This shows WHERE select will take you.
-            Image(systemName: "play.fill")
-                .font(.system(size: 20, weight: .bold))
-                .foregroundStyle(isFocused ? Color.black : Color.white.opacity(0.8))
-                .frame(width: 42, height: 42)
+            // double the presses needed to get down a list. This only shows
+            // WHERE select will take you, and only on the row that has focus,
+            // so a resting list is titles and nothing else.
+            Image(systemName: isAvailable ? "play.fill" : "iphone.slash")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
                 .background {
-                    Circle().fill(
-                        isFocused
-                            ? AnyShapeStyle(LinearGradient(
-                                colors: [TVPalette.neon, TVPalette.neonAlt],
-                                startPoint: .topLeading, endPoint: .bottomTrailing))
-                            : AnyShapeStyle(Color.white.opacity(0.10))
-                    )
+                    Circle().fill(isAvailable ? AnyShapeStyle(TVPalette.brand)
+                                  : AnyShapeStyle(Color.white.opacity(0.12)))
                 }
-                .shadow(color: TVPalette.neon.opacity(isFocused ? 0.75 : 0), radius: 14)
+                .opacity(isFocused ? 1 : 0)
+                .scaleEffect(isFocused ? 1 : 0.6)
         }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 11)
-        .tvNeonCard(isFocused: isFocused)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 10)
+        .opacity(isAvailable || isFocused ? 1 : 0.5)
+        .tvNeonCard(cornerRadius: 20, isFocused: isFocused, isProminent: false)
+    }
+
+    @ViewBuilder
+    private var leading: some View {
+        if let trackNumber {
+            Text("\(trackNumber)")
+                .font(.system(size: 22, weight: .semibold, design: .rounded).monospacedDigit())
+                .foregroundStyle(isFocused ? Color.white : TVPalette.textTertiary)
+                .frame(width: 50, alignment: .center)
+        } else {
+            TVAuthImage(url: artworkURL, token: token) {
+                TVArtPlaceholder(systemImage: placeholderSymbol, iconScale: 0.5)
+            }
+            .frame(width: 66, height: 66)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.1), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.4), radius: isFocused ? 12 : 4, y: 4)
+        }
+    }
+}
+
+/// A full-width list of rows sits inside this so every list screen has the
+/// same inset and spacing.
+struct TVTrackList<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        LazyVStack(spacing: TVMetrics.row) {
+            content()
+        }
+        .padding(.horizontal, TVMetrics.margin - 20)
     }
 }
 

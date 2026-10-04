@@ -37,33 +37,58 @@ struct TVLyricsPanel: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Lyrics").font(.system(size: 30, weight: .bold))
+            HStack(alignment: .center) {
+                HStack(spacing: 14) {
+                    TVPlayingMeter(isAnimating: isPlaying)
+                    Text("LYRICS")
+                        .font(TVType.eyebrow)
+                        .tracking(2.6)
+                        .foregroundStyle(TVPalette.neonAlt)
+                }
                 Spacer()
                 Button {
                     onClose()
                 } label: {
-                    Image(systemName: "xmark")
+                    TVIconButtonLabel(systemImage: "xmark")
                 }
+                .buttonStyle(.plain)
+                .focusEffectDisabled()
                 .focused($closeButtonFocused)
             }
-            .padding(.horizontal, 60)
-            .padding(.top, 50)
+            .padding(.horizontal, 80)
+            .padding(.top, 56)
             .padding(.bottom, 10)
 
             if isLoading {
-                ProgressView().scaleEffect(1.4).frame(maxHeight: .infinity)
+                TVLoadingBars(height: 70).frame(maxHeight: .infinity)
             } else if lines.isEmpty {
-                Text("No lyrics available")
-                    .font(.title2)
-                    .foregroundStyle(.secondary)
-                    .frame(maxHeight: .infinity)
+                TVEmptyState(systemImage: "text.badge.xmark",
+                             title: "No lyrics for this one",
+                             message: "Synced lyrics weren't found for this track.")
+                    .frame(maxHeight: .infinity, alignment: .top)
             } else {
                 lyricsScroll
+                    // Fade lines out toward the top and bottom edges rather
+                    // than cutting them off mid-word.
+                    .mask(
+                        LinearGradient(stops: [
+                            .init(color: .clear, location: 0),
+                            .init(color: .black, location: 0.18),
+                            .init(color: .black, location: 0.82),
+                            .init(color: .clear, location: 1),
+                        ], startPoint: .top, endPoint: .bottom)
+                    )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.black.opacity(0.92))
+        .background {
+            ZStack {
+                Rectangle().fill(.ultraThinMaterial)
+                TVPalette.ground.opacity(0.82)
+                RadialGradient(colors: [TVPalette.violet.opacity(0.25), .clear],
+                               center: .top, startRadius: 0, endRadius: 900)
+            }
+        }
         .focusSection()
         .onAppear { closeButtonFocused = true }
         .ignoresSafeArea()
@@ -72,7 +97,7 @@ struct TVLyricsPanel: View {
     private var lyricsScroll: some View {
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: false) {
-                LazyVStack(spacing: 30) {
+                LazyVStack(spacing: 34) {
                     ForEach(Array(lines.enumerated()), id: \.element.id) { index, line in
                         lyricLine(line: line, isCurrent: index == currentLineIndex)
                             .id(line.id)
@@ -113,11 +138,12 @@ struct TVLyricsPanel: View {
     }
 
     private func lyricLine(line: TVLyricLine, isCurrent: Bool) -> some View {
-        Text(line.text.isEmpty ? "·" : line.text)
-            .font(.system(size: isCurrent ? 42 : 34, weight: isCurrent ? .bold : .regular))
-            .foregroundStyle(isCurrent ? Color.accentColor : Color.secondary)
+        Text(line.text.isEmpty ? "♪" : line.text)
+            .font(.system(size: isCurrent ? 50 : 40, weight: .bold, design: .rounded))
+            .foregroundStyle(isCurrent ? Color.white : Color.white.opacity(0.3))
+            .shadow(color: isCurrent ? TVPalette.violet.opacity(0.6) : .clear, radius: 20)
             .multilineTextAlignment(.center)
-            .scaleEffect(isCurrent ? 1.04 : 1.0)
+            .scaleEffect(isCurrent ? 1.03 : 1.0)
             .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isCurrent)
             .frame(maxWidth: .infinity, alignment: .center)
     }

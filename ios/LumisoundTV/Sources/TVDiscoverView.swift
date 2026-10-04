@@ -20,14 +20,15 @@ struct TVDiscoverView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 50) {
+            VStack(alignment: .leading, spacing: TVMetrics.section) {
+                TVScreenTitle(title: "Discover", eyebrow: "Made for you")
                 subscriptionFeedSection
                 discoverMixSection
                 onThisDaySection
                 smartPlaylistsSection
                 nothingYetHint
             }
-            .padding(.vertical, 50)
+            .padding(.bottom, 80)
         }
         .task {
             if client.discoverMix.isEmpty { await client.fetchDiscoverMix(token: token) }
@@ -48,20 +49,11 @@ struct TVDiscoverView: View {
         let everythingEmpty = client.discoverMix.isEmpty && client.onThisDay.isEmpty
             && client.smartPlaylists.isEmpty && client.subscriptionFeed.isEmpty
         if everythingEmpty && !stillLoading {
-            VStack(spacing: 18) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 64))
-                    .foregroundStyle(.secondary)
-                Text("Discover fills in as you listen")
-                    .font(.system(size: 30, weight: .semibold))
-                Text("Play a few tracks and suggestions, anniversaries and tempo-based playlists will appear here.")
-                    .font(.system(size: 21))
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 760)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.top, 80)
+            TVEmptyState(
+                systemImage: "sparkles",
+                title: "Discover fills in as you listen",
+                message: "Play a few tracks and suggestions, anniversaries and tempo-based playlists will appear here."
+            )
         }
     }
 
@@ -73,7 +65,7 @@ struct TVDiscoverView: View {
         if client.isLoadingSubscriptionFeed || !client.subscriptionFeed.isEmpty {
             TVShelfSection(title: "New From Your Subscriptions", subtitle: "Recent uploads from channels you follow") {
                 if client.isLoadingSubscriptionFeed {
-                    ProgressView().padding(.horizontal, 60)
+                    TVLoadingBars(height: 40).frame(height: 190)
                 } else {
                     let queue = client.subscriptionFeed.compactMap { $0.track }.compactMap { client.playable(from: $0) }
                     ForEach(client.subscriptionFeed) { item in
@@ -81,7 +73,8 @@ struct TVDiscoverView: View {
                             NavigationLink(value: TVPlayContext(queue: queue, startID: track.id)) {
                                 TVTrackCard(track: track)
                             }
-                            .buttonStyle(.card)
+                            .buttonStyle(.plain)
+                            .focusEffectDisabled()
                             .tvSearchTrackActions(client: client, token: token, track: track)
                         }
                     }
@@ -102,13 +95,14 @@ struct TVDiscoverView: View {
         if client.isLoadingDiscoverMix || !client.discoverMix.isEmpty {
         TVShelfSection(title: "Discover Mix", subtitle: "Based on your most-played artists") {
             if client.isLoadingDiscoverMix {
-                ProgressView().padding(.horizontal, 60)
+                TVLoadingBars(height: 40).frame(height: 190)
             } else {
                 ForEach(client.discoverMix) { track in
                     NavigationLink(value: TVPlayContext(queue: discoverQueue, startID: track.id)) {
                         TVTrackCard(track: track)
                     }
-                    .buttonStyle(.card)
+                    .buttonStyle(.plain)
+                    .focusEffectDisabled()
                     .tvSearchTrackActions(client: client, token: token, track: track)
                 }
             }
@@ -122,7 +116,7 @@ struct TVDiscoverView: View {
         VStack(alignment: .leading, spacing: 40) {
             if client.isLoadingOnThisDay {
                 TVSectionHeader(title: "On This Day").padding(.horizontal, TVMetrics.margin)
-                ProgressView().padding(.horizontal, TVMetrics.margin)
+                TVLoadingBars(height: 40).padding(.horizontal, TVMetrics.margin)
             } else if client.onThisDay.isEmpty {
                 // Nothing at all: this date genuinely has no history most days,
                 // so a permanent empty band here would be the normal case.
@@ -135,7 +129,8 @@ struct TVDiscoverView: View {
                             NavigationLink(value: TVPlayContext(queue: queue, startID: track.id)) {
                                 TVTrackCard(track: track)
                             }
-                            .buttonStyle(.card)
+                            .buttonStyle(.plain)
+                            .focusEffectDisabled()
                             .tvSearchTrackActions(client: client, token: token, track: track)
                         }
                     }
@@ -146,12 +141,15 @@ struct TVDiscoverView: View {
 
     // MARK: Smart playlists
 
+    @ViewBuilder
     private var smartPlaylistsSection: some View {
+        // Collapsed entirely when every bucket is empty — a heading over
+        // nothing is a band of screen spent saying "nothing".
+        if client.isLoadingSmartPlaylists
+            || !client.smartPlaylists.allSatisfy({ $0.tracks.isEmpty }) {
         TVShelfSection(title: "Smart Playlists", subtitle: "Auto-generated from your cloud library's tempo") {
             if client.isLoadingSmartPlaylists {
-                ProgressView().padding(.horizontal, 60)
-            } else if client.smartPlaylists.allSatisfy({ $0.tracks.isEmpty }) {
-                EmptyView()
+                TVLoadingBars(height: 40).frame(height: 190)
             } else {
                 ForEach(client.smartPlaylists) { bucket in
                     NavigationLink {
@@ -159,42 +157,20 @@ struct TVDiscoverView: View {
                     } label: {
                         smartPlaylistCard(bucket)
                     }
-                    .buttonStyle(.card)
+                    .buttonStyle(.plain)
+                    .focusEffectDisabled()
                 }
             }
+        }
         }
     }
 
     private func smartPlaylistCard(_ bucket: TVSmartPlaylistBucket) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            TVArtPlaceholder(systemImage: smartPlaylistIcon(bucket.key), iconScale: 1.15)
-                .frame(width: 210, height: 210)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .shadow(color: .black.opacity(0.4), radius: 14, y: 8)
-
-            Text(bucket.name).font(.headline)
-            Text("\(bucket.tracks.count) \(bucket.tracks.count == 1 ? "song" : "songs")")
-                .font(.subheadline).foregroundStyle(.secondary)
+        TVArtworkCardLabel(title: bucket.name, subtitle: tvSongCount(bucket.tracks.count),
+                           width: TVMetrics.shelfCard) {
+            TVGeneratedArt(seed: bucket.key, systemImage: tvSmartPlaylistIcon(bucket.key),
+                           title: bucket.name)
         }
-        .frame(width: 210)
-    }
-
-    private func smartPlaylistIcon(_ key: String) -> String {
-        switch key {
-        case "energetic": return "bolt.fill"
-        case "focus": return "brain.head.profile"
-        case "chill": return "cloud.fill"
-        case "sleep": return "moon.zzz.fill"
-        default: return "music.note.list"
-        }
-    }
-
-    // MARK: Shared layout helpers
-
-    private func emptyRow(_ text: String) -> some View {
-        Text(text)
-            .font(.title3).foregroundStyle(.secondary)
-            .padding(.horizontal, TVMetrics.margin)
     }
 }
 
@@ -218,49 +194,51 @@ struct TVSmartPlaylistDetailView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(bucket.name).font(.system(size: 40, weight: .bold))
-                    Text("\(resolvedTracks.count) \(resolvedTracks.count == 1 ? "song" : "songs")")
-                        .font(.title3).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 40) {
+                TVDetailHeader(
+                    eyebrow: "Smart Playlist",
+                    title: bucket.name,
+                    subtitle: "Built from your cloud library's tempo",
+                    meta: tvCollectionMeta(resolvedTracks)
+                ) {
+                    TVGeneratedArt(seed: bucket.key, systemImage: tvSmartPlaylistIcon(bucket.key))
+                } actions: {
                     if let first = queue.first {
                         NavigationLink(value: TVPlayContext(queue: queue, startID: first.id)) {
-                            Label("Play", systemImage: "play.fill")
+                            TVPillLabel(title: "Play", systemImage: "play.fill")
                         }
-                        .buttonStyle(.card)
-                        .padding(.top, 10)
+                        .buttonStyle(.plain)
+                        .focusEffectDisabled()
                     }
                 }
 
                 if client.isLoadingLibrary {
-                    ProgressView().padding(.top, 20)
+                    TVLoadingState(text: "Matching against your library…")
                 } else if resolvedTracks.isEmpty {
-                    Text("No matching songs found in your library.")
-                        .font(.title3).foregroundStyle(.secondary)
+                    TVEmptyState(systemImage: "waveform.slash",
+                                 title: "Nothing matched",
+                                 message: "None of this playlist's songs were found in your cloud library.")
                 } else {
-                    VStack(spacing: 0) {
+                    TVTrackList {
                         ForEach(resolvedTracks) { track in
                             NavigationLink(value: TVPlayContext(queue: queue, startID: track.id)) {
-                                HStack(spacing: 24) {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(track.displayTitle).font(.title3)
-                                        Text(track.artist.isEmpty ? "Unknown Artist" : track.artist)
-                                            .font(.callout).foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    Text(track.durationText).font(.callout).foregroundStyle(.secondary)
-                                }
-                                .padding(.vertical, 14)
-                                .padding(.horizontal, 20)
-                                .contentShape(Rectangle())
+                                TVTrackRow(
+                                    artworkURL: client.userMusicArtworkURL(for: track),
+                                    token: token,
+                                    title: track.displayTitle,
+                                    artist: track.artist,
+                                    detail: track.duration.tvDurationText,
+                                    isFavorite: client.isFavorite(track.id)
+                                )
                             }
-                            .buttonStyle(.card)
+                            .buttonStyle(.plain)
+                            .focusEffectDisabled()
                             .tvTrackActions(client: client, token: token, track: track)
                         }
                     }
                 }
             }
-            .padding(TVMetrics.margin)
+            .padding(.bottom, 80)
         }
         .tvAmbientBackground()
         .task {

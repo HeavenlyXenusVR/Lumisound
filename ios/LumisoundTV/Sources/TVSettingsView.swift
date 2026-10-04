@@ -16,8 +16,7 @@ struct TVSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: TVMetrics.section) {
-                TVScreenTitle(title: "Settings")
-                    .padding(.top, 20)
+                TVScreenTitle(title: "Settings", eyebrow: "Account")
 
                 section("Playback") {
                     toggleRow(
@@ -74,11 +73,22 @@ struct TVSettingsView: View {
 
     private func section<Content: View>(_ title: String,
                                         @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: TVMetrics.row) {
-            TVSectionHeader(title: title)
-                .padding(.horizontal, TVMetrics.margin)
-            content()
+        VStack(alignment: .leading, spacing: 18) {
+            Text(title.uppercased())
+                .font(TVType.eyebrow)
+                .tracking(2.4)
+                .foregroundStyle(TVPalette.neonAlt)
+                .padding(.horizontal, TVMetrics.margin + 8)
+            VStack(spacing: 4) {
+                content()
+            }
+            .padding(10)
+            .tvGlassPanel(cornerRadius: 30)
+            .padding(.horizontal, TVMetrics.margin)
         }
+        // Readable line length: settings copy is prose, and a 1700pt-wide row
+        // puts the switch a long way from the words it controls.
+        .frame(maxWidth: 1300, alignment: .leading)
     }
 
     /// Says plainly why there is no on/off switch, rather than leaving a gap.
@@ -97,8 +107,10 @@ struct TVSettingsView: View {
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 20)
-        .tvNeonCard(cornerRadius: 18, tint: TVPalette.neonAlt)
-        .padding(.horizontal, TVMetrics.margin)
+        .background {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(TVPalette.violet.opacity(0.16))
+        }
     }
 
     private func toggleRow(title: String, detail: String, systemImage: String,
@@ -113,7 +125,6 @@ struct TVSettingsView: View {
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
-        .padding(.horizontal, TVMetrics.margin)
     }
 
     /// Column count as a chip row rather than a stepper — three fixed choices
@@ -125,7 +136,7 @@ struct TVSettingsView: View {
                 .font(.system(size: 25, weight: .semibold))
             Text("Applies to albums, artists, genres and search results. Fewer columns means larger artwork.")
                 .font(TVType.rowDetail)
-                .foregroundStyle(.white.opacity(0.5))
+                .foregroundStyle(TVPalette.textTertiary)
             HStack(spacing: 16) {
                 ForEach([2, 3, 4], id: \.self) { count in
                     Button {
@@ -141,10 +152,9 @@ struct TVSettingsView: View {
             }
             .padding(.top, 6)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 24)
         .padding(.vertical, 20)
-        .tvNeonCard(cornerRadius: 18)
-        .padding(.horizontal, TVMetrics.margin)
     }
 }
 
@@ -160,45 +170,47 @@ private struct TVSettingRowLabel: View {
     @Environment(\.isFocused) private var isFocused
 
     var body: some View {
-        HStack(alignment: .top, spacing: 20) {
+        HStack(alignment: .center, spacing: 22) {
             Image(systemName: systemImage)
-                .font(.system(size: 26, weight: .medium))
-                .foregroundStyle(isOn ? TVPalette.neon : .white.opacity(0.4))
-                .frame(width: 44)
+                .font(.system(size: 24, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 56, height: 56)
+                .background {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(isOn ? AnyShapeStyle(TVPalette.brand)
+                              : AnyShapeStyle(Color.white.opacity(0.1)))
+                }
 
             VStack(alignment: .leading, spacing: 5) {
                 Text(title)
                     .font(.system(size: 25, weight: .semibold))
                 Text(detail)
                     .font(TVType.rowDetail)
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(isFocused ? TVPalette.textSecondary : TVPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Spacer(minLength: 16)
+            Spacer(minLength: 24)
 
             // A drawn switch rather than SwiftUI's `Toggle`: on tvOS a Toggle
             // inside a custom row brings its own focus behaviour and system
-            // highlight, which is what put a white slab behind every control
-            // elsewhere in this port.
+            // highlight.
             ZStack(alignment: isOn ? .trailing : .leading) {
                 Capsule()
-                    .fill(isOn ? AnyShapeStyle(LinearGradient(
-                            colors: [TVPalette.neon, TVPalette.neonAlt],
-                            startPoint: .leading, endPoint: .trailing))
-                        : AnyShapeStyle(Color.white.opacity(0.14)))
-                    .frame(width: 76, height: 42)
+                    .fill(isOn ? AnyShapeStyle(TVPalette.brandHorizontal)
+                          : AnyShapeStyle(Color.white.opacity(0.16)))
+                    .frame(width: 80, height: 44)
                 Circle()
                     .fill(.white)
-                    .frame(width: 34, height: 34)
+                    .frame(width: 36, height: 36)
                     .padding(4)
-                    .shadow(color: .black.opacity(0.4), radius: 4, y: 2)
+                    .shadow(color: .black.opacity(0.35), radius: 4, y: 2)
             }
-            .frame(width: 76, height: 42)
+            .frame(width: 80, height: 44)
             .animation(.spring(response: 0.28, dampingFraction: 0.75), value: isOn)
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 20)
-        .tvNeonCard(cornerRadius: 18, isFocused: isFocused)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
+        .tvNeonCard(cornerRadius: 22, isFocused: isFocused, isProminent: false)
     }
 }

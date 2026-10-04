@@ -752,22 +752,21 @@ struct TVPlayerView: View {
         ZStack {
             backdrop
 
-            // One glass slab holding the track, with the transport floating
-            // beneath it. The previous layout put artwork and a text column
-            // side by side directly on the backdrop, so the screen had no
-            // figure — just elements scattered over a blurred photo, and the
-            // transport was buried in the middle of the text column where it
-            // competed with the title for the same vertical space.
-            // Centred as a group rather than pinned to the top, now that the
-            // slab is only as tall as its content.
-            VStack(spacing: 28) {
-                mainSlab
-                transportBar
+            // Two bands rather than one glass slab: the stage (cover, title,
+            // lyrics) fills the screen, and every control lives in one dock
+            // along the bottom. The slab put the controls in three different
+            // places — utilities in the text column, the style picker under
+            // the cover, transport in a capsule below — so finding a control
+            // meant remembering which of the three it lived in.
+            VStack(spacing: 34) {
+                stage
+                    .frame(maxHeight: .infinity)
+                dock
+                    .focusSection()
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-            .padding(.horizontal, TVMetrics.margin)
-            .padding(.vertical, 40)
-            .focusSection()
+            .padding(.horizontal, 80)
+            .padding(.top, 60)
+            .padding(.bottom, 50)
 
             if sidePanel == .upNext {
                 upNextPanel
@@ -793,156 +792,108 @@ struct TVPlayerView: View {
             // tvOS doesn't move focus into a newly pushed screen on its own, so
             // without this the remote's first press lands on whatever the focus
             // engine happens to pick — usually a utility button rather than
-            // play/pause. Managing default focus explicitly is the documented
-            // expectation for tvOS screens with a clear primary action.
+            // play/pause.
             playPauseFocused = true
         }
         .onChange(of: sidePanel) { newValue in
             // Forces focus into the panel the instant it opens — see
             // `upNextCloseFocused`'s doc comment. TVLyricsPanel does the
-            // same thing for itself internally via its own `.onAppear`,
-            // since it owns its own close button/FocusState.
+            // same thing for itself internally.
             guard newValue == .upNext else { return }
             upNextCloseFocused = true
         }
         // No `.onDisappear { model.stop() }` — `model` is the app-wide
-        // `TVPlayerModel.shared`, not an instance scoped to this screen, so
-        // navigating away from Now Playing leaves playback running (matching
-        // the iOS app's `AudioPlayerManager`) rather than killing it.
+        // `TVPlayerModel.shared`, so navigating away from Now Playing leaves
+        // playback running.
     }
 
-    // MARK: Slab
+    // MARK: Stage
 
-    /// Artwork, track, and lyrics in a single translucent panel.
-    private var mainSlab: some View {
-        HStack(alignment: .top, spacing: 52) {
-            VStack(spacing: 26) {
-                artwork
-                artworkStyleMenu
-            }
+    /// Cover on the left, the track and its lyrics on the right. Nothing here
+    /// is focusable: it is what you look at, and the dock is what you use.
+    private var stage: some View {
+        HStack(alignment: .center, spacing: 80) {
+            artwork
 
-            VStack(alignment: .leading, spacing: 22) {
-                VStack(alignment: .leading, spacing: 10) {
-                    // The favourite control is NOT here any more. Sitting on
-                    // the title's baseline it was the only focusable thing in
-                    // the upper half of the panel, separated from every other
-                    // control by an unfocusable progress bar — so reaching it
-                    // meant guessing that "up" from the utility row led
-                    // somewhere. It lives in the utility row now, with the rest
-                    // of the controls, which is where someone looks for it.
-                    Text(displayed?.title ?? "")
-                        .font(TVType.display)
-                        .lineLimit(3)
-                        .minimumScaleFactor(0.55)
-                        .id(displayed?.id)
-                        .transition(.opacity.combined(with: .move(edge: .leading)))
-                    Text((displayed?.artist.isEmpty ?? true) ? "Unknown Artist" : (displayed?.artist ?? ""))
-                        .font(TVType.hero)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.6)
-                        .id(displayed?.id)
-                        .transition(.opacity)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 14) {
+                    TVPlayingMeter(isAnimating: model.isPlaying && !model.isBuffering)
+                    Text(statusLine)
+                        .font(TVType.eyebrow)
+                        .tracking(2.6)
+                        .foregroundStyle(TVPalette.neonAlt)
                 }
-                .animation(.easeOut(duration: 0.4), value: displayed?.id)
+                .padding(.bottom, 18)
 
-                progressBar
+                Text(displayed?.title ?? "")
+                    .font(.system(size: 66, weight: .heavy, design: .rounded))
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.5)
+                    .id(displayed?.id)
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                Text((displayed?.artist.isEmpty ?? true) ? "Unknown Artist" : (displayed?.artist ?? ""))
+                    .font(.system(size: 34, weight: .medium, design: .rounded))
+                    .foregroundStyle(TVPalette.textSecondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    .padding(.top, 6)
+                    .id(displayed?.id)
+                    .transition(.opacity)
 
-                utilityRow
+                // Lyrics follow the song on the stage itself. They are the one
+                // thing on this screen that changes second to second; the
+                // overlay panel stays for reading a whole song.
+                inlineLyrics
+                    .padding(.top, 40)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-
-            // Lyrics are shown here rather than only behind a toggle. They are
-            // the one thing on this screen that changes second to second, and a
-            // full-screen player that cannot show them without covering itself
-            // is the reason the overlay panel existed at all. The overlay stays
-            // for reading a whole song; this is for following one.
-            // Always present, so the column keeps a stable width and the
-            // absence of lyrics is STATED rather than shown as a blank half of
-            // the panel. An empty area is ambiguous — still loading, none
-            // published, or broken all look identical.
-            inlineLyrics
-                .frame(width: 400)
-        }
-        .padding(46)
-        // Hugs its content vertically. It was `maxHeight: .infinity` with
-        // top-aligned content, which stretched the panel to the full window and
-        // left most of it empty — a large slab of blank colour under the
-        // artwork, with the transport pushed off the bottom edge. A panel should
-        // be the size of what it holds; the empty space belongs to the backdrop.
-        .frame(maxWidth: 1440, alignment: .topLeading)
-        .background {
-            RoundedRectangle(cornerRadius: 42, style: .continuous)
-                .fill(.ultraThinMaterial)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 42, style: .continuous)
-                        .fill(TVPalette.ground.opacity(0.32))
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 42, style: .continuous)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [.white.opacity(0.32), TVPalette.neon.opacity(0.22), .white.opacity(0.06)],
-                                startPoint: .topLeading, endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 1.5
-                        )
-                }
-                .shadow(color: .black.opacity(0.55), radius: 44, y: 22)
+            .animation(.easeOut(duration: 0.4), value: displayed?.id)
         }
     }
 
-    /// Five lines centred on the current one, the active line lit. Non-focusable
-    /// on purpose: it is a readout, and making it focusable would put a stop on
-    /// the path between the artwork and the utility row for no action gained.
+    private var statusLine: String {
+        let state = model.isBuffering ? "LOADING" : (model.isPlaying ? "NOW PLAYING" : "PAUSED")
+        guard model.queue.count > 1 else { return state }
+        return "\(state) · \(model.currentIndex + 1) OF \(model.queue.count)"
+    }
+
+    /// Four lines around the current one, the active line large and white, the
+    /// rest fading with distance. Non-focusable on purpose: it is a readout.
     @ViewBuilder
     private var inlineLyrics: some View {
         let idx = currentLyricIndex
-        VStack(alignment: .leading, spacing: 14) {
-            Text("LYRICS")
-                .font(TVType.eyebrow)
-                .tracking(2.2)
-                .foregroundStyle(.secondary)
-
+        VStack(alignment: .leading, spacing: 16) {
             if model.isLoadingLyrics {
-                HStack(spacing: 12) {
-                    ProgressView().scaleEffect(0.8)
+                HStack(spacing: 16) {
+                    TVLoadingBars(height: 26)
                     Text("Looking for lyrics…")
                         .font(TVType.rowDetail)
-                        .foregroundStyle(.white.opacity(0.45))
+                        .foregroundStyle(TVPalette.textTertiary)
                 }
             } else if model.lyrics.isEmpty {
-                Text("No synced lyrics for this track.")
+                Label("No synced lyrics for this track", systemImage: "text.badge.xmark")
                     .font(TVType.rowDetail)
-                    .foregroundStyle(.white.opacity(0.35))
-                    .lineLimit(2)
+                    .foregroundStyle(TVPalette.textTertiary)
             } else {
                 ForEach(visibleLyricRange(around: idx), id: \.self) { i in
-                    Text(model.lyrics[i].text)
-                        .font(.system(size: i == idx ? 27 : 22,
-                                      weight: i == idx ? .semibold : .regular))
-                        .foregroundStyle(i == idx ? Color.white : Color.white.opacity(0.34))
+                    Text(model.lyrics[i].text.isEmpty ? "♪" : model.lyrics[i].text)
+                        .font(.system(size: i == idx ? 36 : 28,
+                                      weight: i == idx ? .bold : .semibold,
+                                      design: .rounded))
+                        .foregroundStyle(i == idx ? Color.white
+                                         : Color.white.opacity(i < idx ? 0.22 : 0.4))
                         .lineLimit(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
-        // A FIXED height, clipped.
-        //
-        // Two problems this solves. The block's height varied with how many
-        // lines the current window happened to wrap to, so the panel resized
-        // itself as the song played. And because the window is a `ForEach` over
-        // changing indices, lines are inserted and removed as the song advances
-        // — SwiftUI animates those in and out, and with nothing clipping the
-        // container they were drawn outside it mid-transition, which is the
-        // text appearing over the edge of the box.
-        //
-        // Still not `maxHeight: .infinity`: a child asking for infinity
-        // overrides a parent that wanted to hug its content, which is what kept
-        // the whole panel stretched to the window earlier.
-        .frame(height: 210, alignment: .top)
+        // A FIXED height, clipped: the window is a `ForEach` over changing
+        // indices, so lines animate in and out, and with nothing clipping the
+        // container they were drawn outside it mid-transition. Fixed so the
+        // title above doesn't move as wrapped lines come and go.
+        .frame(height: 250, alignment: .top)
         .clipped()
-        .animation(.easeOut(duration: 0.28), value: idx)
+        .animation(.easeOut(duration: 0.3), value: idx)
     }
 
     /// Index of the last lyric line whose timestamp has passed, or -1 before the
@@ -958,29 +909,61 @@ struct TVPlayerView: View {
     private func visibleLyricRange(around index: Int) -> [Int] {
         let count = model.lyrics.count
         guard count > 0 else { return [] }
-        let window = min(5, count)
+        let window = min(4, count)
         let centre = max(0, index)
-        let start = max(0, min(centre - 2, count - window))
+        let start = max(0, min(centre - 1, count - window))
         return Array(start..<(start + window))
     }
 
-    // MARK: Transport
+    // MARK: Dock
 
-    /// The transport as a floating capsule under the slab, rather than a row
-    /// inside the text column. It is the screen's primary control, so it gets
-    /// its own surface and the full width to centre in, and moving it out of the
-    /// column stops it fighting the title for vertical space.
-    private var transportBar: some View {
-        HStack(spacing: 34) {
+    /// Progress across the full width, then one row: personal toggles on the
+    /// left, transport dead centre, views and timers on the right.
+    private var dock: some View {
+        VStack(spacing: 26) {
+            progressBar
+
+            ZStack {
+                transport
+
+                HStack(spacing: 22) {
+                    if let songID = displayed?.favoriteSongID {
+                        favoriteButton(songID: songID)
+                    }
+                    toggleIconButton("shuffle", isOn: model.isShuffled) { model.toggleShuffle() }
+                    toggleIconButton(model.repeatMode.symbol, isOn: model.repeatMode != .off) {
+                        model.cycleRepeatMode()
+                    }
+                    toggleIconButton("arrow.triangle.merge", isOn: model.crossfadeEnabled) {
+                        model.crossfadeEnabled.toggle()
+                        TVRemoteLogger.log(category: "playback", event: "crossfade_toggled",
+                                            detail: ["enabled": model.crossfadeEnabled])
+                    }
+
+                    Spacer(minLength: 40)
+
+                    sleepTimerMenu
+                    toggleIconButton("quote.bubble", isOn: sidePanel == .lyrics) { togglePanel(.lyrics) }
+                    artworkStyleMenu
+                    if model.queue.count > 1 {
+                        toggleIconButton("list.bullet", isOn: sidePanel == .upNext) { togglePanel(.upNext) }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 40)
+        .padding(.top, 30)
+        .padding(.bottom, 26)
+        .tvGlassPanel(cornerRadius: 40)
+    }
+
+    private var transport: some View {
+        HStack(spacing: 26) {
             // Seeking, as explicit jump buttons rather than a scrubbable bar.
-            //
             // A scrub bar on tvOS has to claim left/right while focused, and a
             // view that consumes directional input is a view focus can get
             // stuck inside — the failure mode that made an earlier build
-            // unusable. Jump buttons need no focus interception at all, are
-            // unambiguous from a sofa, and are what the platform's own music
-            // playback UI offers. A press-to-scrub bar can follow once it can be
-            // tested on a real device.
+            // unusable.
             controlButton("gobackward.15") { model.seek(to: model.position - 15) }
             controlButton("backward.fill") { model.previous() }
             controlButton(model.isPlaying ? "pause.fill" : "play.fill", big: true) {
@@ -990,21 +973,6 @@ struct TVPlayerView: View {
             controlButton("forward.fill") { model.next() }
             controlButton("goforward.15") { model.seek(to: model.position + 15) }
         }
-        .padding(.horizontal, 60)
-        .padding(.vertical, 18)
-        .background {
-            Capsule()
-                .fill(.ultraThinMaterial)
-                .overlay { Capsule().fill(TVPalette.ground.opacity(0.35)) }
-                .overlay {
-                    Capsule().strokeBorder(
-                        LinearGradient(colors: [.white.opacity(0.30), TVPalette.neon.opacity(0.25)],
-                                       startPoint: .topLeading, endPoint: .bottomTrailing),
-                        lineWidth: 1.5
-                    )
-                }
-                .shadow(color: .black.opacity(0.5), radius: 30, y: 14)
-        }
     }
 
     private func togglePanel(_ panel: TVSidePanel) {
@@ -1013,41 +981,9 @@ struct TVPlayerView: View {
         }
     }
 
-    // MARK: Utility row (shuffle / repeat / sleep timer / lyrics / artwork style / up next)
-
-    private var utilityRow: some View {
-        HStack(spacing: 26) {
-            if let songID = displayed?.favoriteSongID {
-                favoriteButton(songID: songID)
-            }
-            toggleIconButton("shuffle", isOn: model.isShuffled) { model.toggleShuffle() }
-            toggleIconButton(model.repeatMode.symbol, isOn: model.repeatMode != .off) { model.cycleRepeatMode() }
-            toggleIconButton("arrow.triangle.merge", isOn: model.crossfadeEnabled) {
-                model.crossfadeEnabled.toggle()
-                TVRemoteLogger.log(category: "playback", event: "crossfade_toggled",
-                                    detail: ["enabled": model.crossfadeEnabled])
-            }
-            sleepTimerMenu
-            toggleIconButton("quote.bubble", isOn: sidePanel == .lyrics) { togglePanel(.lyrics) }
-            // artworkStyleMenu is NOT here any more: it moved under the artwork,
-            // beside the thing it actually changes. Leaving it in both places put
-            // the same control on screen twice.
-            if model.queue.count > 1 {
-                Text("\(model.currentIndex + 1) of \(model.queue.count)")
-                    .font(.system(size: 20, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Button {
-                    togglePanel(.upNext)
-                } label: {
-                    Label("Up Next", systemImage: "list.bullet")
-                }
-            }
-        }
-    }
-
     private func toggleIconButton(_ symbol: String, isOn: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            TVUtilityButtonLabel(symbol: symbol, isOn: isOn)
+            TVIconButtonLabel(systemImage: symbol, isOn: isOn)
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
@@ -1060,8 +996,9 @@ struct TVPlayerView: View {
                 await client.toggleFavorite(track: track, token: token)
             }
         } label: {
-            TVUtilityButtonLabel(symbol: client.isFavorite(songID) ? "star.fill" : "star",
-                                  isOn: client.isFavorite(songID), tint: .yellow)
+            TVIconButtonLabel(systemImage: client.isFavorite(songID) ? "star.fill" : "star",
+                              isOn: client.isFavorite(songID),
+                              tint: Color(red: 1.0, green: 0.80, blue: 0.32))
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
@@ -1071,8 +1008,8 @@ struct TVPlayerView: View {
         Button {
             showSleepTimerSheet = true
         } label: {
-            TVUtilityButtonLabel(symbol: model.sleepTimerEndDate != nil ? "moon.fill" : "moon",
-                                  isOn: model.sleepTimerEndDate != nil)
+            TVIconButtonLabel(systemImage: model.sleepTimerEndDate != nil ? "moon.fill" : "moon",
+                              isOn: model.sleepTimerEndDate != nil)
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
@@ -1091,7 +1028,7 @@ struct TVPlayerView: View {
         Button {
             showArtworkStyleSheet = true
         } label: {
-            TVUtilityButtonLabel(symbol: "paintpalette", isOn: artworkStyle != .classic)
+            TVIconButtonLabel(systemImage: "paintpalette", isOn: artworkStyle != .classic)
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
@@ -1106,51 +1043,37 @@ struct TVPlayerView: View {
 
     // MARK: Up Next panel
     //
-    // Slides over the artwork/transport rather than using `.sheet` — tvOS's
-    // focus engine handles an in-place overlay more predictably than a modal
-    // here, and it keeps the now-playing transport reachable underneath.
-
-    /// Up Next, rebuilt to match the rest of the port.
-    ///
-    /// What it was: a flat black 85%-opaque slab, plain-system rows of a generic
-    /// music-note glyph and two lines of text, and a SECOND focusable remove
-    /// button on every row — so getting from the top of the queue to the bottom
-    /// took two presses per track, and every row used `.buttonStyle(.card)`, the
-    /// system lift sized for square artwork, which on a full-width row makes the
-    /// whole panel appear to jump.
-    ///
-    /// What it is now: artwork per row so the queue is scannable by cover rather
-    /// than by reading every title, the playing row called out with the app's own
-    /// accent instead of a grey glyph, one focusable element per row, and the
-    /// panel itself on the same glass-over-indigo as everything else.
-    ///
-    /// Removing a track moved into the row's long-press context menu. A queue is
-    /// something you move THROUGH far more often than you edit, so the common
-    /// action gets the press and the rare one gets the menu — the same tradeoff
-    /// the library rows already make for favouriting.
+    // Slides over the stage rather than using `.sheet` — tvOS's focus engine
+    // handles an in-place overlay more predictably than a modal here.
+    //
+    // One focusable element per row (removing a track lives in the row's
+    // long-press menu): a queue is something you move THROUGH far more often
+    // than you edit, so the common action gets the press.
     private var upNextPanel: some View {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
             VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .firstTextBaseline) {
+                HStack(alignment: .center) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Up Next").font(TVType.section)
-                        Text("\(model.queue.count - model.currentIndex - 1) after this")
-                            .font(TVType.rowDetail)
-                            .foregroundStyle(.white.opacity(0.45))
+                        Text("UP NEXT")
+                            .font(TVType.eyebrow)
+                            .tracking(2.4)
+                            .foregroundStyle(TVPalette.neonAlt)
+                        Text("\(max(0, model.queue.count - model.currentIndex - 1)) songs after this")
+                            .font(TVType.section)
                     }
                     Spacer()
                     Button {
                         withAnimation(.easeInOut(duration: 0.25)) { sidePanel = .none }
                     } label: {
-                        TVUtilityButtonLabel(symbol: "xmark", isOn: false)
+                        TVIconButtonLabel(systemImage: "xmark")
                     }
                     .buttonStyle(.plain)
                     .focusEffectDisabled()
                     .focused($upNextCloseFocused)
                 }
-                .padding(.horizontal, 36)
-                .padding(.top, 46)
+                .padding(.horizontal, 40)
+                .padding(.top, 56)
                 .padding(.bottom, 26)
 
                 ScrollView {
@@ -1180,59 +1103,54 @@ struct TVPlayerView: View {
                             }
                         }
                     }
-                    .padding(.horizontal, 30)
-                    .padding(.bottom, 44)
+                    .padding(.horizontal, 28)
+                    .padding(.vertical, 12)
+                    .padding(.bottom, 40)
                 }
             }
-            .frame(width: 660, alignment: .top)
+            .frame(width: 700, alignment: .top)
             .frame(maxHeight: .infinity)
             .background {
                 ZStack {
                     Rectangle().fill(.ultraThinMaterial)
-                    Rectangle().fill(TVPalette.ground.opacity(0.55))
+                    Rectangle().fill(TVPalette.ground.opacity(0.7))
                 }
                 .overlay(alignment: .leading) {
-                    LinearGradient(colors: [TVPalette.neon.opacity(0.6), TVPalette.neonAlt.opacity(0.35)],
-                                   startPoint: .top, endPoint: .bottom)
-                        .frame(width: 1.5)
+                    TVPalette.brandVertical.frame(width: 2)
                 }
+                .shadow(color: .black.opacity(0.6), radius: 40, x: -10)
             }
         }
         .ignoresSafeArea()
         .focusSection()
     }
 
-    /// Matches `TVAmbientBackground`'s treatment so pushing into the player is a
-    /// continuation of the shell rather than a jump to a differently-coloured
-    /// screen: the same artwork, the same indigo wash, just less dimmed, since
-    /// here the artwork IS the subject rather than a backdrop behind a list.
+    /// The playing artwork, much less dimmed than the shell's backdrop — here
+    /// the artwork IS the subject — over the same Prism floor, so pushing into
+    /// the player is a continuation of the shell rather than a jump.
     @ViewBuilder private var backdrop: some View {
         ZStack {
-            LinearGradient(colors: [TVPalette.surface, TVPalette.ground],
-                           startPoint: .topLeading, endPoint: .bottomTrailing)
+            TVAmbientBackground()
             TVAuthImage(url: displayed?.artworkURL, token: displayed?.authToken) { Color.clear }
-                .scaleEffect(1.4)
-                .blur(radius: 100)
-                .saturation(1.3)
-                .overlay(TVPalette.ground.opacity(0.55))
-            LinearGradient(colors: [.clear, TVPalette.ground.opacity(0.7)],
-                           startPoint: .center, endPoint: .bottom)
+                .scaleEffect(1.5)
+                .blur(radius: 90)
+                .saturation(1.5)
+                .overlay(TVPalette.ground.opacity(0.5))
+            LinearGradient(colors: [TVPalette.ground.opacity(0.2), TVPalette.ground.opacity(0.85)],
+                           startPoint: .top, endPoint: .bottom)
         }
         .ignoresSafeArea()
     }
 
-    /// Soft, slowly "breathing" halo behind the artwork, using the same
-    /// image as the full-screen backdrop rather than a flat accent color —
-    /// it reads as light cast off the artwork itself instead of a generic
-    /// decorative glow, and it's most alive right when a track is actually
-    /// playing (dims and stops pulsing on pause, a quiet way of reinforcing
-    /// play state beyond just the button icon).
+    /// Soft, slowly "breathing" halo behind the artwork, using the artwork
+    /// itself — light cast off the cover rather than a generic glow. Dims and
+    /// stops on pause, a quiet second readout of play state.
     @ViewBuilder private var artworkGlow: some View {
         TVAuthImage(url: displayed?.artworkURL, token: displayed?.authToken) { Color.clear }
-            .blur(radius: 70)
-            .saturation(1.4)
-            .opacity(model.isPlaying ? 0.85 : 0.35)
-            .scaleEffect(breathe ? 1.08 : 0.92)
+            .blur(radius: 80)
+            .saturation(1.6)
+            .opacity(model.isPlaying ? 0.9 : 0.3)
+            .scaleEffect(breathe ? 1.1 : 0.94)
             .animation(
                 .easeInOut(duration: 3.2).repeatForever(autoreverses: true),
                 value: breathe
@@ -1243,7 +1161,7 @@ struct TVPlayerView: View {
     @ViewBuilder private var artwork: some View {
         ZStack {
             artworkGlow
-                .frame(width: 440, height: 440)
+                .frame(width: 500, height: 500)
 
             switch artworkStyle {
             case .classic:
@@ -1257,63 +1175,65 @@ struct TVPlayerView: View {
             if model.isBuffering {
                 ZStack {
                     Color.black.opacity(0.45)
-                    VStack(spacing: 14) {
-                        ProgressView().scaleEffect(1.6).tint(.white)
-                        Text("Loading…").font(.system(size: 22, weight: .medium)).foregroundStyle(.white)
+                    VStack(spacing: 18) {
+                        TVLoadingBars(height: 60)
+                        Text("Loading…").font(.system(size: 22, weight: .semibold, design: .rounded))
                     }
                 }
-                .frame(width: 440, height: 440)
-                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .frame(width: 500, height: 500)
+                .clipShape(RoundedRectangle(cornerRadius: 34, style: .continuous))
             }
         }
-        .frame(width: 440, height: 440)
+        .frame(width: 500, height: 500)
     }
 
     private var classicArtwork: some View {
         TVAuthImage(url: displayed?.artworkURL, token: displayed?.authToken) {
-            ZStack {
-                Color.gray.opacity(0.3)
-                Image(systemName: "music.note").font(.system(size: 90)).foregroundStyle(.secondary)
-            }
+            TVArtPlaceholder(systemImage: "music.note", iconScale: 2.2)
         }
-        .frame(width: 440, height: 440)
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .shadow(color: .black.opacity(0.5), radius: 30, y: 16)
+        .frame(width: 500, height: 500)
+        .clipShape(RoundedRectangle(cornerRadius: 34, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 34, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+        }
+        // Shrinks slightly on pause, the way Apple's own players do — a third,
+        // ambient readout of play state you can see from across the room.
+        .scaleEffect(model.isPlaying ? 1 : 0.92)
+        .shadow(color: .black.opacity(0.55), radius: 40, y: 24)
+        .animation(.spring(response: 0.5, dampingFraction: 0.8), value: model.isPlaying)
     }
 
     private var progressBar: some View {
-        VStack(spacing: 10) {
+        HStack(spacing: 24) {
+            Text(timeString(model.position))
+                .frame(width: 90, alignment: .trailing)
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
-                    Capsule().fill(.white.opacity(0.22))
+                    Capsule().fill(.white.opacity(0.16))
                     Capsule()
-                        .fill(
-                            LinearGradient(colors: [Color.accentColor, .white],
-                                           startPoint: .leading, endPoint: .trailing)
-                        )
-                        .frame(width: geo.size.width * fraction)
-                    // Playhead — a small glowing dot at the current position,
-                    // pulsing gently while playing so the bar doesn't read as
-                    // a static, dead-looking track marker.
+                        .fill(TVPalette.brandHorizontal)
+                        .frame(width: max(0, geo.size.width * fraction))
+                        .shadow(color: TVPalette.violet.opacity(0.7), radius: 10)
+                    // Playhead — pulses gently while playing so the bar doesn't
+                    // read as a static, dead-looking track marker.
                     Circle()
                         .fill(.white)
-                        .frame(width: 16, height: 16)
-                        .shadow(color: Color.accentColor.opacity(model.isPlaying ? 0.9 : 0), radius: 8)
+                        .frame(width: 18, height: 18)
+                        .shadow(color: TVPalette.violet.opacity(model.isPlaying ? 0.9 : 0), radius: 10)
                         .scaleEffect(breathe && model.isPlaying ? 1.15 : 1.0)
                         .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: breathe)
-                        .offset(x: geo.size.width * fraction - 8)
+                        .offset(x: geo.size.width * fraction - 9)
                 }
+                .frame(height: 8)
+                .frame(maxHeight: .infinity)
             }
-            .frame(height: 8)
-            HStack {
-                Text(timeString(model.position))
-                Spacer()
-                Text(model.duration > 0 ? "-" + timeString(max(0, model.duration - model.position)) : "")
-            }
-            .font(.system(size: 22, weight: .medium).monospacedDigit())
-            .foregroundStyle(.secondary)
+            .frame(height: 18)
+            Text(model.duration > 0 ? "-" + timeString(max(0, model.duration - model.position)) : "")
+                .frame(width: 90, alignment: .leading)
         }
-        .frame(maxWidth: .infinity)
+        .font(.system(size: 21, weight: .semibold, design: .rounded).monospacedDigit())
+        .foregroundStyle(TVPalette.textSecondary)
     }
 
     private var fraction: Double {
@@ -1335,55 +1255,34 @@ struct TVPlayerView: View {
     }
 }
 
-/// Focus-reactive label for the main transport buttons (play/pause, skip).
-/// A plain `Button` on tvOS gets the system's default focus treatment, which
-/// reads as fairly flat for a full-screen Now Playing surface — this scales
-/// up, lifts with a soft accent-colored glow, and fills in behind the glyph
-/// when the Siri Remote's focus lands on it, so the transport row feels like
-/// a deliberately designed control cluster rather than plain SF Symbols.
+/// Focus-reactive label for the main transport. Play/pause is the brand
+/// gradient at rest — the one primary action on the screen — and every button
+/// inverts to white when focused, the strongest tvOS focus signal.
 private struct TVTransportButtonLabel: View {
     let symbol: String
     let big: Bool
     @Environment(\.isFocused) private var isFocused
 
     var body: some View {
-        let size: CGFloat = big ? 122 : 92
-        ZStack {
-            Circle()
-                .fill(isFocused ? Color.white.opacity(0.18) : Color.white.opacity(0.05))
-            Image(systemName: symbol)
-                .font(.system(size: big ? 44 : 30, weight: .semibold))
-                .foregroundStyle(.white)
-        }
-        .frame(width: size, height: size)
-        .scaleEffect(isFocused ? 1.16 : 1.0)
-        .shadow(color: isFocused ? Color.accentColor.opacity(0.6) : .clear, radius: isFocused ? 20 : 0)
-        .animation(.spring(response: 0.32, dampingFraction: 0.72), value: isFocused)
-    }
-}
-
-/// Same focus treatment as `TVTransportButtonLabel`, sized down for the
-/// utility row (shuffle/repeat/crossfade/sleep timer/lyrics/artwork style)
-/// and the inline favorite star — a smaller glow/scale so a row of six of
-/// these doesn't compete with the transport buttons for visual weight.
-private struct TVUtilityButtonLabel: View {
-    let symbol: String
-    var isOn: Bool = false
-    var tint: Color = .accentColor
-    @Environment(\.isFocused) private var isFocused
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .fill(isFocused ? Color.white.opacity(0.16) : Color.clear)
-            Image(systemName: symbol)
-                .font(.system(size: 24, weight: .medium))
-                .foregroundStyle(isOn ? tint : (isFocused ? Color.white : Color.secondary))
-        }
-        .frame(width: 64, height: 64)
-        .scaleEffect(isFocused ? 1.14 : 1.0)
-        .shadow(color: isFocused ? tint.opacity(0.5) : .clear, radius: isFocused ? 12 : 0)
-        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: isFocused)
+        let size: CGFloat = big ? 112 : 80
+        Image(systemName: symbol)
+            .font(.system(size: big ? 42 : 28, weight: .bold))
+            .foregroundStyle(isFocused ? Color.black : Color.white)
+            .frame(width: size, height: size)
+            .background {
+                if isFocused {
+                    Circle().fill(Color.white)
+                } else if big {
+                    Circle().fill(TVPalette.brand)
+                } else {
+                    Circle().fill(Color.white.opacity(0.06))
+                }
+            }
+            .shadow(color: isFocused ? .white.opacity(0.35)
+                        : (big ? TVPalette.violet.opacity(0.55) : .clear),
+                    radius: isFocused ? 24 : 18, y: 8)
+            .scaleEffect(isFocused ? 1.14 : 1.0)
+            .animation(.spring(response: 0.32, dampingFraction: 0.72), value: isFocused)
     }
 }
 

@@ -29,7 +29,7 @@ struct TVUpNextRow: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.title)
-                    .font(.system(size: 24, weight: isCurrent ? .bold : .semibold))
+                    .font(.system(size: 23, weight: isCurrent ? .bold : .semibold))
                     .foregroundStyle(isCurrent ? Color.white : .white.opacity(isPlayed ? 0.5 : 0.92))
                     .lineLimit(1)
                 Text(item.artist.isEmpty ? "Unknown Artist" : item.artist)
@@ -42,30 +42,26 @@ struct TVUpNextRow: View {
 
             if isCurrent {
                 Text(isPlaying ? "PLAYING" : "PAUSED")
-                    .font(.system(size: 14, weight: .bold))
-                    .tracking(1.6)
-                    .foregroundStyle(TVPalette.neon)
+                    .font(TVType.eyebrow)
+                    .tracking(1.8)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Capsule().fill(TVPalette.brand))
             }
         }
         .padding(.horizontal, 18)
-        .padding(.vertical, 12)
-        .opacity(isPlayed && !isFocused ? 0.65 : 1)
-        .tvNeonCard(
-            isFocused: isFocused,
-            // The playing row keeps a lit rim even unfocused, so it stays
-            // findable after focus has moved on down the queue.
-            tint: isCurrent ? TVPalette.neon : nil
-        )
-        .overlay(alignment: .leading) {
-            if isCurrent {
-                Capsule()
-                    .fill(LinearGradient(colors: [TVPalette.neon, TVPalette.neonAlt],
-                                         startPoint: .top, endPoint: .bottom))
-                    .frame(width: 4, height: 34)
-                    .offset(x: -2)
-                    .shadow(color: TVPalette.neon, radius: 8)
+        .padding(.vertical, 10)
+        .opacity(isPlayed && !isFocused ? 0.55 : 1)
+        .background {
+            // The playing row keeps a tinted surface even unfocused, so it
+            // stays findable after focus has moved on down the queue.
+            if isCurrent && !isFocused {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(TVPalette.violet.opacity(0.18))
             }
         }
+        .tvNeonCard(cornerRadius: 18, isFocused: isFocused, isProminent: false)
     }
 
     /// Artwork for anything still ahead, a position number for what's behind.
@@ -116,12 +112,12 @@ struct TVPlayingMeter: View {
         HStack(alignment: .center, spacing: 3) {
             ForEach(0..<3, id: \.self) { i in
                 Capsule()
-                    .fill(TVPalette.neon)
+                    .fill(TVPalette.brandVertical)
                     .frame(width: 4, height: barHeight(index: i))
             }
         }
         .frame(height: 26)
-        .shadow(color: TVPalette.neon.opacity(0.8), radius: 6)
+        .shadow(color: TVPalette.violet.opacity(0.8), radius: 6)
         .onAppear { startIfNeeded() }
         .onChange(of: isAnimating) { _ in startIfNeeded() }
     }

@@ -227,7 +227,10 @@ struct TVAriaBlurbView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
-        .tvNeonCard(cornerRadius: 18, tint: TVPalette.neonAlt)
+        .background {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(TVPalette.violet.opacity(0.2))
+        }
         .transition(.opacity.combined(with: .move(edge: .bottom)))
     }
 }
@@ -244,19 +247,15 @@ struct TVAriaMark: View {
     var body: some View {
         ZStack {
             Circle()
-                .strokeBorder(
-                    LinearGradient(colors: [TVPalette.neonAlt, TVPalette.neon],
-                                   startPoint: .topLeading, endPoint: .bottomTrailing),
-                    lineWidth: 2
-                )
+                .strokeBorder(TVPalette.brand, lineWidth: max(2, diameter * 0.07))
             Circle()
-                .fill(TVPalette.neonAlt)
+                .fill(TVPalette.brand)
                 .frame(width: diameter * 0.34, height: diameter * 0.34)
                 .scaleEffect(pulse ? 1.35 : 0.85)
                 .opacity(pulse ? 1 : 0.6)
         }
         .frame(width: diameter, height: diameter)
-        .shadow(color: TVPalette.neonAlt.opacity(0.7), radius: 8)
+        .shadow(color: TVPalette.violet.opacity(0.7), radius: max(8, diameter * 0.25))
         .onAppear {
             guard isAnimating else { return }
             withAnimation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true)) {
@@ -266,39 +265,49 @@ struct TVAriaMark: View {
     }
 }
 
-/// Aria's Daily Pick, as a Home shelf card.
+/// Aria's Daily Pick, as a Home card — wide, in her violet, with her reason in
+/// her own (rounded, italic) voice.
 struct TVAriaDailyPickCard: View {
     let pick: TVAriaDailyPick
     @Environment(\.isFocused) private var isFocused
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
-                TVAriaMark(isAnimating: false, diameter: 24)
+        HStack(alignment: .top, spacing: 28) {
+            TVAriaMark(isAnimating: true, diameter: 64)
+                .padding(.top, 4)
+            VStack(alignment: .leading, spacing: 10) {
                 Text("ARIA'S DAILY PICK")
                     .font(TVType.eyebrow)
-                    .tracking(2)
+                    .tracking(2.4)
                     .foregroundStyle(TVPalette.neonAlt)
+                Text(pick.pick?.title ?? "")
+                    .font(.system(size: 36, weight: .heavy, design: .rounded))
+                    .lineLimit(2)
+                Text(pick.pick?.artist ?? "")
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(TVPalette.textSecondary)
+                    .lineLimit(1)
+                if let reason = pick.reason, !reason.isEmpty {
+                    Text("“\(reason)”")
+                        .font(.system(size: 21, design: .rounded))
+                        .italic()
+                        .foregroundStyle(.white.opacity(0.75))
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 6)
+                }
             }
-            Text(pick.pick?.title ?? "")
-                .font(.system(size: 30, weight: .bold))
-                .lineLimit(2)
-            Text(pick.pick?.artist ?? "")
-                .font(TVType.rowDetail)
-                .foregroundStyle(.white.opacity(0.5))
-                .lineLimit(1)
-            if let reason = pick.reason, !reason.isEmpty {
-                Text(reason)
-                    .font(.system(size: 20, design: .rounded))
-                    .italic()
-                    .foregroundStyle(.white.opacity(0.65))
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 2)
-            }
+            Spacer(minLength: 0)
         }
-        .frame(width: 440, alignment: .leading)
-        .padding(24)
-        .tvNeonCard(cornerRadius: 22, isFocused: isFocused, tint: TVPalette.neonAlt)
+        .frame(maxWidth: 900, alignment: .leading)
+        .padding(32)
+        .background {
+            RoundedRectangle(cornerRadius: 30, style: .continuous)
+                .fill(
+                    LinearGradient(colors: [TVPalette.violet.opacity(0.45), TVPalette.blue.opacity(0.18)],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing)
+                )
+        }
+        .tvNeonCard(cornerRadius: 30, isFocused: isFocused, tint: TVPalette.neonAlt)
     }
 }

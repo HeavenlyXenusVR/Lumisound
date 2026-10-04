@@ -2,6 +2,13 @@ import SwiftUI
 
 // MARK: - TVSideRail
 //
+// Prism pass: the rail is a floating glass column inset from the screen edge,
+// with the brand tile at the top, the five content destinations grouped in the
+// middle and the account avatar anchored at the bottom — the same place every
+// Apple TV app puts the profile. The current tab is a brand-gradient tile; the
+// focused one is white (the strongest focus signal, on a small control) with
+// its name floating beside it.
+//
 // The app's primary navigation, as a narrow vertical icon rail down the left
 // edge, replacing the horizontal pill row that ran across the top.
 //
@@ -29,176 +36,150 @@ struct TVSideRail: View {
     @Binding var selection: TVDestination
     var accountName: String
     var accountBadge: Int = 0
-    /// Drawn in place of the account glyph — the rail showed a generic person
-    /// icon while the account screen behind it showed the real picture, so the
-    /// one place the avatar is permanently visible was the one place it wasn't.
+    /// Drawn in place of the account glyph — the one place the avatar is
+    /// permanently visible should show the real picture.
     var user: TVUser? = nil
     var baseURL: String = ""
 
-    static let width: CGFloat = 112
+    static let width: CGFloat = 124
+
+    private var contentDestinations: [TVDestination] {
+        TVDestination.allCases.filter { $0 != .account }
+    }
 
     var body: some View {
-        VStack(spacing: 14) {
-            mark
-                .padding(.bottom, 26)
+        VStack(spacing: 0) {
+            TVBrandMark(height: 30)
+                .padding(.bottom, 34)
 
-            ForEach(TVDestination.allCases) { dest in
-                Button {
-                    selection = dest
-                } label: {
-                    TVRailItemLabel(
-                        title: dest.title(accountName: accountName),
-                        systemImage: dest.systemImage,
-                        isSelected: selection == dest,
-                        badge: dest == .account ? accountBadge : 0,
-                        avatar: dest == .account
-                            ? TVAvatarView(user: user, baseURL: baseURL,
-                                           diameter: 40, showsRing: false)
-                            : nil
-                    )
+            VStack(spacing: 14) {
+                ForEach(contentDestinations) { dest in
+                    item(dest)
                 }
-                .buttonStyle(.plain)
-                .focusEffectDisabled()
+            }
+            .padding(.vertical, 18)
+            .padding(.horizontal, 12)
+            .background {
+                Capsule(style: .continuous)
+                    .fill(.ultraThinMaterial)
+                    .overlay { Capsule(style: .continuous).fill(TVPalette.surface.opacity(0.5)) }
+                    .overlay {
+                        Capsule(style: .continuous)
+                            .strokeBorder(
+                                LinearGradient(colors: [.white.opacity(0.16), .white.opacity(0.03)],
+                                               startPoint: .top, endPoint: .bottom),
+                                lineWidth: 1
+                            )
+                    }
+                    .shadow(color: .black.opacity(0.4), radius: 24, y: 10)
             }
 
-            Spacer(minLength: 0)
+            Spacer(minLength: 24)
+
+            item(.account)
         }
-        // maxHeight as well as width: the VStack otherwise sizes to its content,
-        // so the background gradient below stopped where the last icon did and
-        // painted a hard-edged block partway down the screen instead of a full
-        // column. `ignoresSafeArea` extends a view past the safe area; it does
-        // not make one fill its parent.
-        .padding(.vertical, 44)
+        .padding(.top, 50)
+        .padding(.bottom, 50)
         .frame(width: Self.width)
-        // Fill the window's height so the background below covers a full
-        // column. The VStack otherwise sizes to its content, so the gradient
-        // stopped where the last icon did and painted a hard-edged block partway
-        // down the screen. `ignoresSafeArea` extends a view past the safe area;
-        // it does not make one fill its parent, which is what was needed.
-        // Applied AFTER the padding — padding an already-infinite frame grows it
-        // past the window rather than insetting the content within it.
+        // Fill the window's height so the account item anchors to the bottom.
+        // Applied AFTER the padding — padding an already-infinite frame grows
+        // it past the window rather than insetting the content within it.
         .frame(maxHeight: .infinity)
-        .background {
-            // Reads as a lit edge rather than a panel with a border on it.
-            LinearGradient(
-                colors: [TVPalette.surface.opacity(0.9), TVPalette.ground.opacity(0.25)],
-                startPoint: .leading, endPoint: .trailing
-            )
-            .overlay(alignment: .trailing) {
-                LinearGradient(
-                    colors: [TVPalette.neon.opacity(0.55), TVPalette.neonAlt.opacity(0.35)],
-                    startPoint: .top, endPoint: .bottom
-                )
-                .frame(width: 1.5)
-            }
-        }
-        // `.leading` as well as `.vertical`: with only the vertical edges
-        // ignored, tvOS's horizontal safe-area inset left a strip of backdrop
-        // between the rail and the screen edge — the rail floated slightly
-        // inboard instead of being anchored to the side of the picture.
         .ignoresSafeArea(edges: [.vertical, .leading])
         .focusSection()
     }
 
-    /// The Lumisound mark: a stack of bars — the app's own shape rather than a
-    /// borrowed glyph — lit with the same neon as the rail edge.
-    private var mark: some View {
-        HStack(alignment: .center, spacing: 4) {
-            ForEach(Array([16, 34, 24, 44, 20].enumerated()), id: \.offset) { _, h in
-                Capsule()
-                    .fill(
-                        LinearGradient(colors: [TVPalette.neon, TVPalette.neonAlt],
-                                       startPoint: .top, endPoint: .bottom)
-                    )
-                    .frame(width: 5, height: CGFloat(h))
-            }
+    private func item(_ dest: TVDestination) -> some View {
+        Button {
+            selection = dest
+        } label: {
+            TVRailItemLabel(
+                title: dest.title(accountName: accountName),
+                systemImage: dest.systemImage,
+                isSelected: selection == dest,
+                badge: dest == .account ? accountBadge : 0,
+                avatar: dest == .account
+                    ? TVAvatarView(user: user, baseURL: baseURL,
+                                   diameter: 58, showsRing: false)
+                    : nil
+            )
         }
-        .frame(height: 48)
-        .shadow(color: TVPalette.neon.opacity(0.7), radius: 14)
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
     }
 }
 
 /// One destination in the rail. Focus is read off the environment inside a
-/// `.plain` button's label — the same pattern as `TVChip` and the old nav pill,
-/// so focus styling stays consistent across every custom control in the port.
+/// `.plain` button's label — the same pattern as every custom control here.
 private struct TVRailItemLabel: View {
     let title: String
     let systemImage: String
     let isSelected: Bool
     var badge: Int = 0
-    /// Replaces the glyph entirely when set (the account row).
+    /// Replaces the glyph entirely when set (the account item).
     var avatar: TVAvatarView? = nil
 
     @Environment(\.isFocused) private var isFocused
+
+    private let size: CGFloat = 66
 
     var body: some View {
         ZStack {
             if let avatar {
                 avatar
-                    // Dimmed to match the other icons when this tab is neither
-                    // focused nor current, so one row does not sit permanently
-                    // brighter than the rest of the rail.
-                    .opacity(isFocused || isSelected ? 1 : 0.55)
+                    .overlay {
+                        Circle()
+                            .strokeBorder(isFocused ? AnyShapeStyle(Color.white)
+                                          : isSelected ? AnyShapeStyle(TVPalette.brand)
+                                          : AnyShapeStyle(Color.white.opacity(0.15)),
+                                          lineWidth: isFocused || isSelected ? 3 : 1)
+                    }
+                    .opacity(isFocused || isSelected ? 1 : 0.7)
+                    .frame(width: size, height: size)
             } else {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(isFocused ? AnyShapeStyle(Color.white)
+                          : isSelected ? AnyShapeStyle(TVPalette.brand)
+                          : AnyShapeStyle(Color.clear))
+                    .frame(width: size, height: size)
+                    .shadow(color: isSelected && !isFocused ? TVPalette.violet.opacity(0.55) : .clear,
+                            radius: 14, y: 6)
                 Image(systemName: systemImage)
                     .font(.system(size: 26, weight: .semibold))
-                    .foregroundStyle(isFocused || isSelected ? Color.white : Color.white.opacity(0.45))
+                    .foregroundStyle(isFocused ? Color.black
+                                     : isSelected ? Color.white
+                                     : Color.white.opacity(0.5))
             }
             if badge > 0 {
                 Text("\(badge)")
-                    .font(.system(size: 15, weight: .bold))
-                    .padding(5)
-                    .background(TVPalette.neonAlt, in: Circle())
-                    .offset(x: 19, y: -16)
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .frame(minWidth: 26, minHeight: 26)
+                    .background(Circle().fill(Color(red: 0.96, green: 0.33, blue: 0.47)))
+                    .offset(x: 24, y: -24)
             }
         }
-        .frame(width: 60, height: 54)
-        .background {
-            // The selected destination keeps a quiet marker; the focused one
-            // gets the lit surface. Both states must be distinguishable at once,
-            // since focus moves through items that are not the current tab.
-            ZStack(alignment: .leading) {
-                if isFocused {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(TVPalette.surface)
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .strokeBorder(TVPalette.neon.opacity(0.9), lineWidth: 1.5)
-                        }
-                        .shadow(color: TVPalette.neon.opacity(0.5), radius: 18)
-                }
-                if isSelected {
-                    Capsule()
-                        .fill(LinearGradient(colors: [TVPalette.neon, TVPalette.neonAlt],
-                                             startPoint: .top, endPoint: .bottom))
-                        .frame(width: 4, height: 30)
-                        .shadow(color: TVPalette.neon, radius: 8)
-                        .offset(x: -14)
-                }
-            }
-        }
-        // Floating name for the focused item. `.overlay` with a fixed-size
-        // frame and `allowsHitTesting(false)` so it paints outside the rail
-        // without widening it or becoming a focus target of its own.
+        .frame(width: size, height: size)
+        // Floating name for the focused item: an overlay with
+        // `allowsHitTesting(false)`, so it paints outside the rail without
+        // widening it or becoming a focus target of its own.
         .overlay(alignment: .leading) {
             if isFocused {
                 Text(title)
-                    .font(.system(size: 23, weight: .semibold))
+                    .font(.system(size: 23, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.black)
                     .lineLimit(1)
                     .fixedSize()
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 10)
-                    .background {
-                        Capsule().fill(TVPalette.surface)
-                        Capsule().strokeBorder(TVPalette.neon.opacity(0.7), lineWidth: 1)
-                    }
-                    .shadow(color: .black.opacity(0.6), radius: 16, y: 4)
-                    .offset(x: 86)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 11)
+                    .background(Capsule().fill(Color.white))
+                    .shadow(color: .black.opacity(0.45), radius: 16, y: 6)
+                    .offset(x: size + 22)
                     .allowsHitTesting(false)
-                    .transition(.opacity)
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
             }
         }
-        .scaleEffect(isFocused ? 1.06 : 1)
+        .scaleEffect(isFocused ? 1.1 : 1)
         .animation(.spring(response: 0.28, dampingFraction: 0.8), value: isFocused)
     }
 }

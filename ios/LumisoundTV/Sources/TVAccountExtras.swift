@@ -31,52 +31,80 @@ struct TVSessionsView: View {
     let token: String
 
     var body: some View {
-        List {
-            if client.isLoadingSessions && client.sessions.isEmpty {
-                HStack { Spacer(); ProgressView(); Spacer() }
-            } else if client.sessions.isEmpty {
-                Text("No active sessions.").foregroundStyle(.secondary)
-            } else {
-                ForEach(client.sessions) { session in
-                    sessionRow(session)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 30) {
+                TVScreenTitle(title: "Active Sessions",
+                              detail: client.sessions.isEmpty ? nil : "\(client.sessions.count) signed in",
+                              eyebrow: "Account")
+
+                if client.isLoadingSessions && client.sessions.isEmpty {
+                    TVLoadingState(text: "Loading sessions…")
+                } else if client.sessions.isEmpty {
+                    TVEmptyState(systemImage: "rectangle.stack.badge.person.crop",
+                                 title: "No active sessions")
+                } else {
+                    VStack(spacing: 14) {
+                        ForEach(client.sessions) { session in
+                            sessionRow(session)
+                        }
+                    }
+                    .frame(maxWidth: 1300, alignment: .leading)
+                    .padding(.horizontal, TVMetrics.margin)
                 }
             }
+            .padding(.bottom, 80)
         }
         .tvAmbientBackground()
-        .navigationTitle("Active Sessions")
         .task {
             if client.sessions.isEmpty { await client.fetchSessions(token: token) }
         }
     }
 
     private func sessionRow(_ session: TVSession) -> some View {
-        HStack(spacing: 20) {
+        HStack(spacing: 24) {
             Image(systemName: session.isCurrent ? "appletv.fill" : "iphone")
-                .font(.title2)
-                .foregroundStyle(session.isCurrent ? Color.accentColor : Color.secondary)
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 10) {
-                    Text(session.deviceName ?? "Unknown Device").font(.headline)
+                .font(.system(size: 28, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 68, height: 68)
+                .background {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(session.isCurrent ? AnyShapeStyle(TVPalette.brand)
+                              : AnyShapeStyle(Color.white.opacity(0.1)))
+                }
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 12) {
+                    Text(session.deviceName ?? "Unknown Device")
+                        .font(TVType.rowTitle)
+                        .lineLimit(1)
                     if session.isCurrent {
-                        Text("This Device")
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 8).padding(.vertical, 3)
-                            .background(Color.accentColor.opacity(0.2), in: Capsule())
+                        Text("THIS DEVICE")
+                            .font(TVType.eyebrow)
+                            .tracking(1.6)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(Capsule().fill(TVPalette.violet.opacity(0.35)))
                     }
                 }
                 Text("Signed in \(tvFormattedTimestamp(session.createdAt))")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(TVType.rowDetail)
+                    .foregroundStyle(TVPalette.textTertiary)
             }
-            Spacer()
+            Spacer(minLength: 20)
             Button(role: .destructive) {
                 Task {
                     let wasCurrentSession = await client.revokeSession(session.tokenID, token: token)
                     if wasCurrentSession { account.logout() }
                 }
             } label: {
-                Text("Revoke")
+                TVPillLabel(title: session.isCurrent ? "Sign Out" : "Revoke",
+                            systemImage: "xmark.circle", style: .secondary)
             }
+            .buttonStyle(.plain)
+            .focusEffectDisabled()
         }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 18)
+        .tvNeonCard(cornerRadius: 24)
     }
 }
 
@@ -86,94 +114,136 @@ struct TVNotificationsView: View {
     @ObservedObject var client: TVBridgeClient
     let token: String
 
+    private var unreadCount: Int { client.notifications.filter(\.isUnread).count }
+
     var body: some View {
-        List {
-            if client.notifications.contains(where: \.isUnread) {
-                Button("Mark All Read") {
-                    Task { await client.markAllNotificationsRead(token: token) }
-                }
-            }
-            if client.isLoadingNotifications && client.notifications.isEmpty {
-                HStack { Spacer(); ProgressView(); Spacer() }
-            } else if client.notifications.isEmpty {
-                Text("No notifications yet.").foregroundStyle(.secondary)
-            } else {
-                ForEach(client.notifications) { note in
-                    Button {
-                        guard note.isUnread else { return }
-                        Task { await client.markNotificationRead(note.id, token: token) }
-                    } label: {
-                        notificationRow(note)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 30) {
+                HStack(alignment: .bottom) {
+                    TVScreenTitle(title: "Notifications",
+                                  detail: unreadCount > 0 ? "\(unreadCount) unread" : nil,
+                                  eyebrow: "Account")
+                    if unreadCount > 0 {
+                        Button {
+                            Task { await client.markAllNotificationsRead(token: token) }
+                        } label: {
+                            TVPillLabel(title: "Mark All Read", systemImage: "checkmark", style: .secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .focusEffectDisabled()
+                        .padding(.trailing, TVMetrics.margin)
                     }
                 }
+
+                if client.isLoadingNotifications && client.notifications.isEmpty {
+                    TVLoadingState(text: "Loading notifications…")
+                } else if client.notifications.isEmpty {
+                    TVEmptyState(systemImage: "bell.slash",
+                                 title: "You're all caught up",
+                                 message: "Notifications from Lumisound and your friends show up here.")
+                } else {
+                    VStack(spacing: TVMetrics.row) {
+                        ForEach(client.notifications) { note in
+                            Button {
+                                guard note.isUnread else { return }
+                                Task { await client.markNotificationRead(note.id, token: token) }
+                            } label: {
+                                TVNotificationRowLabel(note: note)
+                            }
+                            .buttonStyle(.plain)
+                            .focusEffectDisabled()
+                        }
+                    }
+                    .frame(maxWidth: 1300, alignment: .leading)
+                    .padding(.horizontal, TVMetrics.margin - 20)
+                }
             }
+            .padding(.bottom, 80)
         }
         .tvAmbientBackground()
-        .navigationTitle("Notifications")
         .task {
             if client.notifications.isEmpty { await client.fetchNotifications(token: token) }
         }
     }
+}
 
-    private func notificationRow(_ note: TVNotification) -> some View {
-        HStack(alignment: .top, spacing: 16) {
-            Circle()
-                .fill(note.isUnread ? Color.accentColor : Color.clear)
-                .frame(width: 10, height: 10)
-                .padding(.top, 6)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(note.title ?? "Notification").font(.headline)
+private struct TVNotificationRowLabel: View {
+    let note: TVNotification
+    @Environment(\.isFocused) private var isFocused
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 22) {
+            Image(systemName: note.isUnread ? "bell.badge.fill" : "bell")
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(note.isUnread ? Color.white : TVPalette.textTertiary)
+                .frame(width: 54, height: 54)
+                .background {
+                    Circle().fill(note.isUnread ? AnyShapeStyle(TVPalette.brand)
+                                  : AnyShapeStyle(Color.white.opacity(0.08)))
+                }
+            VStack(alignment: .leading, spacing: 5) {
+                Text(note.title ?? "Notification")
+                    .font(TVType.rowTitle)
+                    .foregroundStyle(note.isUnread ? Color.white : TVPalette.textSecondary)
                 if let body = note.body, !body.isEmpty {
-                    Text(body).font(.subheadline).foregroundStyle(.secondary)
+                    Text(body)
+                        .font(TVType.rowDetail)
+                        .foregroundStyle(TVPalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Text(tvFormattedTimestamp(note.createdAt))
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(TVType.meta)
+                    .foregroundStyle(TVPalette.textTertiary)
             }
-            Spacer()
+            Spacer(minLength: 0)
         }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
+        .tvNeonCard(cornerRadius: 22, isFocused: isFocused, isProminent: note.isUnread)
     }
 }
 
 // MARK: - Friends Listening Now
 //
-// Deliberately minimal — a passive "who's playing something right now" card,
-// not a full friends/social tab (no add/accept/decline, no browsing other
-// profiles). A shared living-room screen showing a whole social graph is a
-// worse fit than on a personal phone; this only ever renders when it has
-// something to show (see TVBridgeClient.fetchFriendsListening).
+// Deliberately minimal — a passive "who's playing something right now" strip,
+// not a full friends/social tab. A shared living-room screen showing a whole
+// social graph is a worse fit than on a personal phone; this only ever renders
+// when it has something to show (see TVBridgeClient.fetchFriendsListening).
 
 struct TVFriendsListeningCard: View {
     let friendsListening: [TVFriendListening]
 
     var body: some View {
         if !friendsListening.isEmpty {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Friends Listening Now").font(.title3.weight(.semibold))
-                VStack(spacing: 0) {
-                    ForEach(friendsListening) { entry in
-                        HStack(spacing: 16) {
-                            Image(systemName: "person.crop.circle.fill")
-                                .font(.title2)
-                                .foregroundStyle(.secondary)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(entry.friend.name).font(.subheadline.weight(.semibold))
-                                if let title = entry.presence.nowPlayingTitle, !title.isEmpty {
-                                    Text("\(title)\(entry.presence.nowPlayingArtist.map { " — \($0)" } ?? "")")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
+            VStack(spacing: 12) {
+                ForEach(friendsListening) { entry in
+                    HStack(spacing: 20) {
+                        TVGeneratedArt(seed: entry.friend.name, systemImage: "person.fill")
+                            .frame(width: 60, height: 60)
+                            .clipShape(Circle())
+                            .overlay {
+                                Text(String(entry.friend.name.prefix(1)).uppercased())
+                                    .font(.system(size: 26, weight: .heavy, design: .rounded))
                             }
-                            Spacer()
-                            Image(systemName: "waveform")
-                                .foregroundStyle(Color.accentColor)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(entry.friend.name)
+                                .font(TVType.rowTitle)
+                                .lineLimit(1)
+                            if let title = entry.presence.nowPlayingTitle, !title.isEmpty {
+                                Text("\(title)\(entry.presence.nowPlayingArtist.map { " — \($0)" } ?? "")")
+                                    .font(TVType.rowDetail)
+                                    .foregroundStyle(TVPalette.textSecondary)
+                                    .lineLimit(1)
+                            }
                         }
-                        .padding(.vertical, 8)
+                        Spacer(minLength: 12)
+                        TVPlayingMeter(isAnimating: entry.presence.isPlaying)
                     }
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 14)
+                    .tvNeonCard(cornerRadius: 22)
                 }
             }
-            .padding(20)
-            .tvGlassPanel()
         }
     }
 }

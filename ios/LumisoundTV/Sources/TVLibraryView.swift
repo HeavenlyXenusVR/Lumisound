@@ -80,25 +80,30 @@ struct TVLibraryView: View {
         VStack(spacing: 0) {
             if !client.isLoadingLibrary && client.libraryError == nil && !client.library.isEmpty {
                 TVScreenTitle(title: "Library", detail: libraryDetail)
-                    .padding(.bottom, 24)
+                    .padding(.bottom, 22)
                 modeChips
-                    .padding(.bottom, 26)
+                    .padding(.bottom, 10)
             }
 
             Group {
                 if client.isLoadingLibrary {
-                    ProgressView("Loading your library…").padding(.top, 100)
+                    TVLoadingState(text: "Loading your library…")
                 } else if let err = client.libraryError {
-                    VStack(spacing: 20) {
-                        Image(systemName: "exclamationmark.icloud").font(.system(size: 70)).foregroundStyle(.secondary)
-                        Text(err).font(.title3).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                        Button("Retry") { Task { await client.fetchLibrary(token: token) } }
-                            .frame(width: 260)
+                    TVEmptyState(systemImage: "exclamationmark.icloud",
+                                 title: "Couldn't load your library",
+                                 message: err) {
+                        Button {
+                            Task { await client.fetchLibrary(token: token) }
+                        } label: {
+                            TVPillLabel(title: "Try Again", systemImage: "arrow.clockwise")
+                        }
+                        .buttonStyle(.plain)
+                        .focusEffectDisabled()
                     }
-                    .padding(.top, 100)
                 } else if client.library.isEmpty {
-                    message("Your cloud library is empty.\nAdd music from the iPhone app.",
-                            systemImage: "music.note.list")
+                    TVEmptyState(systemImage: "music.note.list",
+                                 title: "Your library is empty",
+                                 message: "Add music to your Personal Cloud Library from the iPhone app and it will show up here.")
                 } else {
                     switch mode {
                     case .songs: songsList
@@ -109,6 +114,7 @@ struct TVLibraryView: View {
                     }
                 }
             }
+            .frame(maxHeight: .infinity, alignment: .top)
         }
         // NO `.searchable` here. On tvOS that modifier does not render a compact
         // field — it lays out a full search surface, prompt plus a letter picker
@@ -135,7 +141,7 @@ struct TVLibraryView: View {
     /// instead of a plain system control.
     private var modeChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 16) {
+            HStack(spacing: 14) {
                 // Leads the row: searching is a different KIND of action from
                 // switching browse dimension, so it keeps the search glyph and
                 // shows the live query when one is set, rather than pretending
@@ -163,6 +169,9 @@ struct TVLibraryView: View {
                 }
             }
             .padding(.horizontal, TVMetrics.margin)
+            // Room for a focused chip's scale and shadow, which the scroll
+            // view would otherwise clip.
+            .padding(.vertical, 16)
         }
     }
 
@@ -174,17 +183,17 @@ struct TVLibraryView: View {
     private var songsList: some View {
         ScrollView {
             if filteredSongs.isEmpty {
-                Text("No songs match “\(searchText)”.")
-                    .font(.title3).foregroundStyle(.secondary).padding(.top, 100)
+                TVEmptyState(systemImage: "magnifyingglass",
+                             title: "No matches",
+                             message: "No songs match “\(searchText)”.")
             } else {
-                LazyVStack(spacing: TVMetrics.row) {
+                TVTrackList {
                     ForEach(filteredSongs) { track in
                         trackRow(track)
                     }
                 }
-                .padding(.horizontal, TVMetrics.margin)
-                .padding(.top, 8)
-                .padding(.bottom, 60)
+                .padding(.top, 14)
+                .padding(.bottom, 80)
             }
         }
     }
@@ -223,23 +232,19 @@ struct TVLibraryView: View {
         ) {
             ScrollView {
                 if filteredSongs.isEmpty {
-                    VStack(spacing: 16) {
-                        Image(systemName: "magnifyingglass")
-                            .font(.system(size: 70)).foregroundStyle(.secondary)
-                        Text(searchText.isEmpty
-                             ? "Search your library by title, artist or album."
-                             : "No songs match “\(searchText)”.")
-                            .font(.title3).foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    .padding(.top, 100)
+                    TVEmptyState(
+                        systemImage: "magnifyingglass",
+                        title: searchText.isEmpty ? "Search your library" : "No matches",
+                        message: searchText.isEmpty
+                            ? "Find songs by title, artist or album."
+                            : "No songs match “\(searchText)”."
+                    )
                 } else {
-                    LazyVStack(spacing: TVMetrics.row) {
+                    TVTrackList {
                         ForEach(filteredSongs) { track in
                             trackRow(track)
                         }
                     }
-                    .padding(.horizontal, TVMetrics.margin)
                     .padding(.vertical, 30)
                 }
             }
@@ -248,13 +253,5 @@ struct TVLibraryView: View {
             .tvAmbientBackground()
         }
         .ignoresSafeArea()
-    }
-
-    private func message(_ text: String, systemImage: String) -> some View {
-        VStack(spacing: 16) {
-            Image(systemName: systemImage).font(.system(size: 70)).foregroundStyle(.secondary)
-            Text(text).font(.title3).foregroundStyle(.secondary).multilineTextAlignment(.center)
-        }
-        .padding(.top, 120)
     }
 }

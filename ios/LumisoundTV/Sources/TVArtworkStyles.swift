@@ -68,14 +68,7 @@ struct TVStyleCover: View {
 
     var body: some View {
         TVAuthImage(url: artworkURL, token: authToken) {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(LinearGradient(colors: [.gray.opacity(0.35), .gray.opacity(0.2)],
-                                      startPoint: .topLeading, endPoint: .bottomTrailing))
-                .overlay(
-                    Image(systemName: "music.note")
-                        .font(.system(size: size * 0.25, weight: .semibold))
-                        .foregroundStyle(Color.accentColor)
-                )
+            TVArtPlaceholder(systemImage: "music.note", iconScale: size / 180)
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
@@ -89,8 +82,8 @@ struct TVCircuitPulseArtworkView: View {
     let authToken: String?
     let isPlaying: Bool
 
-    private let traceColor = Color.accentColor.opacity(0.55)
-    private let pulseColor = Color.cyan
+    private let traceColor = TVPalette.violet.opacity(0.6)
+    private let pulseColor = TVPalette.neon
 
     var body: some View {
         TimelineView(.animation) { timeline in
@@ -98,7 +91,7 @@ struct TVCircuitPulseArtworkView: View {
 
             ZStack {
                 RoundedRectangle(cornerRadius: 38, style: .continuous)
-                    .fill(Color(red: 0.04, green: 0.07, blue: 0.05))
+                    .fill(TVPalette.ground)
 
                 Canvas { context, size in
                     let inset: CGFloat = 50
