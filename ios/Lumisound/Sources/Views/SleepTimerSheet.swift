@@ -9,7 +9,7 @@ struct SleepTimerSheet: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                AppTheme.background.ignoresSafeArea()
+                EditionScreenBackground()
 
                 ScrollView {
                     VStack(spacing: 28) {

@@ -80,6 +80,14 @@ struct StreamSearchView: View {
     }
 
     var body: some View {
+        if InterfaceEdition.isLumen {
+            lumenBody
+        } else {
+            classicBody
+        }
+    }
+
+    private var classicBody: some View {
         NavigationStack {
             Group {
                 if streaming.isConfigured {

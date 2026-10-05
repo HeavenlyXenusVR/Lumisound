@@ -21,7 +21,7 @@ struct ListeningStatsView: View {
             topArtistsSection
         }
         .scrollContentBackground(.hidden)
-        .background(AppTheme.background.ignoresSafeArea())
+        .background(EditionScreenBackground())
         .navigationTitle("Listening Stats")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: recompute)

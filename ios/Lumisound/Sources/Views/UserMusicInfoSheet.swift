@@ -30,7 +30,7 @@ struct UserMusicInfoSheet: View {
                 .listRowBackground(AppTheme.surface)
             }
             .scrollContentBackground(.hidden)
-            .background(AppTheme.background.ignoresSafeArea())
+            .background(EditionScreenBackground())
             .navigationTitle("File Info")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

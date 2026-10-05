@@ -154,7 +154,7 @@ struct AchievementsView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity)
-        .background(AppTheme.background.ignoresSafeArea())
+        .background(EditionScreenBackground())
         .presentationDetents([.medium])
     }
 

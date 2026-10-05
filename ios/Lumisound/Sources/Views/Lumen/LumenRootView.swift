@@ -136,7 +136,7 @@ struct LumenRootView: View {
 
             overlays
         }
-        .tint(LumenPalette.accent)
+        .lumenGlobalSkin()
         .preferredColorScheme(.dark)
         .acoustIDConfirmSheet()
         .clipMakerSheet()
@@ -395,7 +395,7 @@ struct LumenDock: View {
         }
         .padding(.horizontal, 6)
         .frame(height: LumenMetrics.tabBarHeight)
-        .adaptiveGlass(in: Capsule(), fallback: LumenPalette.surface.opacity(0.92))
+        .lumenGlass(in: Capsule(), fallback: LumenPalette.surface.opacity(0.92))
         .overlay(Capsule().strokeBorder(LumenPalette.hairline, lineWidth: 1))
         .shadow(color: .black.opacity(0.45), radius: 20, y: 10)
     }
@@ -538,7 +538,7 @@ struct LumenMiniPlayer: View {
                 ZStack(alignment: .bottomLeading) {
                     RoundedRectangle(cornerRadius: 22, style: .continuous)
                         .fill(Color.clear)
-                        .adaptiveGlass(in: RoundedRectangle(cornerRadius: 22, style: .continuous),
+                        .lumenGlass(in: RoundedRectangle(cornerRadius: 22, style: .continuous),
                                        fallback: LumenPalette.elevated.opacity(0.95))
                     progressLine
                 }

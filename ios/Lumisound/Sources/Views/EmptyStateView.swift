@@ -9,6 +9,14 @@ struct EmptyStateView: View {
     let message: String
 
     var body: some View {
+        if InterfaceEdition.isLumen {
+            LumenEmptyState(systemImage: icon, title: title, message: message)
+        } else {
+            classicBody
+        }
+    }
+
+    private var classicBody: some View {
         VStack(spacing: 12) {
             Image(systemName: icon)
                 .font(.system(size: 44, weight: .semibold))

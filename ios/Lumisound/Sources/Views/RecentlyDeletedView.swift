@@ -48,7 +48,7 @@ struct RecentlyDeletedView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .background(AppTheme.background.ignoresSafeArea())
+        .background(EditionScreenBackground())
         .navigationTitle("Recently Deleted")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

@@ -42,6 +42,17 @@ private let settingsRowTintOpacity: Double = 0.22
 
 @ViewBuilder
 func tintedRowBackground(_ tint: Color) -> some View {
+    if InterfaceEdition.isLumen {
+        // Lumen: a lifted ink surface with only a breath of the category
+        // tint, instead of tinted glass.
+        LumenPalette.surface.opacity(0.82)
+            .overlay(tint.opacity(0.05))
+    } else {
+        classicTintedRowBackground(tint)
+    }
+}
+
+private func classicTintedRowBackground(_ tint: Color) -> some View {
     Color.clear
         .adaptiveGlass(
             sectionTint: tint.opacity(settingsRowTintOpacity),
@@ -54,7 +65,16 @@ extension SettingsView {
 
     // MARK: — Helpers
 
+    @ViewBuilder
     func sectionHeader(_ text: String) -> some View {
+        if InterfaceEdition.isLumen {
+            LumenListHeader(title: text)
+        } else {
+            classicPlainSectionHeader(text)
+        }
+    }
+
+    private func classicPlainSectionHeader(_ text: String) -> some View {
         Text(text.uppercased())
             .font(AppTheme.bodyFont(size: 11))
             .foregroundStyle(AppTheme.textSecondary)
@@ -69,7 +89,16 @@ extension SettingsView {
     /// The plain-text `sectionHeader(_:)` above is kept for any call site
     /// that hasn't been moved to this one yet; both render at the same
     /// height so mixing them doesn't cause list-row jitter.
+    @ViewBuilder
     func sectionHeader(_ text: String, icon: String, tint: Color) -> some View {
+        if InterfaceEdition.isLumen {
+            LumenListHeader(title: text, systemImage: icon, tint: tint)
+        } else {
+            classicSectionHeader(text, icon: icon, tint: tint)
+        }
+    }
+
+    private func classicSectionHeader(_ text: String, icon: String, tint: Color) -> some View {
         HStack(spacing: 8) {
             Image(systemName: icon)
                 .font(.system(size: 11, weight: .semibold))

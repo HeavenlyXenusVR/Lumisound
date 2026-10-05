@@ -32,7 +32,7 @@ struct LibraryBackupView: View {
             infoSection
         }
         .scrollContentBackground(.hidden)
-        .background(AppTheme.background.ignoresSafeArea())
+        .background(EditionScreenBackground())
         .navigationTitle("Backup & Restore")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showShareSheet) {

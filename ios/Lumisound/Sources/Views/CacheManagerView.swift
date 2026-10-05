@@ -32,7 +32,7 @@ struct CacheManagerView: View {
             savedBannerSection
         }
         .scrollContentBackground(.hidden)
-        .background(AppTheme.background.ignoresSafeArea())
+        .background(EditionScreenBackground())
         .navigationTitle("Storage & Cache")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

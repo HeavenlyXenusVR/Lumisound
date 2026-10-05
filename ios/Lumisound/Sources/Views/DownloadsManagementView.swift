@@ -88,7 +88,7 @@ struct DownloadsManagementView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .background(AppTheme.background.ignoresSafeArea())
+        .background(EditionScreenBackground())
         .navigationTitle("Downloads")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

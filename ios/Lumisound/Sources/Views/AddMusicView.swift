@@ -179,7 +179,7 @@ struct AddMusicView: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .background(AppTheme.background.ignoresSafeArea())
+            .background(EditionScreenBackground())
             .navigationTitle("Add Music")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

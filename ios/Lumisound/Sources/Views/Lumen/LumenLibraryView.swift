@@ -420,7 +420,7 @@ struct LumenSelectionBar: View {
         .foregroundStyle(LumenPalette.accent)
         .padding(.horizontal, 18)
         .frame(height: 58)
-        .adaptiveGlass(in: Capsule(), fallback: LumenPalette.elevated)
+        .lumenGlass(in: Capsule(), fallback: LumenPalette.elevated)
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
         .confirmationDialog("Remove \(selectedIDs.count) songs from your library?", isPresented: $confirmDelete, titleVisibility: .visible) {

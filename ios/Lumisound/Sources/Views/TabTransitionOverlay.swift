@@ -108,7 +108,7 @@ struct TabTransitionOverlay: View {
 
     var body: some View {
         ZStack {
-            AppTheme.background.ignoresSafeArea()
+            EditionScreenBackground()
             ProfileEffectOverlay(style: animationStyle, mainTint: AppTheme.dynamicAccent, subTint: AppTheme.dynamicAccentSecondary)
                 .ignoresSafeArea()
 

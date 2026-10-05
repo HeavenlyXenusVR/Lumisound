@@ -21,7 +21,7 @@ struct SleepWakeAlarmView: View {
             limitationSection
         }
         .scrollContentBackground(.hidden)
-        .background(AppTheme.background.ignoresSafeArea())
+        .background(EditionScreenBackground())
         .navigationTitle("Wake-Up Alarm")
         .navigationBarTitleDisplayMode(.inline)
         .task {

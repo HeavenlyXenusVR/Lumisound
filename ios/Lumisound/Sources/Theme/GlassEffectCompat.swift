@@ -41,10 +41,14 @@ extension View {
     /// never in front of it.
     @ViewBuilder
     func adaptiveGlass<S: Shape>(in shape: S, fallback: Material = .ultraThinMaterial) -> some View {
-        if #available(iOS 26.0, *) {
-            self.background(glassTintLayer(in: shape)).glassEffect(.regular, in: shape)
+        if InterfaceEdition.isLumen {
+            self.lumenSurfaceBackground(in: shape, tint: nil)
         } else {
-            self.background(glassTintLayer(in: shape)).background(fallback.opacity(GlassSettings.shared.translucency), in: shape)
+            if #available(iOS 26.0, *) {
+                self.background(glassTintLayer(in: shape)).glassEffect(.regular, in: shape)
+            } else {
+                self.background(glassTintLayer(in: shape)).background(fallback.opacity(GlassSettings.shared.translucency), in: shape)
+            }
         }
     }
 
@@ -54,10 +58,14 @@ extension View {
     /// tint instead of a translucent material.
     @ViewBuilder
     func adaptiveGlass<S: Shape, F: ShapeStyle>(in shape: S, fallback: F) -> some View {
-        if #available(iOS 26.0, *) {
-            self.background(glassTintLayer(in: shape)).glassEffect(.regular, in: shape)
+        if InterfaceEdition.isLumen {
+            self.lumenSurfaceBackground(in: shape, tint: nil)
         } else {
-            self.background(glassTintLayer(in: shape)).background(fallback.opacity(GlassSettings.shared.translucency), in: shape)
+            if #available(iOS 26.0, *) {
+                self.background(glassTintLayer(in: shape)).glassEffect(.regular, in: shape)
+            } else {
+                self.background(glassTintLayer(in: shape)).background(fallback.opacity(GlassSettings.shared.translucency), in: shape)
+            }
         }
     }
 
@@ -74,10 +82,14 @@ extension View {
     /// behaviour is wrong under a row that is often just a toggle or a slider.
     @ViewBuilder
     func adaptiveGlass<S: Shape, F: ShapeStyle>(sectionTint: Color, in shape: S, fallback: F) -> some View {
-        if #available(iOS 26.0, *) {
-            self.background(glassTintLayer(in: shape)).glassEffect(.regular.tint(sectionTint), in: shape)
+        if InterfaceEdition.isLumen {
+            self.lumenSurfaceBackground(in: shape, tint: sectionTint.opacity(0.25))
         } else {
-            self.background(glassTintLayer(in: shape)).background(fallback.opacity(GlassSettings.shared.translucency), in: shape)
+            if #available(iOS 26.0, *) {
+                self.background(glassTintLayer(in: shape)).glassEffect(.regular.tint(sectionTint), in: shape)
+            } else {
+                self.background(glassTintLayer(in: shape)).background(fallback.opacity(GlassSettings.shared.translucency), in: shape)
+            }
         }
     }
 
@@ -85,10 +97,14 @@ extension View {
     /// tappable floating controls), falling back to the given `Material`.
     @ViewBuilder
     func adaptiveGlass<S: Shape>(tint: Color, in shape: S, fallback: Material = .ultraThinMaterial) -> some View {
-        if #available(iOS 26.0, *) {
-            self.background(glassTintLayer(in: shape)).glassEffect(.regular.tint(tint).interactive(), in: shape)
+        if InterfaceEdition.isLumen {
+            self.lumenSurfaceBackground(in: shape, tint: tint)
         } else {
-            self.background(glassTintLayer(in: shape)).background(fallback.opacity(GlassSettings.shared.translucency), in: shape)
+            if #available(iOS 26.0, *) {
+                self.background(glassTintLayer(in: shape)).glassEffect(.regular.tint(tint).interactive(), in: shape)
+            } else {
+                self.background(glassTintLayer(in: shape)).background(fallback.opacity(GlassSettings.shared.translucency), in: shape)
+            }
         }
     }
 
@@ -96,10 +112,47 @@ extension View {
     /// highlighted card), falling back to an arbitrary `ShapeStyle`.
     @ViewBuilder
     func adaptiveGlass<S: Shape, F: ShapeStyle>(tint: Color, in shape: S, fallback: F) -> some View {
-        if #available(iOS 26.0, *) {
-            self.background(glassTintLayer(in: shape)).glassEffect(.regular.tint(tint).interactive(), in: shape)
+        if InterfaceEdition.isLumen {
+            self.lumenSurfaceBackground(in: shape, tint: tint)
         } else {
-            self.background(glassTintLayer(in: shape)).background(fallback.opacity(GlassSettings.shared.translucency), in: shape)
+            if #available(iOS 26.0, *) {
+                self.background(glassTintLayer(in: shape)).glassEffect(.regular.tint(tint).interactive(), in: shape)
+            } else {
+                self.background(glassTintLayer(in: shape)).background(fallback.opacity(GlassSettings.shared.translucency), in: shape)
+            }
+        }
+    }
+
+    // MARK: Lumen
+    //
+    // In the Lumen edition every card these helpers draw becomes a Lumen
+    // surface — lifted ink with a hairline top light, the tint (when there
+    // is one) laid over it — so the classic screens' glass cards read as
+    // part of the redesign. Lumen's own floating chrome, which should stay
+    // real glass, uses `lumenGlass` instead.
+
+    fileprivate func lumenSurfaceBackground<S: Shape>(in shape: S, tint: Color?) -> some View {
+        self.background {
+            ZStack {
+                shape.fill(LumenPalette.surface.opacity(0.82))
+                if let tint { shape.fill(tint) }
+                shape.stroke(
+                    LinearGradient(colors: [Color.white.opacity(0.11), Color.white.opacity(0.02)],
+                                   startPoint: .top, endPoint: .bottom),
+                    lineWidth: 1
+                )
+            }
+        }
+    }
+
+    /// Liquid Glass for Lumen's own floating chrome (dock, mini player,
+    /// selection bar), independent of the edition switch above.
+    @ViewBuilder
+    func lumenGlass<S: Shape, F: ShapeStyle>(in shape: S, fallback: F) -> some View {
+        if #available(iOS 26.0, *) {
+            self.background(glassTintLayer(in: shape)).glassEffect(.regular, in: shape)
+        } else {
+            self.background(fallback, in: shape)
         }
     }
 }

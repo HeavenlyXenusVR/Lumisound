@@ -34,12 +34,36 @@ struct LoginView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                AppTheme.background.ignoresSafeArea()
+                if InterfaceEdition.isLumen {
+                    LumenBackdrop(intensity: 1.4)
+                } else {
+                    AppTheme.background.ignoresSafeArea()
+                }
 
                 ScrollView {
                     VStack(spacing: 28) {
 
                         // MARK: Logo / Header
+                        if InterfaceEdition.isLumen {
+                            VStack(spacing: 10) {
+                                LumenLaunchMark(animate: false)
+                                    .scaleEffect(0.7)
+                                    .frame(height: 130)
+                                Text(isRegistering ? "CREATE YOUR ACCOUNT" : "WELCOME BACK")
+                                    .font(LumenType.eyebrow())
+                                    .tracking(1.8)
+                                    .foregroundStyle(LumenPalette.accent)
+                                Text("Lumisound")
+                                    .font(LumenType.display(32))
+                                    .foregroundStyle(LumenPalette.textPrimary)
+                                Text("Sync your library, stats and playlists across every device.")
+                                    .font(LumenType.body(14))
+                                    .foregroundStyle(LumenPalette.textSecondary)
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 32)
+                            }
+                            .padding(.top, 8)
+                        } else {
                         VStack(spacing: 8) {
                             Image(systemName: "waveform.circle.fill")
                                 .font(.system(size: 60))
@@ -55,6 +79,7 @@ struct LoginView: View {
                                 .foregroundStyle(AppTheme.textSecondary)
                         }
                         .padding(.top, 20)
+                        }
 
                         if account.pendingTOTPToken != nil {
                             totpCodeStep
@@ -66,6 +91,7 @@ struct LoginView: View {
                     }
                 }
             }
+            .fontDesign(InterfaceEdition.isLumen ? .rounded : nil)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

@@ -9,6 +9,56 @@ struct AppLockView: View {
     @EnvironmentObject private var appLock: AppLockService
 
     var body: some View {
+        Group {
+            if InterfaceEdition.isLumen {
+                lumenBody
+            } else {
+                classicBody
+            }
+        }
+        .task {
+            // Prompt immediately on first appearance (app launch with locking
+            // on, or returning from background) rather than making the user
+            // tap "Unlock" every single time.
+            await appLock.authenticate()
+        }
+    }
+
+    /// Lumen: the lit ground, the breathing app mark, and a glow button.
+    private var lumenBody: some View {
+        ZStack {
+            LumenBackdrop(intensity: 1.4)
+            VStack(spacing: 18) {
+                Spacer()
+                LumenLaunchMark(animate: appLock.isAuthenticating)
+                VStack(spacing: 6) {
+                    Text("LOCKED")
+                        .font(LumenType.eyebrow())
+                        .tracking(2)
+                        .foregroundStyle(LumenPalette.accent)
+                    Text("Lumisound")
+                        .font(LumenType.display(32))
+                        .foregroundStyle(LumenPalette.textPrimary)
+                    Text("Unlock with \(appLock.biometryTypeName) to continue")
+                        .font(LumenType.body(15))
+                        .foregroundStyle(LumenPalette.textSecondary)
+                }
+                Spacer()
+                LumenPrimaryButton(
+                    title: appLock.isAuthenticating ? "Unlocking\u{2026}" : "Unlock",
+                    systemImage: biometryIcon,
+                    expands: true
+                ) {
+                    Task { await appLock.authenticate() }
+                }
+                .disabled(appLock.isAuthenticating)
+                .padding(.horizontal, 32)
+                .padding(.bottom, 48)
+            }
+        }
+    }
+
+    private var classicBody: some View {
         ZStack {
             AppTheme.background.ignoresSafeArea()
 
@@ -55,12 +105,6 @@ struct AppLockView: View {
                 .padding(.horizontal, 32)
                 .padding(.bottom, 48)
             }
-        }
-        .task {
-            // Prompt immediately on first appearance (app launch with locking
-            // on, or returning from background) rather than making the user
-            // tap "Unlock" every single time.
-            await appLock.authenticate()
         }
     }
 

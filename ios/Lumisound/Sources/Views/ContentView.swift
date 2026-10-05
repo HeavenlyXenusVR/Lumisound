@@ -82,8 +82,13 @@ struct ContentView: View {
     @AppStorage(InterfaceEdition.storageKey) private var editionRaw: String = InterfaceEdition.current.rawValue
 
     var body: some View {
+        let edition = InterfaceEdition(rawValue: editionRaw) ?? .lumen
+        // UIKit-drawn controls (segmented pickers, switches…) take their
+        // look from appearance proxies, which only affect views created
+        // afterwards — so the skin is set before the tree below is built.
+        let _ = LumenUIKitSkin.apply(edition)
         Group {
-            switch InterfaceEdition(rawValue: editionRaw) ?? .lumen {
+            switch edition {
             case .lumen:   LumenRootView()
             case .classic: ClassicContentView()
             }

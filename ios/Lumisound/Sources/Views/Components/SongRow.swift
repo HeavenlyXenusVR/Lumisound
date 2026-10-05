@@ -80,7 +80,12 @@ struct SongRow: View {
     }
 
     var body: some View {
-        if let customStyle {
+        if InterfaceEdition.isLumen, customStyle == nil {
+            LumenSongRowContent(song: song, isCurrent: isCurrent, showArtwork: showArtwork, subtitle: subtitle)
+                .contextMenu {
+                    SongContextMenuContent(song: song)
+                }
+        } else if let customStyle {
             // CustomLibraryRowView applies its own contentShape/animation/contextMenu,
             // so it's returned directly rather than wrapped a second time below.
             CustomLibraryRowView(song: song, isCurrent: isCurrent, config: customStyle, subtitle: subtitle)
@@ -293,7 +298,12 @@ struct SongGridCell: View {
     }
 
     var body: some View {
-        if let customStyle {
+        if InterfaceEdition.isLumen, customStyle == nil {
+            LumenSongGridContent(song: song, isCurrent: isCurrent, subtitle: resolvedSubtitle, trackNumber: trackNumber)
+                .contextMenu {
+                    SongContextMenuContent(song: song)
+                }
+        } else if let customStyle {
             // CustomLibraryGridCellView applies its own animation/contextMenu,
             // so it's returned directly rather than wrapped a second time below.
             CustomLibraryGridCellView(song: song, isCurrent: isCurrent, config: customStyle, subtitle: subtitle, trackNumber: trackNumber)

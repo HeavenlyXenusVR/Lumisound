@@ -68,7 +68,13 @@ struct LaunchView: View {
             VStack(spacing: 0) {
                 Spacer(minLength: 40)
 
-                LaunchRecord(spinning: appeared && !isMinimalist)
+                Group {
+                    if InterfaceEdition.isLumen {
+                        LumenLaunchMark(animate: appeared && !isMinimalist)
+                    } else {
+                        LaunchRecord(spinning: appeared && !isMinimalist)
+                    }
+                }
                     .scaleEffect(appeared ? 1 : 0.7)
                     .opacity(appeared ? 1 : 0)
 
@@ -105,6 +111,7 @@ struct LaunchView: View {
                 accountPrompt
             }
         }
+        .fontDesign(InterfaceEdition.isLumen ? .rounded : nil)
         .animation(.spring(response: 0.45, dampingFraction: 0.8), value: showPrompt)
         .animation(.easeInOut(duration: 0.3), value: libraryStepDone)
         .animation(.easeInOut(duration: 0.3), value: syncStepDone)
@@ -139,7 +146,19 @@ struct LaunchView: View {
 
     @ViewBuilder
     private var backdrop: some View {
-        if isMinimalist || wallSongs.count < 6 {
+        if InterfaceEdition.isLumen {
+            // Lumen: the lit ink ground, with the cover wall as a faint
+            // texture behind it rather than the whole picture.
+            ZStack {
+                LumenBackdrop(intensity: 1.5)
+                if !isMinimalist && wallSongs.count >= 6 {
+                    LaunchCoverWall(songs: wallSongs, animate: appeared)
+                        .opacity(0.22)
+                        .blendMode(.screen)
+                }
+            }
+            .ignoresSafeArea()
+        } else if isMinimalist || wallSongs.count < 6 {
             ZStack {
                 AppTheme.background
                 if !isMinimalist {
