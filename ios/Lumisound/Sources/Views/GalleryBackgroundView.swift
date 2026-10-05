@@ -24,7 +24,13 @@ struct GalleryBackgroundView: View {
         // push outside the ZStack and stretch the parent layout.
         GeometryReader { geo in
             ZStack {
-                AppTheme.background
+                if InterfaceEdition.isLumen {
+                    // Lumen's lit ground replaces the flat fill; a user's
+                    // own gallery photos still draw over it.
+                    LumenBackdrop()
+                } else {
+                    AppTheme.background
+                }
 
                 // Read directly from the service — no intermediate @State needed.
                 // currentIndex change drives the transition; the image is always

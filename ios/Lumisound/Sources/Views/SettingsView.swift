@@ -137,7 +137,20 @@ struct SettingsView: View {
     /// Drives the tab picker's sliding selection background — see `tabPicker`.
     @Namespace private var tabIndicatorNamespace
 
+    /// Set only by Lumen (see SettingsView+Lumen.swift): renders that one
+    /// category as a page inside Lumen's navigation stack. `nil` is the
+    /// classic screen, unchanged.
+    var lumenPage: SettingsTab? = nil
+
     var body: some View {
+        if let lumenPage {
+            lumenPageBody(lumenPage)
+        } else {
+            classicBody
+        }
+    }
+
+    private var classicBody: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 tabPicker

@@ -72,7 +72,31 @@ enum NavbarSelectionStyle: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - ContentView
+
+/// Root of the app's UI. Hosts whichever interface edition is selected —
+/// the Lumen redesign (`LumenRootView`) or the original interface
+/// (`ClassicContentView`, unchanged) — and rebuilds the tree when the user
+/// switches, so every `AppTheme` read picks up the new edition's palette.
 struct ContentView: View {
+    @AppStorage(InterfaceEdition.storageKey) private var editionRaw: String = InterfaceEdition.current.rawValue
+
+    var body: some View {
+        Group {
+            switch InterfaceEdition(rawValue: editionRaw) ?? .lumen {
+            case .lumen:   LumenRootView()
+            case .classic: ClassicContentView()
+            }
+        }
+        .id(editionRaw)
+        .transition(.opacity)
+    }
+}
+
+// MARK: - ClassicContentView
+
+/// The original interface, exactly as it shipped before Lumen.
+struct ClassicContentView: View {
 
     @EnvironmentObject private var player: AudioPlayerManager
     @EnvironmentObject private var streaming: StreamingService

@@ -45,6 +45,16 @@ struct MiniPlayerBar: View {
     /// reservation now lives on `body` itself, unconditionally, so it
     /// always applies regardless of which branch below actually renders.
     var body: some View {
+        // Lumen draws its own mini player in the shell's dock; the classic
+        // screens it hosts keep calling this, so it steps aside there.
+        if InterfaceEdition.isLumen {
+            EmptyView()
+        } else {
+            classicBody
+        }
+    }
+
+    private var classicBody: some View {
         Group {
             if player.currentSong != nil, navbarMode != .miniPlayer {
                 barContent

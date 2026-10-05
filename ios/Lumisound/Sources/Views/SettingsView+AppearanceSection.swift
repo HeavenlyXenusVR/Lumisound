@@ -7,6 +7,16 @@ extension SettingsView {
 
     var appearanceSection: some View {
         Section {
+            NavigationLink(destination: InterfaceEditionView()) {
+                HStack {
+                    Label("Interface", systemImage: "sparkles.rectangle.stack")
+                        .foregroundStyle(AppTheme.textPrimary)
+                    Spacer()
+                    Text(InterfaceEdition.current.displayName)
+                        .font(AppTheme.bodyFont(size: 13))
+                        .foregroundStyle(AppTheme.textSecondary)
+                }
+            }
             NavigationLink(destination: AppearanceView()) {
                 HStack {
                     Label("Appearance", systemImage: "paintbrush")

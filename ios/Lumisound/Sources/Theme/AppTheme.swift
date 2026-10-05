@@ -10,13 +10,27 @@ enum AppTheme {
     /// Base palette values for the `.default` background theme — kept as the
     /// literal fallback so `background`/`surface`/`elevatedSurface` below
     /// preserve the exact look every existing install already has.
-    static let accent           = Color(red: 0.925, green: 0.251, blue: 0.478)
-    static let accentSoft       = Color(red: 0.957, green: 0.561, blue: 0.694)
-    static let textPrimary      = Color(red: 0.969, green: 0.980, blue: 0.988)
-    static let textSecondary    = Color(red: 0.796, green: 0.835, blue: 0.878)
-    static let warning          = Color(red: 0.965, green: 0.678, blue: 0.333)
-    static let success          = Color(red: 0.408, green: 0.827, blue: 0.569)
-    static let error            = Color(red: 0.988, green: 0.506, blue: 0.506)
+    ///
+    /// Every color below is resolved per `InterfaceEdition`: `.classic` gets
+    /// the original literals untouched, `.lumen` gets `LumenPalette`'s. That
+    /// one switch is what carries the redesign's palette into every screen
+    /// that reads `AppTheme`, including the ones Lumen has no bespoke
+    /// replacement for.
+    static var accent: Color        { InterfaceEdition.isLumen ? LumenPalette.iris : classicAccent }
+    static var accentSoft: Color    { InterfaceEdition.isLumen ? LumenPalette.azure : classicAccentSoft }
+    static var textPrimary: Color   { InterfaceEdition.isLumen ? LumenPalette.textPrimary : classicTextPrimary }
+    static var textSecondary: Color { InterfaceEdition.isLumen ? LumenPalette.textSecondary : classicTextSecondary }
+    static var warning: Color       { InterfaceEdition.isLumen ? LumenPalette.warning : classicWarning }
+    static var success: Color       { InterfaceEdition.isLumen ? LumenPalette.success : classicSuccess }
+    static var error: Color         { InterfaceEdition.isLumen ? LumenPalette.error : classicError }
+
+    static let classicAccent        = Color(red: 0.925, green: 0.251, blue: 0.478)
+    static let classicAccentSoft    = Color(red: 0.957, green: 0.561, blue: 0.694)
+    static let classicTextPrimary   = Color(red: 0.969, green: 0.980, blue: 0.988)
+    static let classicTextSecondary = Color(red: 0.796, green: 0.835, blue: 0.878)
+    static let classicWarning       = Color(red: 0.965, green: 0.678, blue: 0.333)
+    static let classicSuccess       = Color(red: 0.408, green: 0.827, blue: 0.569)
+    static let classicError         = Color(red: 0.988, green: 0.506, blue: 0.506)
 
     // MARK: Background Theme
 
@@ -40,9 +54,21 @@ enum AppTheme {
         UserDefaults.standard.removeObject(forKey: "app_background_theme")
     }
 
-    static var background: Color { customBackgroundOverride?.background ?? backgroundTheme.background }
-    static var surface: Color { customBackgroundOverride?.surface ?? backgroundTheme.surface }
-    static var elevatedSurface: Color { customBackgroundOverride?.elevatedSurface ?? backgroundTheme.elevatedSurface }
+    // Lumen ignores the classic `AppBackgroundTheme` presets (they were
+    // tuned for the classic slate look) but still honors an explicit Lua
+    // preset override, which is a deliberate per-user choice.
+    static var background: Color {
+        customBackgroundOverride?.background
+            ?? (InterfaceEdition.isLumen ? LumenPalette.ink : backgroundTheme.background)
+    }
+    static var surface: Color {
+        customBackgroundOverride?.surface
+            ?? (InterfaceEdition.isLumen ? LumenPalette.surface : backgroundTheme.surface)
+    }
+    static var elevatedSurface: Color {
+        customBackgroundOverride?.elevatedSurface
+            ?? (InterfaceEdition.isLumen ? LumenPalette.elevated : backgroundTheme.elevatedSurface)
+    }
 
     // MARK: Lua-Driven Custom Background Override
     //
@@ -126,8 +152,12 @@ enum AppTheme {
 
     /// Reads a user-saved accent color from UserDefaults.
     /// Falls back to the default pink `accent` if nothing is stored.
+    ///
+    /// Each edition keeps its own saved accent (see `accentKey`), so picking
+    /// a color in Lumen never repaints Classic and switching back restores
+    /// whatever Classic had.
     static var dynamicAccent: Color {
-        if let data = UserDefaults.standard.data(forKey: "accent_color_data"),
+        if let data = UserDefaults.standard.data(forKey: accentKey),
            let uiColor = try? NSKeyedUnarchiver.unarchivedObject(ofClass: UIColor.self, from: data) {
             return Color(uiColor)
         }
@@ -141,13 +171,13 @@ enum AppTheme {
             withRootObject: uiColor,
             requiringSecureCoding: true
         ) {
-            UserDefaults.standard.set(data, forKey: "accent_color_data")
+            UserDefaults.standard.set(data, forKey: accentKey)
         }
     }
 
     /// Resets the saved accent color so `dynamicAccent` returns the default pink.
     static func resetAccentColor() {
-        UserDefaults.standard.removeObject(forKey: "accent_color_data")
+        UserDefaults.standard.removeObject(forKey: accentKey)
     }
 
     // MARK: Dynamic Accent — Secondary (gradient pairing)
@@ -158,7 +188,7 @@ enum AppTheme {
     /// `accentSoft` — the exact color those gradients already used — so
     /// nothing changes visually until a user picks a custom secondary color.
     static var dynamicAccentSecondary: Color {
-        if let data = UserDefaults.standard.data(forKey: "accent_secondary_color_data"),
+        if let data = UserDefaults.standard.data(forKey: accentSecondaryKey),
            let uiColor = try? NSKeyedUnarchiver.unarchivedObject(ofClass: UIColor.self, from: data) {
             return Color(uiColor)
         }
@@ -171,12 +201,20 @@ enum AppTheme {
             withRootObject: uiColor,
             requiringSecureCoding: true
         ) {
-            UserDefaults.standard.set(data, forKey: "accent_secondary_color_data")
+            UserDefaults.standard.set(data, forKey: accentSecondaryKey)
         }
     }
 
     static func resetAccentSecondaryColor() {
-        UserDefaults.standard.removeObject(forKey: "accent_secondary_color_data")
+        UserDefaults.standard.removeObject(forKey: accentSecondaryKey)
+    }
+
+    private static var accentKey: String {
+        InterfaceEdition.isLumen ? "lumen_accent_color_data" : "accent_color_data"
+    }
+
+    private static var accentSecondaryKey: String {
+        InterfaceEdition.isLumen ? "lumen_accent_secondary_color_data" : "accent_secondary_color_data"
     }
 
     /// Convenience gradient combining `dynamicAccent` → `dynamicAccentSecondary`.
@@ -281,7 +319,8 @@ extension AppTheme {
            let style = AppFontStyle(rawValue: raw) {
             return style
         }
-        return .system
+        // Lumen's type is set in SF Rounded unless the user picked a style.
+        return InterfaceEdition.isLumen ? .rounded : .system
     }
 
     static func saveFontStyle(_ style: AppFontStyle) {
@@ -363,9 +402,23 @@ private struct PanelStyleModifier: ViewModifier {
         // Scaled by AppTheme.layoutCornerRadiusScale/layoutSpacingScale — both
         // default to 1.0 (reproducing the original 8pt/14pt literals exactly)
         // until a Lua theme preset sets them to something else.
-        let radius = CGFloat(8 * AppTheme.layoutCornerRadiusScale)
-        let pad = CGFloat(14 * AppTheme.layoutSpacingScale)
-        if isFrostedGlass {
+        let isLumen = InterfaceEdition.isLumen
+        let radius = CGFloat((isLumen ? 20 : 8) * AppTheme.layoutCornerRadiusScale)
+        let pad = CGFloat((isLumen ? 16 : 14) * AppTheme.layoutSpacingScale)
+        if isLumen {
+            // Lumen panels: a lifted surface with a hairline top light,
+            // instead of a flat tint.
+            content
+                .padding(pad)
+                .background {
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .fill(isFrostedGlass ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(AppTheme.surface.opacity(max(opacity, 0.55))))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                                .strokeBorder(LumenPalette.hairline, lineWidth: 1)
+                        )
+                }
+        } else if isFrostedGlass {
             content
                 .padding(pad)
                 .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
