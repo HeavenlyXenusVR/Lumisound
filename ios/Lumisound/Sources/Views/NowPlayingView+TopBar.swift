@@ -133,6 +133,12 @@ extension NowPlayingView {
             }
             .disabled(player.currentSong == nil)
             Button {
+                showLyricVideoSheet = true
+            } label: {
+                Label("Share as Video", systemImage: "video.badge.waveform")
+            }
+            .disabled(player.currentSong == nil)
+            Button {
                 Task {
                     if deviceSync.isHosting {
                         await deviceSync.stopHosting()

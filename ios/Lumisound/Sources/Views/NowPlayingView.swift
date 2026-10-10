@@ -263,6 +263,9 @@ struct NowPlayingView: View {
     // Stem separation sheet (Separate Vocals/Instrumental)
     @State var showStemSeparationSheet = false
 
+    // Lyric video export sheet (Share as Video)
+    @State var showLyricVideoSheet = false
+
     // Format info sheet
     @State var showFormatInfoSheet = false
     @State var showPracticeModeSheet = false
@@ -313,6 +316,11 @@ struct NowPlayingView: View {
         .sheet(isPresented: $showStemSeparationSheet) {
             if let song = player.currentSong {
                 StemSeparationView(song: song)
+            }
+        }
+        .sheet(isPresented: $showLyricVideoSheet) {
+            if let song = player.currentSong {
+                LyricVideoExportView(song: song, lyrics: lyricsLines)
             }
         }
         .sheet(isPresented: $showCustomizeSheet) {
