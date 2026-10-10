@@ -224,6 +224,7 @@ extension AccountService {
             let duration_seconds: Double
             let is_playing: Bool
             let bpm: Double?
+            let artwork_url: String?
         }
         // NOT song?.url — for anything downloaded/imported that's a local
         // `file:///...` path, not a real web URL. This is specifically what
@@ -255,7 +256,14 @@ extension AccountService {
             position_seconds: position,
             duration_seconds: duration,
             is_playing: isPlaying,
-            bpm: bpm
+            bpm: bpm,
+            // Deterministic from sourceTrackID alone, same accessor
+            // PresenceService's heartbeat already uses for the Friends
+            // "now playing" artwork — nil for local/non-YouTube sources, in
+            // which case the Discord RPC daemon falls back to the
+            // configured static image (build_activity in
+            // lumisound_discord_rpc.py).
+            artwork_url: song?.youtubeThumbnailURL?.absoluteString
         )
         playbackStatePushTask?.cancel()
         playbackStatePushTask = Task { [weak self] in
