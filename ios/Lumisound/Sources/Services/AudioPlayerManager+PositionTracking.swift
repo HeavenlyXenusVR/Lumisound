@@ -162,6 +162,14 @@ extension AudioPlayerManager {
             bpm: currentSong.flatMap { $0.bpm ?? bpmCache[$0.id] }
         )
         pushPodcastProgressIfNeeded()
+
+        // Sync My Devices (see DeviceSyncService) — piggybacks on this
+        // already-running ~5s tick rather than running its own timer.
+        // Exactly one of these two calls does anything on a given device:
+        // hostTick() no-ops unless this device started hosting, and
+        // checkForActiveSyncAndJoin() no-ops while hosting.
+        DeviceSyncService.shared?.hostTick(song: currentSong, isPlaying: isPlaying, position: position)
+        DeviceSyncService.shared?.checkForActiveSyncAndJoin()
     }
 
     /// Podcast episodes (see PodcastEpisodesView) are constructed as a plain

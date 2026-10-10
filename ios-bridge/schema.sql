@@ -367,6 +367,15 @@ CREATE TABLE IF NOT EXISTS ios_listen_rooms (
     FOREIGN KEY (host_user_id) REFERENCES ios_users(id) ON DELETE CASCADE
 );
 
+-- Feature: Sync My Devices — reuses the Shared Listening Room mechanism
+-- (same table, same /rooms/{code} GET/PUT, same drift-corrected position
+-- sync) for a single account's own devices rather than SharePlay (which
+-- needs an active FaceTime/Messages call, wrong fit for "my iPad in
+-- another room"). Flags a room as self-only so other devices on the same
+-- account can auto-discover and silently auto-join it (see
+-- /user/device-sync/active) without a room code ever being shown.
+ALTER TABLE ios_listen_rooms ADD COLUMN IF NOT EXISTS is_device_sync BOOLEAN DEFAULT FALSE;
+
 -- ---------------------------------------------------------------------------
 -- 10 more server-side features + Discord webhook integration
 -- ---------------------------------------------------------------------------

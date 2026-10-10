@@ -16,6 +16,7 @@ struct LumisoundApp: App {
     @StateObject private var moodService = MoodPlaylistService()
     @StateObject private var cacheManager = CacheManagerService()
     @StateObject private var sharePlay = SharePlayCoordinator()
+    @StateObject private var deviceSync = DeviceSyncService()
     @StateObject private var appLock = AppLockService()
     @StateObject private var recentlyDeleted = RecentlyDeletedService()
     @StateObject private var aiDJ = AIDJService()
@@ -85,6 +86,7 @@ struct LumisoundApp: App {
                     .environmentObject(moodService)
                     .environmentObject(cacheManager)
                     .environmentObject(sharePlay)
+                    .environmentObject(deviceSync)
                     .environmentObject(appLock)
                     .environmentObject(recentlyDeleted)
                     .environmentObject(social)
@@ -247,6 +249,13 @@ struct LumisoundApp: App {
                     sharePlay.player = player
                     sharePlay.library = libraryManager
                     sharePlay.streaming = streaming
+
+                    // Same weak-singleton wiring as SharePlay above — Sync
+                    // My Devices needs to reach the same live player/
+                    // streaming instances without being a SwiftUI
+                    // environment object itself.
+                    deviceSync.player = player
+                    deviceSync.streaming = streaming
 
                     discordVerification.attach(account: account)
                     if account.isLoggedIn {

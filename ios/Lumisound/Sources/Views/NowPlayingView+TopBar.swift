@@ -133,6 +133,32 @@ extension NowPlayingView {
             }
             .disabled(player.currentSong == nil)
             Button {
+                Task {
+                    if deviceSync.isHosting {
+                        await deviceSync.stopHosting()
+                    } else {
+                        await deviceSync.startHosting()
+                    }
+                }
+            } label: {
+                Label(
+                    deviceSync.isHosting ? "Stop Syncing My Devices" : "Sync My Devices",
+                    systemImage: deviceSync.isHosting ? "rectangle.stack.badge.minus" : "rectangle.stack.badge.plus"
+                )
+            }
+            // Separate from the button above on purpose: that one starts
+            // broadcasting FROM this device; this one controls whether THIS
+            // device is willing to auto-pick-up a session another device
+            // started. A device that only ever hosts never needs this on.
+            Button {
+                deviceSync.autoJoinEnabled.toggle()
+            } label: {
+                Label(
+                    deviceSync.autoJoinEnabled ? "This Device: Auto-Join On" : "This Device: Auto-Join Off",
+                    systemImage: deviceSync.autoJoinEnabled ? "checkmark.circle" : "circle"
+                )
+            }
+            Button {
                 showCustomizeSheet = true
             } label: {
                 Label("Customize Now Playing", systemImage: "paintbrush")

@@ -14298,6 +14298,102 @@ async def create_room(
     return {"id": room_id, "room_code": room_code}
 
 
+# ---------------------------------------------------------------------------
+# Sync My Devices (Feature: device-sync)
+#
+# A thin, self-only specialization of the room above: start/active/stop
+# instead of create/join-by-code, and the room this creates is flagged
+# is_device_sync so it never shows up as a code someone else could type in
+# (not that it would matter much — only this same account's own other
+# devices ever look at it, via /user/device-sync/active). Everything about
+# HOW playback actually stays synced (drift-corrected position via
+# server_time, the WebSocket push) is identical to a normal room — reused
+# via the existing /rooms/{code} GET/PUT, nothing duplicated here.
+# ---------------------------------------------------------------------------
+
+
+@app.post("/user/device-sync/start")
+async def start_device_sync(
+    body: CreateRoomRequest,
+    payload: dict = Depends(get_current_user),
+):
+    """Returns this account's existing active device-sync room if one is
+    already running (so re-tapping "Sync My Devices" on the same device
+    doesn't spawn a second room and strand any device already following
+    the first one), otherwise creates one."""
+    user_id = payload["sub"]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT room_code FROM ios_listen_rooms
+                WHERE host_user_id = %s AND is_device_sync = TRUE
+                  AND updated_at > NOW() - make_interval(hours => %s)
+                """,
+                (user_id, _ROOM_IDLE_EXPIRY_HOURS),
+            )
+            existing = await cur.fetchone()
+            if existing:
+                return {"room_code": existing[0]}
+
+            room_id = str(uuid.uuid4())
+            for _ in range(5):
+                room_code = _generate_room_code()
+                try:
+                    await cur.execute(
+                        """
+                        INSERT INTO ios_listen_rooms
+                            (id, host_user_id, room_code, track_url, title, artist,
+                             position_seconds, is_playing, is_device_sync)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE)
+                        """,
+                        (room_id, user_id, room_code, body.track_url, body.title, body.artist,
+                         body.position_seconds, body.is_playing),
+                    )
+                    break
+                except Exception:
+                    continue
+            else:
+                raise HTTPException(status_code=500, detail="Could not allocate room code")
+    return {"room_code": room_code}
+
+
+@app.get("/user/device-sync/active")
+async def active_device_sync(payload: dict = Depends(get_current_user)):
+    """Polled by this account's OTHER devices to silently discover and
+    auto-join a device-sync session with no code entry. Returns
+    {"room_code": null} rather than 404 when there isn't one — this is a
+    routine poll, not an error case."""
+    user_id = payload["sub"]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT room_code FROM ios_listen_rooms
+                WHERE host_user_id = %s AND is_device_sync = TRUE
+                  AND updated_at > NOW() - make_interval(hours => %s)
+                ORDER BY updated_at DESC LIMIT 1
+                """,
+                (user_id, _ROOM_IDLE_EXPIRY_HOURS),
+            )
+            row = await cur.fetchone()
+    return {"room_code": row[0] if row else None}
+
+
+@app.post("/user/device-sync/stop", status_code=204)
+async def stop_device_sync(payload: dict = Depends(get_current_user)):
+    user_id = payload["sub"]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM ios_listen_rooms WHERE host_user_id = %s AND is_device_sync = TRUE",
+                (user_id,),
+            )
+
+
 @app.get("/rooms/{room_code}")
 async def get_room(room_code: str):
     """Returns the current shared-room state. No auth required so guests
