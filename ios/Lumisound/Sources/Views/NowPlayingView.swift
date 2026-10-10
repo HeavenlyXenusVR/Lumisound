@@ -91,6 +91,7 @@ struct NowPlayingView: View {
     @EnvironmentObject var account: AccountService
     @EnvironmentObject var aiDJ: AIDJService
     @EnvironmentObject var deviceSync: DeviceSyncService
+    @EnvironmentObject var physicalGestures: PhysicalGesturesService
 
     // Seeking
     @State var isSeeking = false

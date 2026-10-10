@@ -17,6 +17,7 @@ struct LumisoundApp: App {
     @StateObject private var cacheManager = CacheManagerService()
     @StateObject private var sharePlay = SharePlayCoordinator()
     @StateObject private var deviceSync = DeviceSyncService()
+    @StateObject private var physicalGestures = PhysicalGesturesService()
     @StateObject private var appLock = AppLockService()
     @StateObject private var recentlyDeleted = RecentlyDeletedService()
     @StateObject private var aiDJ = AIDJService()
@@ -87,6 +88,7 @@ struct LumisoundApp: App {
                     .environmentObject(cacheManager)
                     .environmentObject(sharePlay)
                     .environmentObject(deviceSync)
+                    .environmentObject(physicalGestures)
                     .environmentObject(appLock)
                     .environmentObject(recentlyDeleted)
                     .environmentObject(social)
@@ -256,6 +258,9 @@ struct LumisoundApp: App {
                     // environment object itself.
                     deviceSync.player = player
                     deviceSync.streaming = streaming
+
+                    physicalGestures.player = player
+                    if physicalGestures.isEnabled { physicalGestures.start() }
 
                     discordVerification.attach(account: account)
                     if account.isLoggedIn {
