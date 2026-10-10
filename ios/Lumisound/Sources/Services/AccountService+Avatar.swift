@@ -1,8 +1,20 @@
+import CryptoKit
 import Foundation
 import SwiftUI
 import UIKit
 
 extension AccountService {
+
+    /// Rich Presence artwork keys (sha256(userID + ":" + song.id)) already
+    /// uploaded to `/user/rp-artwork-upload` this app session — see
+    /// `uploadRPArtworkIfNeeded`. `static` (not an instance property) since
+    /// stored properties can't live in an extension; fine given AccountService
+    /// is used as a singleton. Session-lifetime only, not persisted: an
+    /// over-upload on next launch costs one small POST per track, not a
+    /// correctness issue, and the bridge-side cache is itself unbounded
+    /// (see `_RP_ARTWORK_DIR` in main.py) so there's no server-side reason to
+    /// remember this across launches either.
+    private static var rpArtworkUploadedKeys: Set<String> = []
 
     // MARK: - Avatar
 
@@ -247,6 +259,25 @@ extension AccountService {
             guard !videoID.isEmpty else { return nil }
             return "https://youtube.com/watch?v=\(videoID)"
         }()
+        // youtubeThumbnailURL is free (just a URL Discord's own servers can
+        // fetch directly, see PresenceService's heartbeat for the same
+        // accessor). A LOCAL track with embedded-only artwork has no such
+        // public URL — operator report (2026-10-10): "All tracks are local
+        // (at least mine)" — so it falls back to a bridge-hosted relay
+        // instead: a deterministic URL this device can compute right now
+        // (so it can be reported in THIS call, with no round trip), backed
+        // by a best-effort upload of the actual bytes alongside it. Both
+        // sides derive the same key — sha256(userID + ":" + song.id) — so
+        // the URL reported here is guaranteed to match whatever the upload
+        // (below) ends up actually storing, whichever of this call or a
+        // previous one gets there first.
+        let youtubeArt = song?.youtubeThumbnailURL?.absoluteString
+        let localArtKey: String? = (youtubeArt == nil && song != nil && currentUser?.id != nil)
+            ? Self.sha256Hex("\(currentUser!.id):\(song!.id)") : nil
+        let localArtURL = localArtKey.map { key in
+            "\(bridgeURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/api/rp-artwork/\(key).jpg"
+        }
+
         let body = Body(
             song_id: song?.id,
             title: song?.title,
@@ -257,17 +288,56 @@ extension AccountService {
             duration_seconds: duration,
             is_playing: isPlaying,
             bpm: bpm,
-            // Deterministic from sourceTrackID alone, same accessor
-            // PresenceService's heartbeat already uses for the Friends
-            // "now playing" artwork — nil for local/non-YouTube sources, in
+            // nil only when there's genuinely no artwork source at all — in
             // which case the Discord RPC daemon falls back to the
             // configured static image (build_activity in
             // lumisound_discord_rpc.py).
-            artwork_url: song?.youtubeThumbnailURL?.absoluteString
+            artwork_url: youtubeArt ?? localArtURL
         )
         playbackStatePushTask?.cancel()
         playbackStatePushTask = Task { [weak self] in
             _ = try? await self?.makeRequest("/user/playback-state", method: "PUT", body: body)
+            if let song, let key = localArtKey {
+                await self?.uploadRPArtworkIfNeeded(song: song, key: key)
+            }
         }
+    }
+
+    private static func sha256Hex(_ string: String) -> String {
+        SHA256.hash(data: Data(string.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Best-effort, at most once per `key` per app session (see
+    /// `rpArtworkUploadedKeys`) — called after every `pushPlaybackState` for
+    /// a track with no public artwork URL, so the bridge ends up with a
+    /// copy shortly after whichever device/session starts reporting that
+    /// track first, with no dedicated "upload artwork" call site needed.
+    private func uploadRPArtworkIfNeeded(song: Song, key: String) async {
+        guard !Self.rpArtworkUploadedKeys.contains(key) else { return }
+        // Marked before the attempt, not after success: a track with no
+        // artwork at all would otherwise retry the (failing) lookup on
+        // every single push for the rest of playback.
+        Self.rpArtworkUploadedKeys.insert(key)
+
+        guard let image = await ArtworkService.shared.loadArtwork(for: song),
+              let data = ImageDownsampler.downscaled(image, maxPixelSize: 300).jpegData(compressionQuality: 0.7)
+        else { return }
+
+        let base = bridgeURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        var components = URLComponents(string: base + "/user/rp-artwork-upload")
+        components?.queryItems = [
+            URLQueryItem(name: "key", value: key),
+            URLQueryItem(name: "song_id", value: song.id),
+        ]
+        guard let url = components?.url else { return }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
+        if let tok = token {
+            request.setValue("Bearer \(tok)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = data
+        _ = try? await URLSession.shared.data(for: request)
     }
 }
