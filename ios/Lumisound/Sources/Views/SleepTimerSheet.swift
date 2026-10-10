@@ -5,6 +5,7 @@ import SwiftUI
 struct SleepTimerSheet: View {
     @EnvironmentObject private var sleepTimer: SleepTimerService
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var adaptiveSleep = AdaptiveSleepTimerService.shared
 
     var body: some View {
         NavigationStack {
@@ -32,6 +33,9 @@ struct SleepTimerSheet: View {
                         .foregroundStyle(AppTheme.dynamicAccent)
                 }
             }
+        }
+        .task {
+            if adaptiveSleep.isAuthorized { await adaptiveSleep.learn() }
         }
     }
 
@@ -98,6 +102,8 @@ struct SleepTimerSheet: View {
             }
             .padding(.bottom, 4)
 
+            adaptiveSleepRow
+
             // Preset grid
             let columns = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
             LazyVGrid(columns: columns, spacing: 12) {
@@ -127,6 +133,34 @@ struct SleepTimerSheet: View {
                     .shadow(color: AppTheme.dynamicAccent.opacity(0.35), radius: 10, x: 0, y: 5)
             }
             .buttonStyle(.plain)
+        }
+    }
+
+    /// Suggests a duration learned from real sleep data (see
+    /// AdaptiveSleepTimerService) instead of a fixed preset guess.
+    @ViewBuilder
+    private var adaptiveSleepRow: some View {
+        if !adaptiveSleep.isHealthDataAvailable {
+            EmptyView()
+        } else if !adaptiveSleep.isAuthorized {
+            Button {
+                Task { await adaptiveSleep.requestAuthorization() }
+            } label: {
+                Label("Learn from your sleep data", systemImage: "bed.double")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(AppTheme.dynamicAccent)
+            }
+        } else if let minutes = adaptiveSleep.suggestedMinutes {
+            Button {
+                sleepTimer.selectedDuration = minutes * 60
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "bed.double.fill")
+                    Text("Use suggested: ~\(Int(minutes.rounded()))m (based on your sleep data)")
+                }
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(AppTheme.dynamicAccent)
+            }
         }
     }
 
