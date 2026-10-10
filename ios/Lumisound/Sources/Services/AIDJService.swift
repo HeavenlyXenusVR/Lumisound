@@ -37,6 +37,26 @@ final class AIDJService: NSObject, ObservableObject {
     /// `isSpeaking` is true.
     @Published private(set) var lastBlurb: String?
 
+    /// Rolling log of this session's tracks and spoken transitions, in
+    /// order — what `AIDJSessionExportService` turns into a downloadable
+    /// set. Capped (`maxSessionEntries`) rather than unbounded: this is a
+    /// recent-session export, not a permanent history (that's
+    /// `ios_play_history`/Rewind's job), and bounding it keeps export time
+    /// and file size predictable.
+    @Published private(set) var sessionLog: [AIDJSessionEntry] = []
+    private static let maxSessionEntries = 16  // roughly the last 8 tracks + their transitions
+
+    private func appendToSessionLog(_ entry: AIDJSessionEntry) {
+        sessionLog.append(entry)
+        if sessionLog.count > Self.maxSessionEntries {
+            sessionLog.removeFirst(sessionLog.count - Self.maxSessionEntries)
+        }
+    }
+
+    func clearSessionLog() {
+        sessionLog.removeAll()
+    }
+
     weak var player: AudioPlayerManager?
     weak var account: AccountService?
 
@@ -86,6 +106,7 @@ final class AIDJService: NSObject, ObservableObject {
         guard isEnabled, let song, let player, player.isPlaying else { return }
         guard song.id != lastAnnouncedSongID else { return }
         lastAnnouncedSongID = song.id
+        appendToSessionLog(.track(song))
 
         let prevTitle = previousTitle
         let prevArtist = previousArtist
@@ -111,6 +132,7 @@ final class AIDJService: NSObject, ObservableObject {
         setVolume(volumeBeforeDuck * 0.25)
         isSpeaking = true
         lastBlurb = text
+        appendToSessionLog(.transition(text))
 
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = AVSpeechSynthesisVoice(language: AVSpeechSynthesisVoice.currentLanguageCode())
@@ -125,6 +147,11 @@ final class AIDJService: NSObject, ObservableObject {
         guard synthesizer.isSpeaking else { return }
         synthesizer.stopSpeaking(at: .immediate)
     }
+}
+
+enum AIDJSessionEntry {
+    case track(Song)
+    case transition(String)
 }
 
 extension AIDJService: AVSpeechSynthesizerDelegate {

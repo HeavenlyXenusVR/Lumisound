@@ -139,6 +139,12 @@ extension NowPlayingView {
             }
             .disabled(player.currentSong == nil)
             Button {
+                showAIDJExportSheet = true
+            } label: {
+                Label("Export AI DJ Set", systemImage: "mic.and.signal.meter.fill")
+            }
+            .disabled(aiDJ.sessionLog.isEmpty)
+            Button {
                 Task {
                     if deviceSync.isHosting {
                         await deviceSync.stopHosting()

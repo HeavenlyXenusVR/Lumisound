@@ -266,6 +266,9 @@ struct NowPlayingView: View {
     // Lyric video export sheet (Share as Video)
     @State var showLyricVideoSheet = false
 
+    // AI DJ session export sheet
+    @State var showAIDJExportSheet = false
+
     // Format info sheet
     @State var showFormatInfoSheet = false
     @State var showPracticeModeSheet = false
@@ -322,6 +325,9 @@ struct NowPlayingView: View {
             if let song = player.currentSong {
                 LyricVideoExportView(song: song, lyrics: lyricsLines)
             }
+        }
+        .sheet(isPresented: $showAIDJExportSheet) {
+            AIDJSessionExportView(log: aiDJ.sessionLog)
         }
         .sheet(isPresented: $showCustomizeSheet) {
             NowPlayingCustomizeSheet(
