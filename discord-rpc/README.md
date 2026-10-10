@@ -58,6 +58,18 @@ systemctl --user status lumisound-discord-rpc.service
 journalctl --user -u lumisound-discord-rpc.service -f
 ```
 
+**After updating `lumisound_discord_rpc.py`** (a `git pull`, editing it
+directly, whatever), the running process keeps executing whatever code it
+already loaded — this is a long-running Python process, not something that
+re-reads its own source file. The new code does nothing until you restart
+it:
+
+```sh
+systemctl --user restart lumisound-discord-rpc.service
+```
+
+A missed restart here looks exactly like the fix didn't work.
+
 **On NixOS, home-manager, or Guix**, the unit is generated declaratively and a
 copy in `~/.config/systemd/user` would override it — so `install.sh` refuses
 and points you at:
