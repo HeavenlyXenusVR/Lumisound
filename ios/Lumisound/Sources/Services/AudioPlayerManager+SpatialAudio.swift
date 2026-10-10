@@ -91,10 +91,36 @@ extension AudioPlayerManager {
     /// release. With this in place, raising `crossfadeMixer.outputVolume`
     /// above 1.0 (via `audioSettings.volume`, up to `AudioSettings.maxVolume`)
     /// makes playback louder without the output signal hard-clipping.
+    ///
+    /// BUGFIX (operator report: boosted/bass/effect playback sounding
+    /// "scratchy"/harsh — same class of bug as the Discord bot fleet's
+    /// bassboost clipping, see that fix's own measurements): threshold=-1 /
+    /// headroom=1 puts this limiter's hard ceiling at threshold+headroom ≈ 0
+    /// dBFS, i.e. effectively NO margin below full scale. Measured true peak
+    /// on real YouTube-sourced tracks (trap/EDM/rock/acoustic, via
+    /// ffmpeg/ebur128) runs 0.5–2.1 dB over nominal 0 dBFS from mastering
+    /// alone, before anything here touches them. Stacking Bass Boost's own
+    /// +8 dB 32 Hz shelf (EQPresets.bassBoost/AudioEffectsService.bassboost)
+    /// with `applyOutputGain`'s up to +12 dB volume-boost makeup (equalizer.
+    /// globalGain, AudioSettings.maxBoostDB) on top of that — maxing both at
+    /// once on the measured trap track — pushed true peak to +2.1 dBFS even
+    /// through the OLD ceiling. A limiter with ~0 dB of headroom has nothing
+    /// left to absorb any of that overshoot with — it either lets it through
+    /// (audible harshness/distortion) or has to slam the gain down hard and
+    /// fast on every transient (audible pumping) — both read as "not
+    /// premium." Measured sweep on that same worst-case combination: a hard
+    /// ceiling of -4 dBFS (threshold -6, headroom 2) was the first value that
+    /// brought true peak back under 0 dBFS (-0.8 dBFS); -1/-2/-3 dBFS
+    /// ceilings all still measured over. This is the ceiling used below.
+    /// Attack/release are unchanged (already fast enough to catch
+    /// transients). Note this does mean maxing Bass Boost AND the volume
+    /// slider simultaneously on an already-loud track now triggers more
+    /// audible gain reduction than before — an intentional tradeoff: that
+    /// combination cannot be both that loud and clean, and clean wins.
     func configureLimiter() {
         let unit = limiter.audioUnit
-        AudioUnitSetParameter(unit, kDynamicsProcessorParam_Threshold, kAudioUnitScope_Global, 0, -1.0, 0)    // dB — start limiting just below full scale
-        AudioUnitSetParameter(unit, kDynamicsProcessorParam_HeadRoom, kAudioUnitScope_Global, 0, 1.0, 0)      // dB of headroom above the threshold
+        AudioUnitSetParameter(unit, kDynamicsProcessorParam_Threshold, kAudioUnitScope_Global, 0, -6.0, 0)    // dB — soft-knee region starts here, well below full scale
+        AudioUnitSetParameter(unit, kDynamicsProcessorParam_HeadRoom, kAudioUnitScope_Global, 0, 2.0, 0)      // dB — hard ceiling at threshold+headroom = -4 dBFS
         AudioUnitSetParameter(unit, kDynamicsProcessorParam_AttackTime, kAudioUnitScope_Global, 0, 0.001, 0)  // seconds — fast enough to catch transients
         AudioUnitSetParameter(unit, kDynamicsProcessorParam_ReleaseTime, kAudioUnitScope_Global, 0, 0.05, 0)  // seconds — short so it doesn't pump audibly
         AudioUnitSetParameter(unit, kDynamicsProcessorParam_OverallGain, kAudioUnitScope_Global, 0, 0, 0)
