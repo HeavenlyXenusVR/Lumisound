@@ -336,6 +336,12 @@ ALTER TABLE ios_playback_state ADD COLUMN IF NOT EXISTS is_playing BOOLEAN DEFAU
 -- Discord Rich Presence daemon, which can show it in the activity details line.
 ALTER TABLE ios_playback_state ADD COLUMN IF NOT EXISTS bpm FLOAT NULL;
 
+-- Feature: per-track artwork for the local Discord Rich Presence daemon's
+-- large_image asset (see build_activity in lumisound_discord_rpc.py) — lets
+-- the "Listening to X by Y" activity show the actual track thumbnail instead
+-- of a single static image for every track.
+ALTER TABLE ios_playback_state ADD COLUMN IF NOT EXISTS artwork_url TEXT NULL;
+
 -- Feature: server-side loudness normalization (ReplayGain-style)
 ALTER TABLE ios_user_music_metadata ADD COLUMN IF NOT EXISTS loudness_lufs FLOAT NULL;
 

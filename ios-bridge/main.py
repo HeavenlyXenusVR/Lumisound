@@ -3101,6 +3101,7 @@ class PlaybackStateRequest(BaseModel):
     duration_seconds: float = 0
     is_playing: bool = True
     bpm: Optional[float] = None
+    artwork_url: Optional[str] = None
 
 
 class PlaylistSourceRequest(BaseModel):
@@ -11919,6 +11920,20 @@ async def upload_user_music(
     ):
         raise HTTPException(status_code=400, detail="Unsupported or invalid filename")
 
+    # Same ENAMETOOLONG failure _truncate_filename_bytes was written for (see
+    # its doc comment) — a client-supplied title using 3-4-byte-per-char
+    # Unicode (stylized "mathematical alphanumeric" text, etc.) can exceed
+    # ext4's 255-byte filename limit well before it looks long to a human.
+    # That path was only ever fixed for yt-dlp's own downloads; this upload
+    # endpoint builds its filename straight from client-supplied `title`/
+    # `filename` the same way and hit the identical `OSError: [Errno 36]
+    # File name too long` on write, below, with no way for the user to
+    # retry around it. Truncate the stem only, so a (possibly compound,
+    # e.g. ".opus.lms") suffix always survives intact.
+    suffix_str = f".{_locked_inner_ext(safe_name)}.{LUMISOUND_LOCK_EXT}" if is_locked_upload else pathlib.Path(safe_name).suffix
+    stem_str = safe_name[: len(safe_name) - len(suffix_str)] if suffix_str else safe_name
+    safe_name = _truncate_filename_bytes(stem_str, max_bytes=240 - len(suffix_str.encode("utf-8"))) + suffix_str
+
     folder_clean = folder.strip("/")
     dest_dir = (music_dir / folder_clean) if folder_clean else music_dir
     # Reject `folder` values containing ".." (or absolute paths re-rooted by
@@ -13800,7 +13815,8 @@ async def get_playback_state(payload: dict = Depends(get_current_user)):
             await cur.execute(
                 """
                 SELECT song_id, title, artist, track_url, source,
-                       position_seconds, duration_seconds, updated_at, is_playing, bpm
+                       position_seconds, duration_seconds, updated_at, is_playing, bpm,
+                       artwork_url
                 FROM ios_playback_state WHERE user_id = %s
                 """,
                 (user_id,),
@@ -13833,6 +13849,7 @@ async def get_playback_state(payload: dict = Depends(get_current_user)):
         "updated_at": row[7].replace(tzinfo=timezone.utc).isoformat() if row[7] else None,
         "is_playing": bool(row[8]),
         "bpm": row[9],
+        "artwork_url": row[10],
     }
 
 
@@ -13848,18 +13865,18 @@ async def update_playback_state(
             await cur.execute(
                 """
                 INSERT INTO ios_playback_state
-                    (user_id, song_id, title, artist, track_url, source, position_seconds, duration_seconds, is_playing, bpm)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (user_id, song_id, title, artist, track_url, source, position_seconds, duration_seconds, is_playing, bpm, artwork_url)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (user_id) DO UPDATE SET
                     song_id = EXCLUDED.song_id, title = EXCLUDED.title, artist = EXCLUDED.artist,
                     track_url = EXCLUDED.track_url, source = EXCLUDED.source,
                     position_seconds = EXCLUDED.position_seconds, duration_seconds = EXCLUDED.duration_seconds,
-                    is_playing = EXCLUDED.is_playing, bpm = EXCLUDED.bpm
+                    is_playing = EXCLUDED.is_playing, bpm = EXCLUDED.bpm, artwork_url = EXCLUDED.artwork_url
                 """,
                 (
                     user_id, body.song_id, body.title, body.artist, body.track_url,
                     body.source, body.position_seconds, body.duration_seconds, body.is_playing,
-                    body.bpm,
+                    body.bpm, body.artwork_url,
                 ),
             )
 
