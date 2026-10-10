@@ -186,6 +186,15 @@ extension AudioPlayerManager {
         updateNowPlaying()
     }
 
+    /// "Wait, what was that" — jumps back 15s on the spot. Deliberately
+    /// lighter-weight than a Voice Memo/track bookmark: no sheet, no typing,
+    /// nothing saved — just an instant rewind for the thing that just
+    /// happened, using the same `seek(to:)` every other seek already goes
+    /// through.
+    func instantReplay() {
+        seek(to: position - 15)
+    }
+
     func seek(to newPosition: TimeInterval) {
         let target = max(0, min(newPosition, duration))
         position = target

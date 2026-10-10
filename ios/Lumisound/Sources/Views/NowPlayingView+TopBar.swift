@@ -122,6 +122,13 @@ extension NowPlayingView {
                 )
             }
             Button {
+                selectHaptic.selectionChanged()
+                player.instantReplay()
+            } label: {
+                Label("Replay Last 15s", systemImage: "gobackward.15")
+            }
+            .disabled(player.currentSong == nil)
+            Button {
                 showSleepTimerSheet = true
             } label: {
                 Label(sleepTimer.isActive ? "Edit Sleep Timer" : "Sleep Timer", systemImage: "moon.zzz.fill")
@@ -144,6 +151,14 @@ extension NowPlayingView {
                 Label("Export AI DJ Set", systemImage: "mic.and.signal.meter.fill")
             }
             .disabled(aiDJ.sessionLog.isEmpty)
+            Button {
+                physicalGestures.isEnabled.toggle()
+            } label: {
+                Label(
+                    physicalGestures.isEnabled ? "Shake/Cover Gestures: On" : "Shake/Cover Gestures: Off",
+                    systemImage: physicalGestures.isEnabled ? "checkmark.circle" : "circle"
+                )
+            }
             Button {
                 Task {
                     if deviceSync.isHosting {
