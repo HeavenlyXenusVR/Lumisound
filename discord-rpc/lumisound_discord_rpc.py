@@ -425,6 +425,19 @@ def build_activity(
 
     Returns None for: no track, a report too old to trust (see
     STALE_AFTER_SECONDS), or paused playback unless `show_when_paused` is set.
+
+    Image assets: Discord's gateway/IPC activity payload accepts a raw
+    external image URL directly in assets.large_image/small_image (it comes
+    back from Discord prefixed "mp:" — that prefix is receive-only, never
+    sent) — no Developer Portal asset upload or registration call needed, per
+    Discord's own docs. So the per-track thumbnail (`state["artwork_url"]`,
+    pushed by the app from Song.youtubeThumbnailURL — see
+    pushPlaybackStateToBridge/pushPlaybackState) can be set as large_image
+    directly, swapping every track change, with the user's one-time
+    configured `large_image` (normally the Lumisound app icon) kept as the
+    SMALL badge image instead — the Spotify-on-Discord layout. Falls back to
+    the configured large_image alone for tracks with no artwork (local
+    imports, non-YouTube sources), so Rich Presence never shows a blank image.
     """
     if not state or not state.get("title"):
         return None
@@ -488,12 +501,20 @@ def build_activity(
     # elapsed counter that keeps ticking — the small_text/small_image (if
     # configured) is the only indicator of paused state.
 
+    # Per-track thumbnail takes the large (primary) slot, with the static
+    # configured image demoted to the small badge slot — swapped only when a
+    # thumbnail is actually available, so a local/non-YouTube track still
+    # shows the configured image rather than nothing.
+    track_art = state.get("artwork_url")
+    effective_large = track_art or large_image
+    effective_small = small_image if track_art else None
+
     assets: dict = {}
-    if large_image:
-        assets["large_image"] = large_image
-        assets["large_text"] = "Lumisound"
-    if small_image:
-        assets["small_image"] = small_image
+    if effective_large:
+        assets["large_image"] = effective_large
+        assets["large_text"] = (state.get("title") or "Lumisound")[:128] if track_art else "Lumisound"
+    if effective_small:
+        assets["small_image"] = effective_small
         assets["small_text"] = "Playing" if is_playing else "Paused"
     if assets:
         activity["assets"] = assets
