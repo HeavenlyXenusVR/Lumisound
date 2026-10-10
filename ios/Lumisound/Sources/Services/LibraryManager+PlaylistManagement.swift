@@ -122,4 +122,20 @@ extension LibraryManager {
     var playlistFolders: [String] {
         Array(Set(playlists.compactMap(\.folder))).sorted()
     }
+
+    /// Saves `settings` as this playlist's auto-applied EQ/effects/volume
+    /// override — see `Playlist.audioSettingsOverride` and
+    /// `AudioPlayerManager.applyTrackAudioSettings`.
+    func setAudioSettingsOverride(_ settings: AudioSettings, forPlaylistID playlistID: UUID) {
+        guard let index = playlists.firstIndex(where: { $0.id == playlistID }) else { return }
+        playlists[index].audioSettingsOverride = settings
+        persistence.savePlaylists(playlists)
+    }
+
+    func clearAudioSettingsOverride(forPlaylistID playlistID: UUID) {
+        guard let index = playlists.firstIndex(where: { $0.id == playlistID }),
+              playlists[index].audioSettingsOverride != nil else { return }
+        playlists[index].audioSettingsOverride = nil
+        persistence.savePlaylists(playlists)
+    }
 }

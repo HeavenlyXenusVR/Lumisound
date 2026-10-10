@@ -51,6 +51,58 @@ extension NowPlayingView {
                 }
                 .panelStyle()
             }
+
+            playlistAudioSettingsSection
+        }
+    }
+
+    // MARK: - Playlist-Level Audio Settings
+
+    /// Same idea one level up — see `Playlist.audioSettingsOverride`. Only
+    /// shown when the current track is actually playing as part of a
+    /// playlist (`player.currentPlaylistID`); a track's own pin above
+    /// always takes priority over this when both exist.
+    @ViewBuilder
+    private var playlistAudioSettingsSection: some View {
+        if let playlistID = player.currentPlaylistID,
+           let playlist = library.playlists.first(where: { $0.id == playlistID }) {
+            let hasOverride = playlist.audioSettingsOverride != nil
+            HStack(spacing: 12) {
+                Image(systemName: hasOverride ? "music.note.list" : "music.note.list")
+                    .font(.system(size: 16))
+                    .foregroundStyle(hasOverride ? AppTheme.dynamicAccent : AppTheme.textSecondary)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(hasOverride ? "Custom Sound for \"\(playlist.name)\"" : "Save Sound for This Playlist")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.textPrimary)
+                    Text(hasOverride
+                         ? "Every track in this playlist opens with this EQ/effects/volume, unless the track has its own pin above."
+                         : "Save the current EQ/effects/volume as this playlist's default — every track in it will open with this sound.")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.textSecondary)
+                }
+
+                Spacer(minLength: 8)
+
+                Button {
+                    selectHaptic.selectionChanged()
+                    if hasOverride {
+                        library.clearAudioSettingsOverride(forPlaylistID: playlistID)
+                    } else {
+                        library.setAudioSettingsOverride(player.audioSettings, forPlaylistID: playlistID)
+                    }
+                } label: {
+                    Text(hasOverride ? "Remove" : "Save")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(hasOverride ? AppTheme.elevatedSurface : AppTheme.dynamicAccent, in: Capsule())
+                        .foregroundStyle(hasOverride ? AppTheme.textPrimary : .white)
+                }
+                .buttonStyle(.plain)
+            }
+            .panelStyle()
         }
     }
 }

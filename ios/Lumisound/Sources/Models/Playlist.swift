@@ -14,8 +14,15 @@ struct Playlist: Identifiable, Hashable, Codable {
     /// same look automatically. `nil` means "no preference yet" — falls back
     /// to the user's global default style.
     var preferredArtworkStyle: String?
+    /// Optional EQ/effects/volume override auto-applied whenever a track
+    /// starts playing with this playlist as its active context (see
+    /// `AudioPlayerManager.applyTrackAudioSettings`) — same idea as
+    /// per-track sound overrides, one level up. A per-track override still
+    /// wins if the specific song playing also has one of its own; this is
+    /// the fallback for everything else in the playlist.
+    var audioSettingsOverride: AudioSettings?
 
-    init(id: UUID = UUID(), name: String, songIDs: [Song.ID] = [], createdAt: Date = Date(), folder: String? = nil, tags: [String] = [], preferredArtworkStyle: String? = nil) {
+    init(id: UUID = UUID(), name: String, songIDs: [Song.ID] = [], createdAt: Date = Date(), folder: String? = nil, tags: [String] = [], preferredArtworkStyle: String? = nil, audioSettingsOverride: AudioSettings? = nil) {
         self.id = id
         self.name = name
         self.songIDs = songIDs
@@ -23,6 +30,7 @@ struct Playlist: Identifiable, Hashable, Codable {
         self.folder = folder
         self.tags = tags
         self.preferredArtworkStyle = preferredArtworkStyle
+        self.audioSettingsOverride = audioSettingsOverride
     }
 
     var songCount: Int {
@@ -30,7 +38,7 @@ struct Playlist: Identifiable, Hashable, Codable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, songIDs, createdAt, folder, tags, preferredArtworkStyle
+        case id, name, songIDs, createdAt, folder, tags, preferredArtworkStyle, audioSettingsOverride
     }
 
     init(from decoder: Decoder) throws {
@@ -42,5 +50,6 @@ struct Playlist: Identifiable, Hashable, Codable {
         folder = try container.decodeIfPresent(String.self, forKey: .folder)
         tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
         preferredArtworkStyle = try container.decodeIfPresent(String.self, forKey: .preferredArtworkStyle)
+        audioSettingsOverride = try container.decodeIfPresent(AudioSettings.self, forKey: .audioSettingsOverride)
     }
 }

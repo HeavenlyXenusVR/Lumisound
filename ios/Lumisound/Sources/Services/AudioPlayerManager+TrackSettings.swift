@@ -19,8 +19,14 @@ extension AudioPlayerManager {
 
         isSwitchingTrack = true
         if let id = currentSong?.id, let saved = perTrackAudioSettings[id] {
+            // A specific track's own override always wins over whatever
+            // playlist it happens to be playing from.
             isUsingTrackAudioSettings = true
             audioSettings = saved
+        } else if let playlistID = currentPlaylistID,
+                  let playlistOverride = libraryManager?.playlists.first(where: { $0.id == playlistID })?.audioSettingsOverride {
+            isUsingTrackAudioSettings = false
+            audioSettings = playlistOverride
         } else {
             isUsingTrackAudioSettings = false
             audioSettings = defaultAudioSettings
