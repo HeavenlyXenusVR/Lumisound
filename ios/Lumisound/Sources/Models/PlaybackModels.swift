@@ -62,7 +62,7 @@ struct PlaybackSnapshot: Codable, Equatable {
     }
 }
 
-struct AudioSettings: Codable, Equatable {
+struct AudioSettings: Codable, Equatable, Hashable {
     /// Median tonal shape of the user's library, supplied by the server — what
     /// Auto EQ corrects toward. See SpectralEQMatcher.
     ///

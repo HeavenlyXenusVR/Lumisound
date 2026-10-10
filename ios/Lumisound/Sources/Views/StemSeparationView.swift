@@ -146,7 +146,11 @@ struct StemSeparationView: View {
     private func togglePreview(url: URL, player: Binding<AVAudioPlayer?>, otherPlayer: Binding<AVAudioPlayer?>) {
         otherPlayer.wrappedValue?.pause()
         if let existing = player.wrappedValue {
-            existing.isPlaying ? existing.pause() : existing.play()
+            if existing.isPlaying {
+                existing.pause()
+            } else {
+                existing.play()
+            }
             return
         }
         do {
