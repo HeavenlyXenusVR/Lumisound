@@ -181,6 +181,11 @@ final class AudioPlayerManager: ObservableObject {
     /// (i.e. `audioSettings` reflects that track's own settings, not the global default).
     @Published var isUsingTrackAudioSettings = false
 
+    /// "Why this pick" for the current Auto EQ selection — see
+    /// `applyAutoEQIfNeeded`. `nil` when Auto EQ is off or hasn't picked
+    /// anything for the current track yet.
+    @Published var autoEQReason: String?
+
     /// Suppresses the `audioSettings` didSet's save-as-default/save-per-track logic
     /// while `applyTrackAudioSettings` is itself assigning `audioSettings` during a
     /// track switch — that assignment reflects a *recall* of previously saved

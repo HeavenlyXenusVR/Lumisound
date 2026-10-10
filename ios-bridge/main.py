@@ -16793,6 +16793,12 @@ async def get_discover_mix(
             if track["id"] in known_ids or track["id"] in seen_ids:
                 continue
             seen_ids.add(track["id"])
+            # Feature: discover-mix-reason -- the seed artist that produced
+            # this track was already known right here and previously just
+            # discarded. Surfaced client-side as "Because you listen to
+            # <artist>" (DiscoverMixView) -- no new computation, just not
+            # throwing away a value already in scope.
+            track["seed_artist"] = artist
             tracks.append(track)
             if len(tracks) >= limit:
                 break

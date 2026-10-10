@@ -119,6 +119,8 @@ private struct DiscoverMixRow: View {
     let onPlay: () -> Void
     let onAddToQueue: () -> Void
 
+    @State private var showReason = false
+
     var body: some View {
         HStack(spacing: 12) {
             AsyncImage(url: URL(string: track.thumbnailURL)) { phase in
@@ -148,9 +150,30 @@ private struct DiscoverMixRow: View {
                     .font(AppTheme.bodyFont(size: 12))
                     .foregroundStyle(AppTheme.textSecondary)
                     .lineLimit(1)
+                if showReason, let seedArtist = track.seedArtist {
+                    Text("Because you listen to \(seedArtist)")
+                        .font(AppTheme.bodyFont(size: 11))
+                        .foregroundStyle(AppTheme.dynamicAccent)
+                        .lineLimit(1)
+                        .transition(.opacity)
+                }
             }
 
             Spacer(minLength: 4)
+
+            // "Why this pick" — tap-to-reveal rather than shown for every
+            // row at once, so a mix seeded from 3 artists doesn't just
+            // repeat the same caption a dozen times.
+            if track.seedArtist != nil {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { showReason.toggle() }
+                } label: {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 13))
+                        .foregroundStyle(AppTheme.textSecondary)
+                }
+                .buttonStyle(.plain)
+            }
 
             if isLoading {
                 ProgressView()

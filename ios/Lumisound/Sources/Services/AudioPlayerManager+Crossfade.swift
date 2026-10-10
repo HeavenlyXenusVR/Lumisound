@@ -349,6 +349,10 @@ extension AudioPlayerManager {
             appLog(String(format: "applyAutoEQIfNeeded: measured -> %@ (%.0f%% closer to library target) for \"%@\"",
                           matched.rawValue, gain * 100, currentSong?.title ?? "?"),
                    category: "audio")
+            // "Why this pick" (see NowPlayingView+Equalizer's reason row) —
+            // this gain% was already being computed for the log line above;
+            // just not thrown away before now.
+            autoEQReason = String(format: "Measured from this track's own mix — %@ gets it %.0f%% closer to your library's typical tone", matched.rawValue, gain * 100)
             if audioSettings.eqPreset != matched {
                 applyEQPreset(matched)
             }
@@ -358,9 +362,17 @@ extension AudioPlayerManager {
         let genre = currentSong?.genre
         guard let preset = EQPreset.auto(forBPM: bpm, genre: genre) else {
             appLog("applyAutoEQIfNeeded: no usable genre/BPM for \"\(currentSong?.title ?? "?")\" (genre=\(genre ?? "nil"), bpm=\(bpm.map { String($0) } ?? "nil")) — skipping", category: "audio")
+            autoEQReason = nil
             return
         }
         appLog("applyAutoEQIfNeeded: preset \(audioSettings.eqPreset) -> \(preset) for \"\(currentSong?.title ?? "?")\" (genre=\(genre ?? "nil"), bpm=\(bpm.map { String($0) } ?? "nil"))", category: "audio")
+        if let genre, !genre.isEmpty {
+            autoEQReason = "Picked for this track's genre (\(genre))"
+        } else if let bpm {
+            autoEQReason = "Picked from this track's tempo (~\(Int(bpm)) BPM) — no genre tag to go on"
+        } else {
+            autoEQReason = nil
+        }
         if audioSettings.eqPreset != preset {
             applyEQPreset(preset)
         }

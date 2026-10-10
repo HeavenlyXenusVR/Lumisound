@@ -10,6 +10,11 @@ struct StreamTrack: Identifiable, Codable, Hashable {
     let thumbnailURL: String
     let source: String       // "youtube", "soundcloud", or "bandcamp"
     let youtubeURL: String   // canonical URL for sharing
+    /// Set only by `/user/discover-mix` — the most-played artist of yours
+    /// this track was searched for, surfaced as "Because you listen to
+    /// <artist>" (see DiscoverMixView). `nil` for every other source of a
+    /// `StreamTrack` (search results, AI DJ, stem separation, ...).
+    var seedArtist: String? = nil
 
     var duration: TimeInterval { TimeInterval(durationSeconds) }
 
@@ -35,6 +40,7 @@ struct StreamTrack: Identifiable, Codable, Hashable {
         case thumbnailURL    = "thumbnail_url"
         case source
         case youtubeURL      = "youtube_url"
+        case seedArtist      = "seed_artist"
     }
 }
 

@@ -190,6 +190,18 @@ extension SettingsView {
                         .foregroundStyle(AppTheme.textSecondary)
                         .padding(.leading, 16)
                         .transition(.opacity.combined(with: .move(edge: .top)))
+
+                    // "Why this pick" — the specific reason for the CURRENT
+                    // track, not just the general description above. Same
+                    // signal `applyAutoEQIfNeeded` already logs, surfaced
+                    // instead of thrown away.
+                    if let reason = player.autoEQReason {
+                        Label(reason, systemImage: "sparkle.magnifyingglass")
+                            .font(.caption2)
+                            .foregroundStyle(AppTheme.dynamicAccent)
+                            .padding(.leading, 16)
+                            .transition(.opacity)
+                    }
                 }
 
                 if !player.audioSettings.autoEQEnabled {
