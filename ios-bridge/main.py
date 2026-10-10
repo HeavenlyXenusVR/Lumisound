@@ -76,6 +76,7 @@ from intelligence import (
 )
 import lyrics_ai
 import lyrics_whisper
+import stem_separation
 from lyrics_ai import transcribe_lyrics
 
 # ---------------------------------------------------------------------------
@@ -6470,6 +6471,139 @@ async def _extract_motion_clip(video_id: str, dest: pathlib.Path) -> bool:
         return False
     finally:
         raw_path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# AI stem separation (Feature: stem-separation)
+# ---------------------------------------------------------------------------
+#
+# Async job pattern mirrors /api/download's _DOWNLOAD_JOBS (see that
+# section's comment) for the same reason: real separation (stem_separation.
+# py, Demucs) routinely takes 1-4+ minutes, which is well past what's safe
+# to hold a single HTTP request open for. Deliberately its own standalone
+# job dict rather than reusing _DOWNLOAD_JOBS — different shape (two output
+# stems, not one file) and no library-persistence/APNs-notify side effects;
+# a stem-separation result is a transient remix source, not a library
+# addition.
+_STEM_JOBS: dict = {}
+_STEM_JOB_MAX_AGE = 900  # seconds — matches _DOWNLOAD_JOB_MAX_AGE
+
+
+def _sweep_stale_stem_jobs() -> None:
+    now = time.monotonic()
+    stale = [jid for jid, job in _STEM_JOBS.items() if now - job["created"] > _STEM_JOB_MAX_AGE]
+    for jid in stale:
+        job = _STEM_JOBS.pop(jid)
+        work_dir = job.get("work_dir")
+        if work_dir is not None:
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+
+@app.post("/api/stem-separation")
+async def start_stem_separation(
+    request: Request,
+    video_id: Optional[str] = Query(None, min_length=5, max_length=32, description="YouTube source — mutually exclusive with uploading raw audio in the body"),
+    title: str = Query("track"),
+    user: dict = Depends(get_current_user),
+):
+    """Starts a background separation job and returns its job_id immediately
+    (202) — poll /api/stem-separation/status, then fetch
+    /api/stem-separation/result once done. Either pass `video_id` (pulls
+    audio via yt-dlp server-side, same as /api/download) or POST the raw
+    audio file directly in the body (for a local-only track with no
+    server-side copy — capped at 60 MB, which comfortably covers a
+    normal-length track at any reasonable compressed bitrate)."""
+    _sweep_stale_stem_jobs()
+
+    work_dir = stem_separation.make_temp_work_dir()
+    input_path: Optional[pathlib.Path] = None
+
+    if video_id:
+        if not re.fullmatch(r"[\w-]{5,32}", video_id):
+            shutil.rmtree(work_dir, ignore_errors=True)
+            raise HTTPException(status_code=400, detail="Invalid video id")
+        input_path = work_dir / "input.m4a"
+        cmd = [
+            "yt-dlp", *_YTDLP_NETWORK_ARGS,
+            "--cache-dir", YTDLP_CACHE_DIR,
+            "-f", "bestaudio[ext=m4a]/bestaudio",
+            "--no-playlist",
+            "-o", str(input_path),
+            f"https://www.youtube.com/watch?v={video_id}",
+        ]
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=120.0)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            shutil.rmtree(work_dir, ignore_errors=True)
+            raise HTTPException(status_code=504, detail="Fetching source audio timed out")
+        if proc.returncode != 0 or not input_path.exists():
+            shutil.rmtree(work_dir, ignore_errors=True)
+            raise HTTPException(status_code=502, detail="Could not fetch source audio for separation")
+    else:
+        try:
+            body = await request.body()
+        except ClientDisconnect:
+            shutil.rmtree(work_dir, ignore_errors=True)
+            raise HTTPException(status_code=499, detail="Client disconnected before upload completed")
+        if not body or len(body) > 60 * 1024 * 1024:
+            shutil.rmtree(work_dir, ignore_errors=True)
+            raise HTTPException(status_code=400, detail="Invalid or oversized audio (max 60 MB)")
+        input_path = work_dir / "input.audio"
+        await asyncio.to_thread(input_path.write_bytes, body)
+
+    safe_title = _truncate_filename_bytes(title.replace("/", "-").replace(":", "-"))
+    job_id = uuid.uuid4().hex
+    _STEM_JOBS[job_id] = {"status": "pending", "created": time.monotonic(), "work_dir": work_dir, "title": safe_title}
+    asyncio.create_task(_run_stem_separation_job(job_id, input_path, work_dir))
+    return JSONResponse({"job_id": job_id}, status_code=202)
+
+
+async def _run_stem_separation_job(job_id: str, input_path: pathlib.Path, work_dir: pathlib.Path) -> None:
+    job = _STEM_JOBS.get(job_id)
+    if job is None:
+        return
+    job["status"] = "running"
+    try:
+        stems = await stem_separation.separate_stems(input_path, work_dir)
+        job["status"] = "done"
+        job["vocals"] = stems["vocals"]
+        job["instrumental"] = stems["instrumental"]
+    except stem_separation.SeparationError as exc:
+        logger.warning("stem_separation job %s failed: %s", job_id, exc)
+        job["status"] = "error"
+        job["error"] = str(exc)
+    except Exception as exc:  # noqa: BLE001 — a job must always reach a terminal status
+        logger.exception("stem_separation job %s crashed", job_id)
+        job["status"] = "error"
+        job["error"] = "Internal error during separation"
+
+
+@app.get("/api/stem-separation/status")
+async def stem_separation_status(job_id: str, user: dict = Depends(get_current_user)):
+    job = _STEM_JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired job")
+    return {"status": job["status"], "error": job.get("error")}
+
+
+@app.get("/api/stem-separation/result")
+async def stem_separation_result(
+    job_id: str,
+    stem: str = Query(..., pattern="^(vocals|instrumental)$"),
+    user: dict = Depends(get_current_user),
+):
+    job = _STEM_JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired job")
+    if job["status"] != "done":
+        raise HTTPException(status_code=409, detail=f"Job is not finished (status={job['status']})")
+    path = job.get(stem)
+    if path is None or not pathlib.Path(path).exists():
+        raise HTTPException(status_code=404, detail="Result file missing")
+    return FileResponse(path, media_type="audio/mp4", filename=f"{job['title']}-{stem}.m4a")
 
 
 @app.get("/api/download/batch/status")

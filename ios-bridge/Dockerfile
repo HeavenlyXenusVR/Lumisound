@@ -43,7 +43,30 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Demucs (real source separation for the stem-separation feature — see
+# stem_separation.py) needs PyTorch, which is deliberately NOT in
+# requirements.txt the way faster-whisper's lighter ctranslate2 backend is —
+# there's no comparable non-torch separation model with similar quality.
+# Installed from PyTorch's own CPU-only wheel index so this doesn't pull in
+# CUDA runtime libraries (multiple GB, entirely dead weight — this host has
+# no GPU). Still a real image-size and build-time cost; that's the accepted
+# tradeoff for actual separation quality over a cheaper EQ-notch fake.
+RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir demucs==4.0.1
+
 COPY . .
+
+# Bake the htdemucs model weights into the image, same reasoning as the
+# Whisper bake below — the first real request shouldn't pay a ~80 MB
+# download, and shouldn't silently depend on Meta's model host being
+# reachable at exactly that moment.
+ENV LUMISOUND_DEMUCS_CACHE=/app/cache/demucs
+RUN python -c "\
+import os; \
+os.environ['TORCH_HOME'] = '/app/cache/demucs'; \
+from demucs.pretrained import get_model; \
+get_model('htdemucs'); \
+print('demucs model htdemucs cached')"
 
 # Bake the Whisper weights into the image rather than downloading them on first
 # use. The lazy path in lyrics_whisper._load_model works, but it would make the

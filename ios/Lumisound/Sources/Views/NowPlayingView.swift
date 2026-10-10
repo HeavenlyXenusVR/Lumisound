@@ -259,6 +259,9 @@ struct NowPlayingView: View {
     // Sleep Timer sheet
     @State var showSleepTimerSheet = false
 
+    // Stem separation sheet (Separate Vocals/Instrumental)
+    @State var showStemSeparationSheet = false
+
     // Format info sheet
     @State var showFormatInfoSheet = false
     @State var showPracticeModeSheet = false
@@ -305,6 +308,11 @@ struct NowPlayingView: View {
         .sheet(isPresented: $showSleepTimerSheet) {
             SleepTimerSheet()
                 .environmentObject(sleepTimer)
+        }
+        .sheet(isPresented: $showStemSeparationSheet) {
+            if let song = player.currentSong {
+                StemSeparationView(song: song)
+            }
         }
         .sheet(isPresented: $showCustomizeSheet) {
             NowPlayingCustomizeSheet(

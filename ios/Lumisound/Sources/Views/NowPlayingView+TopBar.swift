@@ -127,6 +127,12 @@ extension NowPlayingView {
                 Label(sleepTimer.isActive ? "Edit Sleep Timer" : "Sleep Timer", systemImage: "moon.zzz.fill")
             }
             Button {
+                showStemSeparationSheet = true
+            } label: {
+                Label("Separate Vocals / Instrumental", systemImage: "waveform.badge.minus")
+            }
+            .disabled(player.currentSong == nil)
+            Button {
                 showCustomizeSheet = true
             } label: {
                 Label("Customize Now Playing", systemImage: "paintbrush")
