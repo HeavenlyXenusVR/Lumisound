@@ -12560,6 +12560,89 @@ async def user_music_artwork(
     return Response(content=stdout_bytes, media_type="image/jpeg")
 
 
+# ---------------------------------------------------------------------------
+# Rich Presence artwork relay (Feature: discord-rpc-local-artwork)
+# ---------------------------------------------------------------------------
+#
+# Discord's Rich Presence asset fields (see lumisound_discord_rpc.py's
+# build_activity) take a URL, which Discord's OWN servers fetch — a track's
+# YouTube thumbnail already works for that (Song.youtubeThumbnailURL, any
+# public https URL). A purely local import (on-device only, never uploaded
+# anywhere, song_id like "local:...") has no such URL: its only artwork is
+# embedded in the file sitting on the user's phone, which Discord's servers
+# obviously cannot reach into. This gives the app somewhere to put a small
+# copy of that embedded art so it becomes fetchable the same way.
+#
+# Deliberately separate from /user/music/artwork above (the Personal Cloud
+# Library's artwork system): that one serves a specific synced file by path
+# and requires auth on every read, which is correct for library art but
+# wrong here — Discord's fetch carries no bearer token, so the READ side of
+# this has to be unauthenticated. Keyed by a hash the client computes
+# itself (sha256 of the track's stable identity) rather than a server-
+# assigned id, so the app can compute its own artwork_url to report in the
+# SAME call that triggers the upload, without a round trip to get a key
+# first. Unauthenticated-but-unguessable (a 64-char hex key), the same
+# de-facto privacy model Discord's own CDN attachment URLs use.
+_RP_ARTWORK_DIR = pathlib.Path(
+    os.path.join(YTDLP_CACHE_DIR, "rp-artwork") if YTDLP_CACHE_DIR
+    else os.path.join(tempfile.gettempdir(), "lumisound-rp-artwork")
+)
+_RP_ARTWORK_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _rp_artwork_path(key: str) -> Optional[pathlib.Path]:
+    if not _RP_ARTWORK_KEY_RE.match(key):
+        return None
+    return _RP_ARTWORK_DIR / key[:2] / f"{key}.jpg"
+
+
+@app.post("/user/rp-artwork-upload", status_code=204)
+async def rp_artwork_upload(
+    request: Request,
+    key: str = Query(..., description="sha256(user_id + ':' + song_id), lowercase hex"),
+    song_id: str = Query(..., description="The track's Song.id, used to verify `key` server-side"),
+    user: dict = Depends(get_current_user),
+):
+    """Stores a small JPEG thumbnail for Rich Presence, uploaded by the app
+    for a local-only track that has no public artwork URL of its own (see
+    the section comment above).
+
+    `key` is recomputed here from the authenticated user's own id plus the
+    `song_id` the caller also sends, and rejected on mismatch — a client
+    can only ever write to the exact key it's also entitled to report in
+    its own artwork_url (same derivation, see pushPlaybackState), so this
+    can't be used to overwrite another user's cached image at a guessed
+    key even though reads are unauthenticated."""
+    expected_key = hashlib.sha256(f"{user['sub']}:{song_id}".encode()).hexdigest()
+    if key != expected_key:
+        raise HTTPException(status_code=400, detail="key does not match sha256(user_id + song_id)")
+    dest = _rp_artwork_path(key)
+    if dest is None:
+        raise HTTPException(status_code=400, detail="Invalid key")
+
+    try:
+        body = await request.body()
+    except ClientDisconnect:
+        raise HTTPException(status_code=499, detail="Client disconnected before upload completed")
+    if not body or len(body) > 2 * 1024 * 1024:  # thumbnails only — 2 MB is generous
+        raise HTTPException(status_code=400, detail="Invalid or oversized thumbnail (max 2 MB)")
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(dest.write_bytes, body)
+
+
+@app.get("/api/rp-artwork/{key}.jpg")
+async def rp_artwork_get(key: str):
+    """Unauthenticated on purpose — this is what Discord's own servers fetch
+    when rendering a Rich Presence image. See the section comment above."""
+    path = _rp_artwork_path(key)
+    if path is None or not path.exists():
+        raise HTTPException(status_code=404, detail="Not found")
+    data = await asyncio.to_thread(path.read_bytes)
+    return Response(content=data, media_type="image/jpeg",
+                     headers={"Cache-Control": "public, max-age=3600"})
+
+
 @app.delete("/user/music/{filepath:path}", status_code=204)
 async def delete_user_music(
     filepath: str,
