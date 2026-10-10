@@ -204,5 +204,14 @@ extension AudioPlayerManager {
         } else {
             equalizer.globalGain = 0
         }
+
+        // Hearing Health correlation signal (see HearingHealthService) —
+        // specifically the user's own Volume Boost slider above 100%, not
+        // ReplayGain's makeup gain for a quiet track, and only while
+        // actually playing (this runs on every settings pass, including
+        // ones that happen while paused/on a settings screen).
+        if isPlaying, userVol > 1.0 {
+            HearingHealthService.markBoostActiveToday()
+        }
     }
 }

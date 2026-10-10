@@ -157,6 +157,12 @@
          the app the first time recording is attempted. -->
     <key>NSMicrophoneUsageDescription</key>
     <string>Lumisound records a short hum to find a matching song already in your library.</string>
+    <!-- Required by HKHealthStore.requestAuthorization — read-only, never
+         written. Headphone audio exposure powers Hearing Health (Settings →
+         Account → Hearing Health); sleep analysis powers the Adaptive Sleep
+         Timer. Omitting this crashes the app on first request. -->
+    <key>NSHealthShareUsageDescription</key>
+    <string>Lumisound reads your headphone audio exposure to help you spot loud listening habits, and your sleep data (if you use the Adaptive Sleep Timer) to learn roughly when you fall asleep.</string>
 
     <!-- Status bar -->
     <key>UIStatusBarStyle</key>

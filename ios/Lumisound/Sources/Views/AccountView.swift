@@ -350,6 +350,7 @@ struct AccountView: View {
                         gridLink(destination: TimeCapsulesView(), title: "Time Capsules", icon: "shippingbox")
                         gridLink(destination: ConstellationView(), title: "Constellation", icon: "sparkles")
                         gridLink(destination: ListeningHeatmapView(), title: "Heatmap", icon: "calendar")
+                        gridLink(destination: HearingHealthView(), title: "Hearing Health", icon: "ear")
                         gridLink(
                             destination: NotificationsView(),
                             title: "Notifications",
