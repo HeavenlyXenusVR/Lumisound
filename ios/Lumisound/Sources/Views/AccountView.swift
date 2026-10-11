@@ -29,6 +29,7 @@ struct AccountView: View {
     private let discordPresentationContext = DiscordAuthPresentationContext()
 
     @State private var showLogoutConfirm = false
+    @State private var showDiscordUnlinkConfirm = false
     @State private var isEditingDisplayName = false
     @State private var draftDisplayName = ""
     @State private var isSavingDisplayName = false
@@ -167,8 +168,18 @@ struct AccountView: View {
                                     .foregroundStyle(Color(red: 0.345, green: 0.396, blue: 0.949))
                             }
                             Spacer()
+                            // This was a bare, unconfirmed button calling straight
+                            // through to a real server-side DELETE — a stray tap
+                            // while scrolling this screen (it sits in a plain list
+                            // row, not guarded by anything) permanently removed the
+                            // verification with no "are you sure" step at all,
+                            // reported as the badge "randomly, completely"
+                            // unlinking. Every other destructive action on this
+                            // screen (see `showLogoutConfirm` above) already goes
+                            // through a confirmation dialog first — this one just
+                            // hadn't gotten the same treatment.
                             Button("Unlink") {
-                                Task { await discordVerification.unlink() }
+                                showDiscordUnlinkConfirm = true
                             }
                             .font(AppTheme.bodyFont(size: 13).weight(.semibold))
                             .foregroundStyle(AppTheme.textSecondary)
@@ -829,6 +840,14 @@ struct AccountView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("You will be signed out on this device. Your data stays on the server.")
+        }
+        .confirmationDialog("Unlink Discord", isPresented: $showDiscordUnlinkConfirm, titleVisibility: .visible) {
+            Button("Unlink", role: .destructive) {
+                Task { await discordVerification.unlink() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Your Discord Verified badge will be removed. You can link it again later.")
         }
         .sheet(isPresented: $showAvatarGifPicker) {
             GifPickerSheet { data in
