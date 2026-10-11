@@ -88,7 +88,7 @@ final class ScanCacheService {
     /// cache-write time — that stored path may belong to a previous app install's
     /// sandbox container and no longer resolve to a real file.
     func cachedSong(for url: URL, stamp: FileStamp) -> Song? {
-        guard let entry = entries[stableKey(for: url)],
+        guard let entry = entries[Self.stableKey(for: url)],
               entry.mtime == stamp.mtime,
               entry.fileSize == stamp.size
         else { return nil }
@@ -97,10 +97,20 @@ final class ScanCacheService {
         return song
     }
 
+    /// A copy of the current cache, for callers that need to look up many
+    /// entries at once off the main actor (see `LibraryManager
+    /// .resolveSongs`'s `scan.cacheLookup` section). `[String: CacheEntry]`
+    /// is a value type with copy-on-write storage, so this is an O(1)
+    /// reference-count bump, not an O(n) copy — cheap enough to call on
+    /// every scan despite returning what can be a many-thousand-entry dict.
+    func snapshotEntries() -> [String: CacheEntry] {
+        entries
+    }
+
     /// Stores a `Song` for `url` keyed on the given `(mtime, size)` stamp.
     /// Pure in-memory dictionary write — no I/O, safe to call on the main actor.
     func store(song: Song, for url: URL, stamp: FileStamp) {
-        entries[stableKey(for: url)] = CacheEntry(mtime: stamp.mtime, fileSize: stamp.size, song: song)
+        entries[Self.stableKey(for: url)] = CacheEntry(mtime: stamp.mtime, fileSize: stamp.size, song: song)
         dirty = true
     }
 
@@ -134,7 +144,12 @@ final class ScanCacheService {
         if entries.count != before { dirty = true }
     }
 
-    private func stableKey(for url: URL) -> String {
+    /// `nonisolated static` — this only calls the `nonisolated static`
+    /// `documentsRelativePath(for:)` and reads `url` itself, never touching
+    /// `entries`/`dirty`, so it's safe to call from a detached task (see
+    /// `snapshotEntries()`'s caller in `LibraryManager+ScanCacheHelper.swift`)
+    /// without hopping back to the main actor per lookup.
+    nonisolated static func stableKey(for url: URL) -> String {
         // Prefer the sandbox-relative path (survives reinstalls); fall back to
         // the absolute path for files outside Documents (e.g. external folders
         // accessed via security-scoped bookmarks, which have their own

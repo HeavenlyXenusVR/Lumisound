@@ -434,14 +434,24 @@ extension LibraryManager {
         // the first element of each away — thousands of short-lived arrays to
         // produce a result that only ever needed one pass and one set. Same
         // output, same first-wins ordering, without the garbage.
-        MainThreadActivity.measure("scan.dedupe") {
+        //
+        // Off the main actor, same snapshot/detach/reassign shape as the
+        // `force` path's identical dedupe above — this was the one spot that
+        // never got updated to match it. Cost here is O(whole library), not
+        // O(newSongs.count): field telemetry (MainThreadActivity's
+        // "scan.dedupe" label) showed this taking 1.3-1.5s of synchronous
+        // main-actor time even for a single new file completing in the
+        // background, worse under thermal throttling — a real contributor to
+        // "stalls during ordinary browsing," not just large imports.
+        let currentSongs = importedSongs
+        importedSongs = await Task.detached(priority: .userInitiated) {
             var seenKeys = Set<String>()
-            seenKeys.reserveCapacity(importedSongs.count)
-            importedSongs = importedSongs.filter { song in
+            seenKeys.reserveCapacity(currentSongs.count)
+            return currentSongs.filter { song in
                 let key = song.url.map { $0.standardizedFileURL.absoluteString } ?? song.id
                 return seenKeys.insert(key).inserted
             }
-        }
+        }.value
         rebuildAllSongs()
     }
 

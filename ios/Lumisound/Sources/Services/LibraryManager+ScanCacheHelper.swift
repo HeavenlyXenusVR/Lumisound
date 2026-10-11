@@ -19,19 +19,32 @@ extension LibraryManager {
             }
         }.value
 
-        var cachedSongs: [Song] = []
-        var uncached: [(url: URL, stamp: ScanCacheService.FileStamp)] = []
-
-        // Pure in-memory dictionary lookups — cheap enough to stay on the main actor.
-        MainThreadActivity.measure("scan.cacheLookup") {
+        // Individually "cheap" (a dictionary lookup) but done thousands of times
+        // in a tight loop, this measured at 1.3-1.6s of synchronous main-actor
+        // time in field telemetry (MainThreadActivity's "scan.cacheLookup"
+        // label) on a large library — worse under thermal throttling, where
+        // even per-item-cheap work adds up. `snapshotEntries()` is an O(1)
+        // copy-on-write handoff of the whole cache dict, so the actual
+        // per-stamp matching can run entirely off the main actor against that
+        // snapshot instead of calling back into the @MainActor service once
+        // per file.
+        let entriesSnapshot = ScanCacheService.shared.snapshotEntries()
+        let (cachedSongs, uncached): ([Song], [(url: URL, stamp: ScanCacheService.FileStamp)]) = await Task.detached(priority: .userInitiated) {
+            var cachedSongs: [Song] = []
+            var uncached: [(url: URL, stamp: ScanCacheService.FileStamp)] = []
             for entry in stamps {
-                if let cached = ScanCacheService.shared.cachedSong(for: entry.url, stamp: entry.stamp) {
-                    cachedSongs.append(cached)
+                if let cacheEntry = entriesSnapshot[ScanCacheService.stableKey(for: entry.url)],
+                   cacheEntry.mtime == entry.stamp.mtime,
+                   cacheEntry.fileSize == entry.stamp.size {
+                    var song = cacheEntry.song
+                    song.url = entry.url
+                    cachedSongs.append(song)
                 } else {
                     uncached.append(entry)
                 }
             }
-        }
+            return (cachedSongs, uncached)
+        }.value
 
         guard !uncached.isEmpty else { return cachedSongs }
 
