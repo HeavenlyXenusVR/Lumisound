@@ -416,11 +416,22 @@ extension AudioPlayerManager {
         defer { isSchedulingAsync = false }
         errorMessage = nil
 
+        // See downloadAndSchedule's identical guard for why — same race,
+        // same fix: a seek/skip/track-change that lands while this track's
+        // transcode is still in flight must not let this stale call go on
+        // to touch activeNode/scheduleSegment once the transcode finishes.
+        let entryGen = scheduleGeneration &+ 1
+        scheduleGeneration = entryGen
+
         guard let transcodedURL = await AudioEncoderService.shared.transcodeForPlayback(url) else {
             // AVAssetReader/AVAssetExportSession cannot decode this container (e.g. Ogg/Opus).
             // Fall back to AVPlayer which has access to iOS's full codec pipeline.
             appLog("Transcoding unavailable for .\(url.pathExtension), falling back to AVPlayer — \"\(currentSong?.displayName ?? "?")\"", category: "audio")
             scheduleWithOpusPlayer(url: url, startTime: startTime)
+            return
+        }
+        guard scheduleGeneration == entryGen else {
+            appLog("transcodeAndSchedule: discarding stale transcode (superseded) for \"\(currentSong?.displayName ?? "?")\"", category: "audio")
             return
         }
 
@@ -527,6 +538,21 @@ extension AudioPlayerManager {
 
         errorMessage = nil
 
+        // Captured BEFORE the download await below — every seek on a
+        // streamed track starts a brand new downloadAndSchedule Task (see
+        // scheduleCurrent's http branch), so rewinding/fast-forwarding a
+        // still-buffering stream can leave an OLDER call of this same
+        // function still in flight when a newer one (or a track change)
+        // starts. Without checking this, the older call's download
+        // eventually finishes and goes right on calling activeNode.stop()/
+        // scheduleSegment for its now-stale startTime/track regardless of
+        // what the newer seek/track-change already did to the node in the
+        // meantime — a real crash matching this exact shape was seen in the
+        // field (AVAudioPlayerNode.scheduleSegment throwing an uncaught
+        // NSException from inside this function's async continuation).
+        let entryGen = scheduleGeneration &+ 1
+        scheduleGeneration = entryGen
+
         do {
             // Derive a stable cache filename from the URL string.
             let cacheKey: String = url.absoluteString.data(using: .utf8).map { bytes in
@@ -596,6 +622,16 @@ extension AudioPlayerManager {
                     for (field, value) in headers { req.setValue(value, forHTTPHeaderField: field) }
                 }
                 let (downloaded, response) = try await URLSession.shared.download(for: req)
+                // See entryGen's doc comment above — a seek, skip, or track
+                // change that happened while this download was in flight
+                // already started its OWN downloadAndSchedule (or otherwise
+                // moved the node on), so this one is stale and must not go
+                // on to touch activeNode/scheduleSegment at all.
+                guard scheduleGeneration == entryGen else {
+                    try? FileManager.default.removeItem(at: downloaded)
+                    appLog("downloadAndSchedule: discarding stale download (superseded) for \(playbackURL)", category: "audio")
+                    return
+                }
                 guard let http = response as? HTTPURLResponse,
                       (200..<300).contains(http.statusCode) else {
                     let status = (response as? HTTPURLResponse)?.statusCode ?? -1
