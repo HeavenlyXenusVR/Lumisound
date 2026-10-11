@@ -81,7 +81,7 @@ struct LuaEffectScriptsView: View {
     private func scriptRow(_ ref: LuaUserScriptLibrary.ScriptRef) -> some View {
         Button {
             do {
-                let effect = try LuaEffectEngine.resolve(ref)
+                let effect = try LuaEffectEngine.resolve(ref, track: player.currentSong)
                 player.applyEffect(effect)
                 ToastCenter.shared.show("Applied \u{201C}\(effect.name)\u{201D}", category: .success, icon: effect.icon)
             } catch {

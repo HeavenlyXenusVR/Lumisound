@@ -40,7 +40,7 @@ extension AudioPlayerManager {
         guard !effectID.isEmpty, effectID != "none" else { return }
         let effect: AudioEffect?
         if let ref = LuaEffectEngine.scriptRef(forEffectID: effectID) {
-            effect = try? LuaEffectEngine.resolve(ref)
+            effect = try? LuaEffectEngine.resolve(ref, track: currentSong)
         } else {
             effect = AudioEffectsService.allEffects.first(where: { $0.id == effectID })
         }

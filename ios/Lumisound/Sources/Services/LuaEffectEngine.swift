@@ -74,16 +74,59 @@ enum LuaEffectEngine {
         }
     }
 
+    /// What a script can read about the track it's about to apply to, via
+    /// the global `track` table — nil (absent entirely, so `track == nil` in
+    /// Lua) when resolving without a specific song (e.g. previewing a script
+    /// from the list before anything's playing). Same field set and
+    /// snake_case convention `LuaSmartPlaylistEngine`'s `SongFacts` already
+    /// uses, so a script author already familiar with one recognizes the
+    /// other immediately.
+    private struct TrackContext: Encodable {
+        var title: String
+        var artist: String
+        var album: String
+        var genre: String
+        var duration: Double
+        var bpm: Double?
+    }
+
     /// Runs `ref`'s script and resolves it into a real `AudioEffect`, ready
     /// to hand to `AudioPlayerManager.applyEffect(_:)`. The `id` on the
     /// returned effect is always `"lua:<script id>"` (ignoring whatever `id`
     /// the script itself set) so it can never collide with a native preset's
     /// id and is always traceable back to its source script.
-    static func resolve(_ ref: LuaUserScriptLibrary.ScriptRef) throws -> AudioEffect {
+    ///
+    /// `track`, when given, is injected as a global `track` table BEFORE the
+    /// script runs — this is what actually makes a script like "Genre
+    /// Blend" able to react to the genre of what's ACTUALLY playing instead
+    /// of only a knob the user sets by hand. `reapplyActiveEffect` already
+    /// re-resolves the active Lua effect on every track start, so a script
+    /// that reads `track` recomputes itself fresh per-song for free, with no
+    /// change needed on the caller's side beyond passing the song.
+    static func resolve(_ ref: LuaUserScriptLibrary.ScriptRef, track: Song? = nil) throws -> AudioEffect {
         guard let source = try? String(contentsOf: ref.url, encoding: .utf8) else {
             throw EngineError.scriptNotReadable(ref.displayName)
         }
-        let wrapped = source + "\nreturn json.encode(effect)\n"
+        let trackPrelude: String
+        if let track {
+            let context = TrackContext(
+                title: track.title,
+                artist: track.artist,
+                album: track.album,
+                genre: track.genre,
+                duration: track.duration,
+                bpm: track.bpm
+            )
+            let encoder = JSONEncoder()
+            encoder.keyEncodingStrategy = .convertToSnakeCase
+            guard let data = try? encoder.encode(context), let json = String(data: data, encoding: .utf8) else {
+                throw EngineError.scriptNotReadable(ref.displayName)
+            }
+            trackPrelude = "local track = json.decode(\(LuaJSONBridge.quotedLuaString(json)))\n"
+        } else {
+            trackPrelude = "local track = nil\n"
+        }
+        let wrapped = trackPrelude + source + "\nreturn json.encode(effect)\n"
         let config = try LuaJSONBridge.run(wrapped, chunkName: ref.id, as: EffectConfig.self)
         guard config.eqBands.count == 10 else {
             throw EngineError.invalidBandCount(config.eqBands.count)
