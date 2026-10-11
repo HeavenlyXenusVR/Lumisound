@@ -40,11 +40,31 @@ extension AudioPlayerManager {
             return
         }
 
-        // Local file — synchronous path.
+        // Local file — synchronous path. `scheduleCurrent` below does a hard
+        // `node.stop()` then schedules a brand-new segment at full volume —
+        // the right behavior for a genuinely fresh track, but for a RESEEK
+        // of the track already playing (rewind/fast-forward/scrub) that's an
+        // audible click/"flicker" right as the new segment starts: the
+        // previous sample and the new segment's first sample rarely land on
+        // the same waveform position, so the discontinuity itself is the
+        // artifact — same root cause `beginCrossfade` avoids for track
+        // transitions by ramping `incoming.volume` up from 0 instead of
+        // snapping straight to full. Silence the node up front and ramp
+        // it back to its pre-seek volume once the new segment is actually
+        // playing, below.
+        let node = activeNode
+        let wasAlreadyPlaying = isPlaying
+        let resumeVolume = node.volume
+        if wasAlreadyPlaying {
+            node.volume = 0
+        }
         scheduleCurrent(from: startTime)
         // scheduleCurrent sets errorMessage on failure; bail out here to avoid a zombie
         // state where isPlaying=true but no audio segment is scheduled on the node.
-        guard errorMessage == nil else { return }
+        guard errorMessage == nil else {
+            node.volume = resumeVolume
+            return
+        }
         startEngineIfNeeded()
         activeNode.play()
         isPlaying = true
@@ -52,6 +72,30 @@ extension AudioPlayerManager {
         updateNowPlaying()
         reapplyActiveEffect()
         startSmartCrossfadeAnalysisIfNeeded()
+        if wasAlreadyPlaying {
+            rampNodeVolumeAfterSeek(node, to: resumeVolume)
+        }
+    }
+
+    /// Ramps `node.volume` from 0 back up to `target` over ~50ms — see the
+    /// comment above this function's call site in `playCurrent`.
+    private func rampNodeVolumeAfterSeek(_ node: AVAudioPlayerNode, to target: Float) {
+        guard target > 0 else { return }
+        seekFadeTimer?.invalidate()
+        let steps = 6
+        let interval = 0.05 / Double(steps)
+        var step = 0
+        seekFadeTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] t in
+            Task { @MainActor [weak self] in
+                guard self != nil else { t.invalidate(); return }
+                step += 1
+                node.volume = target * Float(step) / Float(steps)
+                if step >= steps {
+                    t.invalidate()
+                    self?.seekFadeTimer = nil
+                }
+            }
+        }
     }
 
     /// Smart Auto Crossfade reads the live analyzer's overallLevel the
