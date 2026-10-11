@@ -49,7 +49,22 @@ extension AudioPlayerManager {
         // without this, a `.lms`-converted next track would fail to open
         // here for a pure extension-recognition reason, silently degrading
         // every crossfade into a plain skip instead of an actual fade.
-        guard let nextFile = try? AVAudioFile(forReading: LumisoundExclusiveExtensionService.playableURL(for: nextURL)) else {
+        //
+        // An Opus/WebM/OGG source (the common case for this app's YouTube-
+        // sourced library) fails this direct open too — AVAudioFile can't
+        // read those containers at all, only the transcoded copy
+        // AudioEncoderService produces (same as `scheduleCurrent`'s
+        // `transcodeAndSchedule` branch). Awaiting that transcode here would
+        // stall mid-fade, so fall back to whatever `prewarmTranscode` already
+        // finished for this track instead of giving up immediately — without
+        // this, every such transition silently degraded to a plain skip
+        // (no fade, no error, nothing in the logs) even with Smart/manual
+        // Crossfade on.
+        let directFile = try? AVAudioFile(forReading: LumisoundExclusiveExtensionService.playableURL(for: nextURL))
+        let transcodedFile = directFile == nil
+            ? AudioEncoderService.shared.cachedPlaybackURL(for: nextURL).flatMap { try? AVAudioFile(forReading: $0) }
+            : nil
+        guard let nextFile = directFile ?? transcodedFile else {
             skipToNext(); return
         }
 
@@ -132,9 +147,12 @@ extension AudioPlayerManager {
         gaplessScheduled = false
         pendingNextIndex = nil
         // Crossfade schedules `nextFile` directly rather than through scheduleCurrent,
-        // so no fresh ReplayGain analysis runs for it — fall back to neutral rather than
-        // carrying over the outgoing track's (likely mismatched) computed gain.
+        // so start at neutral rather than carrying over the outgoing track's (likely
+        // mismatched) computed gain — then kick off this track's own analysis
+        // (see `analyzeReplayGain`) so it doesn't just stay at neutral for its
+        // entire playback the way it used to before that call was added here.
         resetReplayGainForNewTrack()
+        analyzeReplayGain(for: nextURL)
         updateNowPlaying()
         applyAutoEQIfNeeded(bpm: incomingBPM ?? nextSong.bpm)
 
@@ -143,6 +161,7 @@ extension AudioPlayerManager {
         // next crossfade.
         prewarmBPM(for: peekNextSong())
         prewarmPlayableCache(for: peekNextSong())
+        prewarmTranscode(for: peekNextSong())
 
         // Arm the crossfade trigger for the track that just became current —
         // mirroring the setup `scheduleCurrent` does for the very first track.
@@ -321,6 +340,21 @@ extension AudioPlayerManager {
     func prewarmPlayableCache(for song: Song?) {
         guard let song, let url = song.url else { return }
         Task { await LumisoundExclusiveExtensionService.prewarmPlayableURL(for: url) }
+    }
+
+    /// Same shape/reasoning as `prewarmPlayableCache`, for the OTHER thing
+    /// that can make a next track fail to open directly: an Opus/WebM/OGG
+    /// container AVAudioFile can't read until AudioEncoderService transcodes
+    /// it. Populates that service's on-disk cache ahead of time so
+    /// `beginCrossfade`'s synchronous `cachedPlaybackURL` lookup has
+    /// something to find instead of giving up and calling `skipToNext()`.
+    /// Fire-and-forget, no-op for a native format (checked cheaply inside
+    /// `transcodeForPlayback` itself) or an already-cached file.
+    func prewarmTranscode(for song: Song?) {
+        guard let song, let url = song.url else { return }
+        let ext = LumisoundExclusiveExtensionService.effectiveExtension(for: url)
+        guard ["opus", "webm", "ogg"].contains(ext) else { return }
+        Task { _ = await AudioEncoderService.shared.transcodeForPlayback(url) }
     }
 
     /// If "Auto EQ" is enabled, switches the EQ preset to match the current

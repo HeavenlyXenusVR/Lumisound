@@ -78,6 +78,23 @@ final class AudioEncoderService {
         return await aacExport(url, to: outURL)
     }
 
+    /// Synchronous counterpart to `transcodeForPlayback`, for a caller (like
+    /// `AudioPlayerManager.beginCrossfade`) that cannot await a fresh
+    /// transcode at the moment it needs the file without an audible stall.
+    /// Returns the same native-or-cached URL `transcodeForPlayback` would,
+    /// but only if that work already happened — via a prior prewarm call
+    /// against this same source — and never kicks off a transcode itself.
+    /// A caller on a deadline should fall back to its own default on `nil`
+    /// rather than block here.
+    func cachedPlaybackURL(for url: URL) -> URL? {
+        let url = LumisoundExclusiveExtensionService.playableURL(for: url)
+        if (try? AVAudioFile(forReading: url)) != nil { return url }
+        let outURL = tempDir.appendingPathComponent("play_\(cacheKey(for: url)).m4a")
+        guard FileManager.default.fileExists(atPath: outURL.path),
+              (try? AVAudioFile(forReading: outURL)) != nil else { return nil }
+        return outURL
+    }
+
     // MARK: - Permanent Format Conversion (user-triggered, not playback caching)
 
     /// Permanently re-encodes `url` (typically an opus/webm/ogg file that

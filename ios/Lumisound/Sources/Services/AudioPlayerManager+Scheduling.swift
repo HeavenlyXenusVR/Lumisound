@@ -69,6 +69,64 @@ extension AudioPlayerManager {
         }
     }
 
+    /// Reads `url`'s embedded `REPLAYGAIN_TRACK_GAIN` tag (falling back to RMS
+    /// analysis for files without one) and applies it as `replayGainLinearGain`.
+    /// Runs off the main thread so the metadata/RMS read never blocks playback.
+    /// Shared by every path that schedules a track directly — `scheduleCurrent`,
+    /// `transcodeAndSchedule`, and `beginCrossfade` — so each one gets this
+    /// track's real per-track gain instead of silently keeping whatever
+    /// `resetReplayGainForNewTrack` left it at (neutral) for the rest of its
+    /// playback. `beginCrossfade` schedules its incoming file directly rather
+    /// than through `scheduleCurrent`, so before this was shared here, a
+    /// crossfaded-in track never got this analysis at all — with ReplayGain
+    /// on, a track that needed a positive dB boost played at neutral (quieter
+    /// than it should) for its entire run, every time it arrived via a
+    /// crossfade rather than a plain skip/seek. No-op if ReplayGain is off.
+    func analyzeReplayGain(for url: URL) {
+        guard audioSettings.replayGainEnabled else { return }
+        // See LumisoundExclusiveExtensionService.playableURL's doc comment --
+        // a downloaded track's on-disk `.lms` bytes are XOR-masked and
+        // unreadable by AVURLAsset until unlocked; without this the
+        // embedded-tag read AND the RMS fallback both silently no-op for
+        // every locked track.
+        let capturedURL = LumisoundExclusiveExtensionService.playableURL(for: url)
+        let asset = AVURLAsset(url: capturedURL)
+        Task.detached(priority: .utility) { [weak self] in
+            let metadata = (try? await asset.load(.metadata)) ?? []
+            var gainDB: Float? = nil
+            for item in metadata {
+                let id = item.identifier?.rawValue.lowercased() ?? ""
+                if id.contains("replaygain_track_gain") || id.contains("replaygain") {
+                    if let str = item.stringValue {
+                        // Tag format: "+1.23 dB" or "-1.23 dB"
+                        let numeric = str.components(
+                            separatedBy: CharacterSet(
+                                charactersIn: "-+0123456789."
+                            ).inverted
+                        ).joined()
+                        gainDB = Float(numeric)
+                    }
+                }
+            }
+            // No embedded tag: compute RMS gain (returns 0 for unsupported formats).
+            if gainDB == nil {
+                let rms = await NormalizationService.shared.gain(for: capturedURL)
+                if rms != 0 { gainDB = rms }
+            }
+            if let gain = gainDB {
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    let linear = pow(10.0, gain / 20.0)
+                    self.replayGainLinearGain = linear
+                    // Re-derive the output gain split (mixer attenuation +
+                    // EQ globalGain boost) now that ReplayGain's contribution
+                    // is known.
+                    self.applyOutputGain()
+                }
+            }
+        }
+    }
+
     /// Resets ReplayGain to neutral at the start of a new track — before that track's own
     /// analysis (the `replayGainEnabled` block further down each scheduling path) computes
     /// its per-track gain — so the previous track's gain can't briefly bleed into this one.
@@ -79,6 +137,11 @@ extension AudioPlayerManager {
         opusRetriedThisLoad = false
         opusTransientRetryCount = 0
         replayGainLinearGain = 1.0
+        // A new track starting means any stall-recovery escalation in
+        // progress (see `checkForPlaybackStall`) was about a DIFFERENT
+        // track's dead spot — don't carry it over.
+        lastStallRecoveryPosition = nil
+        consecutiveStallRecoveriesAtSamePosition = 0
         // Every fresh (stop()+play()) schedule restarts the node's sample clock
         // at 0, so the gapless position baseline must reset too. The gapless
         // hand-off path also calls this, then immediately re-captures the
@@ -213,6 +276,7 @@ extension AudioPlayerManager {
             prewarmBPM(for: currentSong)
             prewarmBPM(for: peekNextSong())
             prewarmPlayableCache(for: peekNextSong())
+            prewarmTranscode(for: peekNextSong())
 
             // Schedule crossfade to begin crossfadeDuration seconds before the track ends,
             // so the incoming track fades in while the current track is still playing.
@@ -286,49 +350,7 @@ extension AudioPlayerManager {
 
             // ReplayGain: read embedded REPLAYGAIN_TRACK_GAIN tag; fall back to RMS analysis
             // for files without a tag. Runs off the main thread to avoid blocking playback.
-            if audioSettings.replayGainEnabled {
-                // See LumisoundExclusiveExtensionService.playableURL's doc
-                // comment -- a downloaded track's on-disk `.lms` bytes are
-                // XOR-masked and unreadable by AVURLAsset until unlocked;
-                // without this the embedded-tag read AND the RMS fallback
-                // both silently no-op for every locked track.
-                let capturedURL = LumisoundExclusiveExtensionService.playableURL(for: url)
-                let asset = AVURLAsset(url: capturedURL)
-                Task.detached(priority: .utility) { [weak self] in
-                    let metadata = (try? await asset.load(.metadata)) ?? []
-                    var gainDB: Float? = nil
-                    for item in metadata {
-                        let id = item.identifier?.rawValue.lowercased() ?? ""
-                        if id.contains("replaygain_track_gain") || id.contains("replaygain") {
-                            if let str = item.stringValue {
-                                // Tag format: "+1.23 dB" or "-1.23 dB"
-                                let numeric = str.components(
-                                    separatedBy: CharacterSet(
-                                        charactersIn: "-+0123456789."
-                                    ).inverted
-                                ).joined()
-                                gainDB = Float(numeric)
-                            }
-                        }
-                    }
-                    // No embedded tag: compute RMS gain (returns 0 for unsupported formats).
-                    if gainDB == nil {
-                        let rms = await NormalizationService.shared.gain(for: capturedURL)
-                        if rms != 0 { gainDB = rms }
-                    }
-                    if let gain = gainDB {
-                        await MainActor.run { [weak self] in
-                            guard let self else { return }
-                            let linear = pow(10.0, gain / 20.0)
-                            self.replayGainLinearGain = linear
-                            // Re-derive the output gain split (mixer attenuation +
-                            // EQ globalGain boost) now that ReplayGain's contribution
-                            // is known.
-                            self.applyOutputGain()
-                        }
-                    }
-                }
-            }
+            analyzeReplayGain(for: url)
         } catch {
             // AVAudioFile couldn't open this "native format" file — most often a
             // corrupted/truncated download (e.g. a track saved despite a failed
@@ -388,6 +410,7 @@ extension AudioPlayerManager {
             prewarmBPM(for: currentSong)
             prewarmBPM(for: peekNextSong())
             prewarmPlayableCache(for: peekNextSong())
+            prewarmTranscode(for: peekNextSong())
 
             // Crossfade trigger — same logic as scheduleCurrent.
             if audioSettings.crossfadeActive && audioSettings.crossfadeDuration > 0 {
@@ -418,40 +441,7 @@ extension AudioPlayerManager {
             // comment on the other ReplayGain block in this file -- `url`
             // here is the original (possibly `.lms`-locked) source, not the
             // transcoded playback file, so it needs the same unlock.
-            if audioSettings.replayGainEnabled {
-                let capturedURL = LumisoundExclusiveExtensionService.playableURL(for: url)
-                let asset       = AVURLAsset(url: capturedURL)
-                Task.detached(priority: .utility) { [weak self] in
-                    let metadata = (try? await asset.load(.metadata)) ?? []
-                    var gainDB: Float?
-                    for item in metadata {
-                        let id = item.identifier?.rawValue.lowercased() ?? ""
-                        if id.contains("replaygain_track_gain") || id.contains("replaygain") {
-                            if let str = item.stringValue {
-                                let numeric = str.components(
-                                    separatedBy: CharacterSet(charactersIn: "-+0123456789.").inverted
-                                ).joined()
-                                gainDB = Float(numeric)
-                            }
-                        }
-                    }
-                    if gainDB == nil {
-                        let rms = await NormalizationService.shared.gain(for: capturedURL)
-                        if rms != 0 { gainDB = rms }
-                    }
-                    if let gain = gainDB {
-                        await MainActor.run { [weak self] in
-                            guard let self else { return }
-                            let linear = pow(10.0, gain / 20.0)
-                            self.replayGainLinearGain = linear
-                            // Re-derive the output gain split (mixer attenuation +
-                            // EQ globalGain boost) now that ReplayGain's contribution
-                            // is known.
-                            self.applyOutputGain()
-                        }
-                    }
-                }
-            }
+            analyzeReplayGain(for: url)
 
         } catch {
             errorMessage = "Playback error: \(error.localizedDescription)"
@@ -716,11 +706,20 @@ extension AudioPlayerManager {
             }
             fileStartFrame = 0
             pendingGaplessFile = nil
-            // Fresh track — reset ReplayGain to neutral (its own analysis, if
-            // enabled, runs per-track in the scheduling paths). This also zeroes
-            // `gaplessBaseFrame`, so capture the node's CURRENT cumulative sample
-            // time as this segment's baseline immediately afterward.
+            // Fresh track — reset ReplayGain to neutral, then kick off this
+            // track's own analysis (see `analyzeReplayGain`). `scheduleGaplessNext`
+            // appends its file straight onto the engine node rather than going
+            // through `scheduleCurrent`, so without this call a gapless
+            // auto-advance (the default crossfade-off transition) left every
+            // track playing at neutral ReplayGain — audibly quieter than it
+            // should be for the rest of its run, whenever ReplayGain is on and
+            // the track needed a positive dB boost — for as long as the user
+            // kept letting tracks play through rather than manually skipping.
+            // This also zeroes `gaplessBaseFrame`, so capture the node's
+            // CURRENT cumulative sample time as this segment's baseline
+            // immediately afterward.
             resetReplayGainForNewTrack()
+            if let url = currentSong?.url { analyzeReplayGain(for: url) }
             if let nodeTime = activeNode.lastRenderTime,
                let playerTime = activeNode.playerTime(forNodeTime: nodeTime) {
                 gaplessBaseFrame = Double(playerTime.sampleTime)
