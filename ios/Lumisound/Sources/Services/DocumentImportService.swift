@@ -138,12 +138,56 @@ struct DocumentImportService {
         do {
             try manager.copyItem(at: sourceURL, to: destination)
             appLog("importFile: copied \(destination.lastPathComponent)", category: "library")
+        } catch let error as CocoaError where error.code == .fileWriteFileExists {
+            // importFiles(from:) runs up to 4 of these concurrently — two
+            // different source files that sanitize to the same destination
+            // filename (confirmed in the field: a share-sheet drop can
+            // deliver the same name twice in quick succession) both pass
+            // this function's OWN existence check above before either has
+            // actually created the destination, so the second one to
+            // reach `copyItem` hits this error instead of the graceful
+            // dedup that check was meant to provide — the whole import
+            // used to fail outright for exactly this reason. Re-resolve
+            // now that the race is settled: if it's genuinely the same
+            // file (matching size), adopt whichever copy already won;
+            // otherwise retry once under a de-duplicated name instead of
+            // failing.
+            let srcSize = (try? manager.attributesOfItem(atPath: sourceURL.path))?[.size] as? Int
+            let dstSize = (try? manager.attributesOfItem(atPath: destination.path))?[.size] as? Int
+            if let srcSize, let dstSize, srcSize == dstSize {
+                appLog("importFile: lost a concurrent-import race for \(destination.lastPathComponent) — adopting the other copy", category: "library")
+                return await makeSong(for: destination)
+            }
+            let deduped = Self.uniqueDestinationURL(for: destination, in: manager)
+            do {
+                try manager.copyItem(at: sourceURL, to: deduped)
+                appLog("importFile: copied \(deduped.lastPathComponent) (de-duplicated after a name collision)", category: "library")
+            } catch {
+                appError("importFile: copy failed for \(sourceURL.lastPathComponent) even after de-duplicating: \(error)", category: "library")
+                throw DocumentImportError.copyFailed
+            }
+            return await makeSong(for: deduped)
         } catch {
             appError("importFile: copy failed for \(sourceURL.lastPathComponent): \(error)", category: "library")
             throw DocumentImportError.copyFailed
         }
 
         return await makeSong(for: destination)
+    }
+
+    /// `destination`, renamed with a numeric suffix (`name 2.ext`, `name 3.ext`, …)
+    /// until it no longer collides with an existing file.
+    private static func uniqueDestinationURL(for destination: URL, in manager: FileManager) -> URL {
+        let directory = destination.deletingLastPathComponent()
+        let base = destination.deletingPathExtension().lastPathComponent
+        let ext = destination.pathExtension
+        var suffix = 2
+        var candidate = destination
+        while manager.fileExists(atPath: candidate.path) {
+            candidate = directory.appendingPathComponent("\(base) \(suffix)").appendingPathExtension(ext)
+            suffix += 1
+        }
+        return candidate
     }
 
     private func destinationURL(for sourceURL: URL) throws -> URL {
