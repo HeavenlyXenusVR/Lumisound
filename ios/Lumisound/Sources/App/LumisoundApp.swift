@@ -260,7 +260,7 @@ struct LumisoundApp: App {
                     deviceSync.streaming = streaming
 
                     physicalGestures.player = player
-                    if physicalGestures.isEnabled { physicalGestures.start() }
+                    physicalGestures.start()
 
                     discordVerification.attach(account: account)
                     if account.isLoggedIn {

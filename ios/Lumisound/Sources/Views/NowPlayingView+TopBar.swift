@@ -152,11 +152,19 @@ extension NowPlayingView {
             }
             .disabled(aiDJ.sessionLog.isEmpty)
             Button {
-                physicalGestures.isEnabled.toggle()
+                physicalGestures.shakeToSkipEnabled.toggle()
             } label: {
                 Label(
-                    physicalGestures.isEnabled ? "Shake/Cover Gestures: On" : "Shake/Cover Gestures: Off",
-                    systemImage: physicalGestures.isEnabled ? "checkmark.circle" : "circle"
+                    physicalGestures.shakeToSkipEnabled ? "Shake to Skip: On" : "Shake to Skip: Off",
+                    systemImage: physicalGestures.shakeToSkipEnabled ? "checkmark.circle" : "circle"
+                )
+            }
+            Button {
+                physicalGestures.coverToPauseEnabled.toggle()
+            } label: {
+                Label(
+                    physicalGestures.coverToPauseEnabled ? "Cover to Pause: On" : "Cover to Pause: Off",
+                    systemImage: physicalGestures.coverToPauseEnabled ? "checkmark.circle" : "circle"
                 )
             }
             Button {
