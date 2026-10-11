@@ -854,7 +854,7 @@ private struct HubSpeedDialTile: View {
             listenedFraction = library.listenedFraction(of: shortcut.songs)
             collage = library.collageSongs(from: shortcut.songs)
             if case .folder(let folder) = shortcut.kind {
-                customFolderCover = FolderCoverArtService.shared.cover(for: folder.dirURL)
+                customFolderCover = await FolderCoverArtService.shared.cover(for: folder.dirURL)
             } else {
                 customFolderCover = nil
             }

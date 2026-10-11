@@ -72,13 +72,25 @@ final class FolderCoverArtService: ObservableObject {
     /// Returns the cached/persisted cover for `folderURL`, if one was ever
     /// set — `nil` means "use the default" (first song's artwork / folder
     /// glyph), the same fallback LocalFolderDetailView already had.
-    func cover(for folderURL: URL) -> UIImage? {
+    func cover(for folderURL: URL) async -> UIImage? {
         let k = key(for: folderURL)
         if let cached = cache[k] { return cached }
         if noCoverKeys.contains(k) { return nil }
-        guard let data = try? Data(contentsOf: fileURL(for: folderURL)),
-              let image = UIImage(data: data)
-        else {
+        // Off the main actor — every FolderGridCell/folder-detail header calls
+        // this in `onAppear`/`.task(id:)` on first appearance, and for any
+        // folder that genuinely has a custom cover (the `noCoverKeys` miss
+        // cache only helps the no-cover case), that's a real disk read +
+        // JPEG decode. A fast fling through a never-before-seen stretch of
+        // the Folders grid fires a burst of these in quick succession —
+        // exactly the "holds static, then jumps" scroll-stutter pattern seen
+        // in a field screen recording, since this used to block the main
+        // actor directly inside onAppear's layout pass.
+        let path = fileURL(for: folderURL)
+        let image: UIImage? = await Task.detached(priority: .utility) {
+            guard let data = try? Data(contentsOf: path) else { return nil }
+            return UIImage(data: data)
+        }.value
+        guard let image else {
             noCoverKeys.insert(k)
             return nil
         }

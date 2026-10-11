@@ -101,10 +101,19 @@ struct PressableButtonStyle: ButtonStyle {
 /// same reason: immune to freezing from frequent parent re-renders.
 struct ShimmerOverlay: View {
     var body: some View {
-        // Capped at 60fps: one of these runs per artwork still loading, so a
-        // fast fling through a big library can have dozens at once — at
-        // ProMotion's 120Hz that doubled the redraw cost for no visible gain.
-        TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { timeline in
+        // Capped well below 60fps: one of these runs per artwork still
+        // loading, with no `paused:` condition (unlike the Now Playing
+        // loops above — there's no "isPlaying" equivalent for a loading
+        // placeholder, it's just "is this on screen"), so a fast fling
+        // through a big grid/list can have dozens running at once — field
+        // evidence (a user screen recording of choppy Folders-grid
+        // scrolling, plus thermal telemetry showing "serious"/"fair" states
+        // during ordinary browsing) traced real GPU/thermal cost to exactly
+        // this kind of continuous per-cell animation. A slow 1.4s diagonal
+        // sweep is visually indistinguishable at 15fps from 60fps; this cuts
+        // the redraw count (and therefore cost, multiplied by however many
+        // are on screen at once) by 4x.
+        TimelineView(.animation(minimumInterval: 1.0 / 15.0)) { timeline in
             let t = ArtworkClock.loop(timeline.date, cycleDuration: 1.4)
             GeometryReader { geo in
                 LinearGradient(

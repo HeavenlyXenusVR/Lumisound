@@ -374,7 +374,7 @@ struct LocalFolderDetailView: View {
             recomputeTotalSize()
         }
         .onAppear {
-            customCover = FolderCoverArtService.shared.cover(for: folderURL)
+            Task { customCover = await FolderCoverArtService.shared.cover(for: folderURL) }
         }
         .onChange(of: sortOrderRaw) { _ in
             let currentSongs = songs
@@ -788,9 +788,10 @@ private struct FolderDetailHeaderView: View {
                         else { return }
                         // loadTransferable can resume off the main actor, and
                         // FolderCoverArtService is @MainActor.
+                        await FolderCoverArtService.shared.setCover(image, for: folderURL)
+                        let newCover = await FolderCoverArtService.shared.cover(for: folderURL)
                         await MainActor.run {
-                            FolderCoverArtService.shared.setCover(image, for: folderURL)
-                            customCover = FolderCoverArtService.shared.cover(for: folderURL)
+                            customCover = newCover
                             pickerItem = nil
                         }
                     }

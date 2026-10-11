@@ -68,7 +68,16 @@ struct FoldersTab: View {
                                     .foregroundStyle(AppTheme.textPrimary)
                                     .rotationEffect(.degrees(expandedFolderIDs.contains(folder.id) ? 180 : 0))
                                     .padding(6)
-                                    .adaptiveGlass(in: Circle(), fallback: Color.black.opacity(0.4))
+                                    // Flat color, not `adaptiveGlass` — this
+                                    // is a real backdrop blur on iOS 26+, and
+                                    // paying for one on every single grid
+                                    // cell's decorative chevron (20-50+
+                                    // visible/near-visible at once) is a real,
+                                    // measured contributor to scroll stutter
+                                    // and sustained GPU/thermal load. A flat
+                                    // backing reads the same for a glyph this
+                                    // small.
+                                    .background(Color.black.opacity(0.4), in: Circle())
                             }
                             .buttonStyle(.plain)
                             .padding(8)
@@ -198,13 +207,24 @@ private struct FolderGridCell: View {
                             Spacer()
                         }
                         .padding(6)
-                        .adaptiveGlass(in: Rectangle())
+                        // Flat color — see the chevron button's identical
+                        // change above for why `adaptiveGlass`'s real
+                        // backdrop blur isn't worth it at grid scale here.
+                        .background(Color.black.opacity(0.35), in: Rectangle())
                     }
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
             }
             .frame(maxWidth: .infinity)
             .aspectRatio(1, contentMode: .fit)
+            // `.compositingGroup()` flattens this whole layered, frequently-
+            // changing subtree (async artwork fade-in, collage, badge) into
+            // one rendered layer BEFORE the shadow is computed. Without it,
+            // `.shadow` on dynamic non-opaque content forces its own
+            // offscreen render pass to derive the shadow's alpha mask —
+            // paid independently by every visible/near-visible grid cell on
+            // every redraw during a scroll.
+            .compositingGroup()
             .shadow(color: .black.opacity(0.3), radius: 8, y: 5)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -239,7 +259,7 @@ private struct FolderGridCell: View {
             }
         }
         .onAppear {
-            customCover = FolderCoverArtService.shared.cover(for: folder.dirURL)
+            Task { customCover = await FolderCoverArtService.shared.cover(for: folder.dirURL) }
         }
     }
 
