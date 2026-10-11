@@ -9,7 +9,6 @@ struct PillScrubberView: View {
     let onSeek: (TimeInterval) -> Void
 
     @State private var dragFraction: Double? = nil
-    @State private var pulse = false
 
     private var progress: Double {
         guard duration > 0 else { return 0 }
@@ -27,19 +26,29 @@ struct PillScrubberView: View {
                 Capsule()
                     .fill(AppTheme.surface)
 
-                // Fill
-                Capsule()
-                    .fill(
-                        LinearGradient(
-                            colors: [AppTheme.dynamicAccent, AppTheme.accentSoft],
-                            startPoint: .leading,
-                            endPoint: .trailing
+                // Fill. The glow pulse is driven from wall-clock time via
+                // `TimelineView`/`ArtworkClock` rather than a `@State` flag
+                // animated with `repeatForever` — this view re-renders every
+                // 0.25-0.5s while playing (the `position` parameter ticks
+                // that often), and a `repeatForever` Core Animation
+                // transaction doesn't survive that frequent a re-render
+                // without freezing mid-cycle (same root cause documented in
+                // ArtworkClock's own doc comment, for every Now Playing
+                // artwork style).
+                TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isPlaying)) { context in
+                    let phase = isPlaying ? ArtworkClock.pingPong(context.date, legDuration: 1.6) : 0
+                    Capsule()
+                        .fill(
+                            LinearGradient(
+                                colors: [AppTheme.dynamicAccent, AppTheme.accentSoft],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
                         )
-                    )
-                    .frame(width: max(geo.size.height, geo.size.width * CGFloat(progress)))
-                    .shadow(color: AppTheme.dynamicAccent.opacity(pulse ? 0.5 : 0.2), radius: pulse ? 10 : 4)
-                    .animation(.easeOut(duration: 0.15), value: progress)
-                    .animation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true), value: pulse)
+                        .frame(width: max(geo.size.height, geo.size.width * CGFloat(progress)))
+                        .shadow(color: AppTheme.dynamicAccent.opacity(0.2 + 0.3 * phase), radius: 4 + 6 * phase)
+                }
+                .animation(.easeOut(duration: 0.15), value: progress)
 
                 // Labels — same two Text views drawn twice (once light, once dark)
                 // and clipped against the fill so each half reads against its
@@ -69,12 +78,6 @@ struct PillScrubberView: View {
             )
         }
         .frame(height: 44)
-        .onChange(of: isPlaying) { playing in
-            pulse = playing
-        }
-        .onAppear {
-            pulse = isPlaying
-        }
     }
 
     private var timeLabels: some View {

@@ -7,7 +7,6 @@ struct ClassicScrubberView: View {
     let onSeek: (TimeInterval) -> Void
 
     @State private var dragFraction: Double? = nil
-    @State private var thumbPulse = false
 
     private var progress: Double {
         guard duration > 0 else { return 0 }
@@ -40,20 +39,28 @@ struct ClassicScrubberView: View {
                     // Glowing thumb — positioning (offset) and the pulse are applied
                     // on separate nested views. A `repeatForever` animation on one
                     // view applies to ALL of that view's animatable properties, so
-                    // putting the pulse's `.animation(repeatForever, value: thumbPulse)`
-                    // on the same view as the offset caused the thumb's position to
-                    // get dragged along by the perpetual pulse curve instead of
-                    // tracking playback progress directly.
-                    Group {
+                    // putting the pulse on the same view as the offset caused the
+                    // thumb's position to get dragged along by the perpetual pulse
+                    // curve instead of tracking playback progress directly.
+                    //
+                    // The pulse itself is driven from wall-clock time via
+                    // `TimelineView`/`ArtworkClock` rather than a `@State` flag
+                    // animated with `repeatForever` — this view re-renders every
+                    // 0.25-0.5s while playing (the `position` parameter ticks
+                    // that often), and a `repeatForever` Core Animation transaction
+                    // doesn't survive that frequent a re-render without freezing
+                    // mid-cycle (same root cause documented in ArtworkClock's own
+                    // doc comment, for every Now Playing artwork style).
+                    TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isPlaying)) { context in
+                        let phase = isPlaying ? ArtworkClock.pingPong(context.date, legDuration: 1.4) : 0
                         Circle()
                             .fill(AppTheme.dynamicAccent)
                             .frame(width: 16, height: 16)
                             .shadow(
-                                color: AppTheme.dynamicAccent.opacity(thumbPulse ? 0.85 : 0.4),
-                                radius: thumbPulse ? 12 : 5
+                                color: AppTheme.dynamicAccent.opacity(0.4 + 0.45 * phase),
+                                radius: 5 + 7 * phase
                             )
-                            .scaleEffect(thumbPulse ? 1.18 : 1.0)
-                            .animation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true), value: thumbPulse)
+                            .scaleEffect(1.0 + 0.18 * phase)
                     }
                     .offset(x: max(0, geo.size.width * CGFloat(progress) - 8))
                     .animation(.easeOut(duration: 0.15), value: progress)
@@ -83,12 +90,6 @@ struct ClassicScrubberView: View {
             }
             .font(.caption)
             .foregroundStyle(AppTheme.textSecondary)
-        }
-        .onChange(of: isPlaying) { playing in
-            thumbPulse = playing
-        }
-        .onAppear {
-            thumbPulse = isPlaying
         }
     }
 

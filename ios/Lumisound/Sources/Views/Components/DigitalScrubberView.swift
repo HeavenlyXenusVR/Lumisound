@@ -9,7 +9,6 @@ struct DigitalScrubberView: View {
     let onSeek: (TimeInterval) -> Void
 
     @State private var dragFraction: Double? = nil
-    @State private var colonBlink = false
 
     private let segmentCount = 40
 
@@ -24,21 +23,35 @@ struct DigitalScrubberView: View {
 
     var body: some View {
         VStack(spacing: 10) {
-            // Big digital readout
-            HStack(spacing: 4) {
-                Text(formatTime(displayPosition, blinkColon: colonBlink))
-                    .font(.system(size: 34, weight: .bold, design: .monospaced))
-                    .foregroundStyle(AppTheme.dynamicAccent)
-                    .shadow(color: AppTheme.dynamicAccent.opacity(isPlaying ? 0.6 : 0.0), radius: 8)
-                    .contentTransition(.numericText())
-                Text("/")
-                    .font(.system(size: 22, weight: .medium, design: .monospaced))
-                    .foregroundStyle(AppTheme.textSecondary.opacity(0.5))
-                Text(formatTime(duration, blinkColon: true))
-                    .font(.system(size: 22, weight: .medium, design: .monospaced))
-                    .foregroundStyle(AppTheme.textSecondary)
+            // Big digital readout. The blinking colon is driven from
+            // wall-clock time via `TimelineView`/`ArtworkClock` rather than
+            // a `@State` flag animated with `repeatForever` — this view
+            // re-renders every 0.25-0.5s while playing (the `position`
+            // parameter ticks that often), and a `repeatForever` Core
+            // Animation transaction doesn't survive that frequent a
+            // re-render without freezing mid-cycle (same root cause
+            // documented in ArtworkClock's own doc comment, for every Now
+            // Playing artwork style). A plain on/off toggle rather than a
+            // continuous phase — the colon has no "half blinked" state —
+            // so `minimumInterval` only needs to be about twice the blink
+            // rate, not 60fps.
+            TimelineView(.animation(minimumInterval: 0.3, paused: !isPlaying)) { context in
+                let colonBlink = isPlaying && ArtworkClock.loop(context.date, cycleDuration: 1.2) < 0.5
+                HStack(spacing: 4) {
+                    Text(formatTime(displayPosition, blinkColon: colonBlink))
+                        .font(.system(size: 34, weight: .bold, design: .monospaced))
+                        .foregroundStyle(AppTheme.dynamicAccent)
+                        .shadow(color: AppTheme.dynamicAccent.opacity(isPlaying ? 0.6 : 0.0), radius: 8)
+                        .contentTransition(.numericText())
+                    Text("/")
+                        .font(.system(size: 22, weight: .medium, design: .monospaced))
+                        .foregroundStyle(AppTheme.textSecondary.opacity(0.5))
+                    Text(formatTime(duration, blinkColon: true))
+                        .font(.system(size: 22, weight: .medium, design: .monospaced))
+                        .foregroundStyle(AppTheme.textSecondary)
+                }
+                .animation(.easeInOut(duration: 0.2), value: isPlaying)
             }
-            .animation(.easeInOut(duration: 0.2), value: isPlaying)
 
             // Segmented LED-style progress strip
             GeometryReader { geo in
@@ -69,24 +82,6 @@ struct DigitalScrubberView: View {
                 .animation(.easeOut(duration: 0.1), value: progress)
             }
             .frame(height: 14)
-        }
-        .onChange(of: isPlaying) { playing in
-            updateBlink(playing: playing)
-        }
-        .onAppear {
-            updateBlink(playing: isPlaying)
-        }
-    }
-
-    private func updateBlink(playing: Bool) {
-        if playing {
-            withAnimation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true)) {
-                colonBlink = true
-            }
-        } else {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                colonBlink = false
-            }
         }
     }
 

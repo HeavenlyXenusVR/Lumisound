@@ -7,8 +7,6 @@ struct RingScrubberView: View {
     let onSeek: (TimeInterval) -> Void
 
     @State private var dragAngle: Double? = nil
-    @State private var ringGlow = false
-    @State private var outerRotation: Double = 0
 
     private var progress: Double {
         guard duration > 0 else { return 0 }
@@ -34,13 +32,28 @@ struct RingScrubberView: View {
                 let radius = min(geo.size.width, geo.size.height) / 2
 
                 ZStack {
-                    // Outer decorative dashed ring — rotates while playing
-                    Circle()
-                        .strokeBorder(
-                            AppTheme.dynamicAccent.opacity(ringGlow ? 0.22 : 0.08),
-                            style: StrokeStyle(lineWidth: 1, dash: [4, 7])
-                        )
-                        .rotationEffect(.degrees(outerRotation))
+                    // Outer decorative dashed ring — rotates while playing.
+                    // Both the glow pulse and the rotation are driven from
+                    // wall-clock time via `TimelineView`/`ArtworkClock`
+                    // rather than `@State` + `repeatForever` — this view
+                    // re-renders every 0.25-0.5s while playing (the
+                    // `position` parameter ticks that often), and a
+                    // `repeatForever` Core Animation transaction doesn't
+                    // survive that frequent a re-render without freezing
+                    // mid-cycle (same root cause documented in
+                    // ArtworkClock's own doc comment, for every Now Playing
+                    // artwork style). Simply freezes in place on pause
+                    // rather than easing back to a fixed rotation.
+                    TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isPlaying)) { context in
+                        let glowPhase = isPlaying ? ArtworkClock.pingPong(context.date, legDuration: 1.6) : 0
+                        let rotation = isPlaying ? ArtworkClock.loop(context.date, cycleDuration: 8) * 360 : 0
+                        Circle()
+                            .strokeBorder(
+                                AppTheme.dynamicAccent.opacity(0.08 + 0.14 * glowPhase),
+                                style: StrokeStyle(lineWidth: 1, dash: [4, 7])
+                            )
+                            .rotationEffect(.degrees(rotation))
+                    }
 
                     // Track ring
                     Circle()
@@ -67,21 +80,21 @@ struct RingScrubberView: View {
                     // Thumb dot — positioning (offset/rotation) and the glow pulse are
                     // applied on separate nested views. A `repeatForever` animation on
                     // one view applies to ALL of that view's animatable properties, so
-                    // putting the pulse's `.animation(repeatForever, value: ringGlow)`
-                    // on the same view as the rotation caused the thumb's position to
-                    // get dragged along by the perpetual pulse curve instead of the
-                    // quick progress animation — which is why the ball visibly lagged
-                    // behind the actual playback time.
-                    Group {
+                    // putting the pulse on the same view as the rotation caused the
+                    // thumb's position to get dragged along by the perpetual pulse
+                    // curve instead of the quick progress animation — which is why
+                    // the ball visibly lagged behind the actual playback time.
+                    // Wall-clock-driven pulse — see the outer ring above for why.
+                    TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isPlaying)) { context in
+                        let phase = isPlaying ? ArtworkClock.pingPong(context.date, legDuration: 1.6) : 0
                         Circle()
                             .fill(AppTheme.dynamicAccent)
                             .frame(width: 16, height: 16)
                             .shadow(
-                                color: AppTheme.dynamicAccent.opacity(ringGlow ? 0.8 : 0.4),
-                                radius: ringGlow ? 10 : 4
+                                color: AppTheme.dynamicAccent.opacity(0.4 + 0.4 * phase),
+                                radius: 4 + 6 * phase
                             )
-                            .scaleEffect(ringGlow ? 1.15 : 1.0)
-                            .animation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true), value: ringGlow)
+                            .scaleEffect(1.0 + 0.15 * phase)
                     }
                     .offset(y: -radius)
                     // The base offset `(0, -radius)` already sits at the top (12
@@ -134,25 +147,6 @@ struct RingScrubberView: View {
             }
             .frame(width: 200, height: 200)
             .frame(maxWidth: .infinity)
-        }
-        .onChange(of: isPlaying) { playing in
-            updateAnimations(playing: playing)
-        }
-        .onAppear {
-            updateAnimations(playing: isPlaying)
-        }
-    }
-
-    private func updateAnimations(playing: Bool) {
-        ringGlow = playing
-        if playing {
-            withAnimation(.linear(duration: 8).repeatForever(autoreverses: false)) {
-                outerRotation = 360
-            }
-        } else {
-            withAnimation(.easeOut(duration: 0.5)) {
-                outerRotation = 0
-            }
         }
     }
 

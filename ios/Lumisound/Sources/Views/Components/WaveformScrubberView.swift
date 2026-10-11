@@ -18,7 +18,6 @@ struct WaveformScrubberView: View {
     let onSeek: (TimeInterval) -> Void
 
     @State private var dragFraction: Double? = nil
-    @State private var playheadPulse = false
 
     private var progress: Double {
         guard duration > 0 else { return 0 }
@@ -65,25 +64,36 @@ struct WaveformScrubberView: View {
                     }
 
                     // Animated playhead line — positioning (offset) and the pulse
-                    // are applied on separate nested views. A `repeatForever`
+                    // are applied on separate nested views; a `repeatForever`
                     // animation on one view applies to ALL of that view's
-                    // animatable properties, so putting the pulse's
-                    // `.animation(repeatForever, value: playheadPulse)` on the same
+                    // animatable properties, so putting the pulse on the same
                     // view as the offset caused the playhead to lag behind the
                     // actual playback position, dragged along by the pulse curve.
-                    Group {
+                    //
+                    // The pulse itself is driven from wall-clock time via
+                    // `TimelineView`/`ArtworkClock` rather than a `@State` flag
+                    // animated with `repeatForever` — this view re-renders every
+                    // 0.25-0.5s while playing (the `position` parameter ticks
+                    // that often), and a `repeatForever` Core Animation
+                    // transaction doesn't survive that frequent a re-render
+                    // without freezing mid-cycle (same root cause documented in
+                    // ArtworkClock's own doc comment, for every Now Playing
+                    // artwork style). `paused: !isPlaying` stops the timer
+                    // entirely rather than just visually stopping it, when the
+                    // pulse isn't needed.
+                    TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isPlaying)) { context in
+                        let phase = isPlaying ? ArtworkClock.pingPong(context.date, legDuration: 1.1) : 0
                         ZStack {
                             // Glow halo behind the line
                             Rectangle()
-                                .fill(AppTheme.dynamicAccent.opacity(playheadPulse ? 0.35 : 0.0))
+                                .fill(AppTheme.dynamicAccent.opacity(0.35 * phase))
                                 .frame(width: 8)
                                 .blur(radius: 4)
                             // Main line
                             Rectangle()
-                                .fill(Color.white.opacity(playheadPulse ? 1.0 : 0.75))
+                                .fill(Color.white.opacity(0.75 + 0.25 * phase))
                                 .frame(width: 2)
                         }
-                        .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: playheadPulse)
                     }
                     .frame(maxHeight: .infinity)
                     .offset(x: max(0, geo.size.width * progress - 1))
@@ -112,12 +122,6 @@ struct WaveformScrubberView: View {
             }
             .font(.caption)
             .foregroundStyle(AppTheme.textSecondary)
-        }
-        .onChange(of: isPlaying) { playing in
-            playheadPulse = playing
-        }
-        .onAppear {
-            playheadPulse = isPlaying
         }
     }
 
