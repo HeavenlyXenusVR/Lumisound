@@ -413,6 +413,11 @@ final class AudioPlayerManager: ObservableObject {
     /// reschedule — see `rampNodeVolumeAfterSeek` in AudioPlayerManager+Scheduling.swift.
     var seekFadeTimer: Timer?
 
+    /// Ramps `crossfadeMixer.outputVolume`/`equalizer.globalGain` toward a new
+    /// target instead of snapping — see `applyOutputGainRamped` in
+    /// AudioPlayerManager+ApplySettings.swift.
+    var outputGainRampTimer: Timer?
+
     /// Playback position (in seconds, in the current track's own timeline) at
     /// which the crossfade into the next track should begin. `nil` when no
     /// crossfade is pending. Evaluated on the 0.5s playback tick — see

@@ -164,8 +164,14 @@ extension AudioPlayerManager {
                     self.replayGainLinearGain = linear
                     // Re-derive the output gain split (mixer attenuation +
                     // EQ globalGain boost) now that ReplayGain's contribution
-                    // is known.
-                    self.applyOutputGain()
+                    // is known. Ramped, not snapped — this lands at an
+                    // unpredictable delay after the track already started
+                    // (this whole function runs off a detached Task), and
+                    // crossfadeMixer/equalizer are shared downstream of both
+                    // player nodes — an instant snap here was audible as a
+                    // "flicker" on whatever's currently playing. See
+                    // applyOutputGainRamped's doc comment.
+                    self.applyOutputGainRamped()
                 }
             }
         }
@@ -176,7 +182,16 @@ extension AudioPlayerManager {
     /// its per-track gain — so the previous track's gain can't briefly bleed into this one.
     /// Called only once a file/stream has loaded successfully, so this also doubles as the
     /// reset point for the AVPlayer load-failure circuit breaker (see `handleLoadFailure`).
-    func resetReplayGainForNewTrack() {
+    /// - Parameter ramped: Pass `true` when the shared `crossfadeMixer`/
+    ///   `equalizer` stage is currently driving audible output at the exact
+    ///   moment this resets to neutral — crossfade (the outgoing track is
+    ///   still fading out on that same shared stage) and gapless (audio
+    ///   continues through the handoff with no stop/start gap) both qualify.
+    ///   An instant snap there is audible as a flicker right at the
+    ///   transition. Every other caller schedules from a stopped node with
+    ///   nothing currently audible on the stage, where instant is correct
+    ///   (and marginally cheaper) — that stays the default.
+    func resetReplayGainForNewTrack(ramped: Bool = false) {
         recentLoadFailureTimestamps.removeAll()
         opusRetriedThisLoad = false
         opusTransientRetryCount = 0
@@ -194,7 +209,11 @@ extension AudioPlayerManager {
         // Re-apply the master volume/boost (and reset ReplayGain's contribution
         // to neutral) so a track change can't leave the previous track's
         // analysed ReplayGain — or a stale boost level — applied to the new one.
-        applyOutputGain()
+        if ramped {
+            applyOutputGainRamped()
+        } else {
+            applyOutputGain()
+        }
     }
 
     /// Core scheduler — loads the audio file, seeks to `startTime`, and arms the completion handler
@@ -798,7 +817,12 @@ extension AudioPlayerManager {
             // This also zeroes `gaplessBaseFrame`, so capture the node's
             // CURRENT cumulative sample time as this segment's baseline
             // immediately afterward.
-            resetReplayGainForNewTrack()
+            // Ramped: audio is already playing continuously through this
+            // handoff (that's what makes it "gapless") — an instant snap on
+            // the shared crossfadeMixer/equalizer stage right at the
+            // boundary is audible as a flicker exactly when the track
+            // changes, same reasoning as beginCrossfade's identical call.
+            resetReplayGainForNewTrack(ramped: true)
             if let url = currentSong?.url { analyzeReplayGain(for: url) }
             if let nodeTime = activeNode.lastRenderTime,
                let playerTime = activeNode.playerTime(forNodeTime: nodeTime) {

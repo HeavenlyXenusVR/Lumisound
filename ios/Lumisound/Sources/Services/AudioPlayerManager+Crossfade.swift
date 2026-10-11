@@ -151,7 +151,7 @@ extension AudioPlayerManager {
         // mismatched) computed gain — then kick off this track's own analysis
         // (see `analyzeReplayGain`) so it doesn't just stay at neutral for its
         // entire playback the way it used to before that call was added here.
-        resetReplayGainForNewTrack()
+        resetReplayGainForNewTrack(ramped: true)
         analyzeReplayGain(for: nextURL)
         updateNowPlaying()
         applyAutoEQIfNeeded(bpm: incomingBPM ?? nextSong.bpm)

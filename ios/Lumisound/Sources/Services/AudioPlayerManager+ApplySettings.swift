@@ -214,4 +214,60 @@ extension AudioPlayerManager {
             HearingHealthService.markBoostActiveToday()
         }
     }
+
+    /// Same target computation as `applyOutputGain()`, but ramped smoothly
+    /// over `duration` instead of snapped instantly.
+    ///
+    /// `crossfadeMixer`/`equalizer` are SHARED downstream of both player
+    /// nodes (see `configureEngine`) — an instant snap on either one is
+    /// audible on whatever's currently playing, not just "the track this
+    /// change is about." `applyOutputGain()`'s instant snap is fine for a
+    /// direct user action (dragging the Volume/EQ slider expects immediate
+    /// feedback), but `analyzeReplayGain`'s async completion resolves at an
+    /// unpredictable delay after a track already started — confirmed in the
+    /// field as "audio flickers... when playing or switching tracks,"
+    /// landing minutes into playback with no user interaction at all. Use
+    /// this instead of `applyOutputGain()` for any call site whose target
+    /// isn't the direct, immediate result of the user's own gesture.
+    func applyOutputGainRamped(duration: TimeInterval = 0.15) {
+        let rgGain: Float = audioSettings.replayGainEnabled ? replayGainLinearGain : 1.0
+        let userVol = audioSettings.volume
+        let totalLinear = max(0, rgGain * userVol)
+        let nodeContribution = min(max(userVol, 0), 1.0)
+        let mixerContribution = min(max(rgGain, 0), 1.0)
+        let attenuationApplied = nodeContribution * mixerContribution
+        let eqTarget: Float
+        if totalLinear > attenuationApplied, attenuationApplied > 0 {
+            let boostLinear = totalLinear / attenuationApplied
+            let boostDB = 20 * log10(boostLinear)
+            eqTarget = min(max(boostDB, 0), AudioSettings.maxBoostDB)
+        } else {
+            eqTarget = 0
+        }
+        let mixerTarget = mixerContribution
+
+        let mixerStart = crossfadeMixer.outputVolume
+        let eqStart = equalizer.globalGain
+        outputGainRampTimer?.invalidate()
+        let steps = max(1, Int(duration * 30))
+        let interval = duration / Double(steps)
+        var step = 0
+        outputGainRampTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] t in
+            Task { @MainActor [weak self] in
+                guard let self else { t.invalidate(); return }
+                step += 1
+                let progress = Float(step) / Float(steps)
+                self.crossfadeMixer.outputVolume = mixerStart + (mixerTarget - mixerStart) * progress
+                self.equalizer.globalGain = eqStart + (eqTarget - eqStart) * progress
+                if step >= steps {
+                    t.invalidate()
+                    self.outputGainRampTimer = nil
+                }
+            }
+        }
+
+        if isPlaying, userVol > 1.0 {
+            HearingHealthService.markBoostActiveToday()
+        }
+    }
 }
