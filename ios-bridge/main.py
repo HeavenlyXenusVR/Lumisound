@@ -3474,6 +3474,72 @@ async def admin_logs(
     ]
 
 
+@app.get("/admin/api/events", dependencies=[Depends(check_admin_or_operator)])
+async def admin_events(
+    level: Optional[str] = Query(None, description="Filter to one level: info/warning/error"),
+    category: Optional[str] = Query(None, description="Filter to one category, e.g. 'performance', 'diagnostics'"),
+    event: Optional[str] = Query(None, description="Filter to one event name, e.g. 'main_thread_hang'"),
+    user_id: Optional[str] = Query(None, description="Filter to one user's own events"),
+    before: Optional[str] = Query(None, description="ISO timestamp — only entries strictly before this (for paging further back)"),
+    limit: int = Query(100, ge=1, le=500),
+):
+    """RemoteLogger's structured event feed (ios_app_event_log) — distinct
+    from /admin/api/logs (ios_app_logs, AppLogger's buffered debug lines).
+    This is where the full `detail` JSONB payload lives for events like
+    MainThreadHangMonitor's "main_thread_hang" (mainThreadActivity,
+    thermalState, scanning flag) and MetricKit's crash/hang/disk-write
+    diagnostics — none of which /admin/api/errors surfaces, since that
+    endpoint only covers ios_app_logs rows at level='error'."""
+    conditions: list[str] = []
+    params: list[object] = []
+    if level:
+        conditions.append("level = %s")
+        params.append(level)
+    if category:
+        conditions.append("category = %s")
+        params.append(category)
+    if event:
+        conditions.append("event = %s")
+        params.append(event)
+    if user_id:
+        conditions.append("user_id = %s")
+        params.append(user_id)
+    if before:
+        try:
+            before_dt = datetime.fromisoformat(before)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="before must be an ISO 8601 timestamp")
+        conditions.append("created_at < %s")
+        params.append(before_dt)
+
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    params.append(limit)
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT source, user_id, category, event, level, message, detail, created_at
+                FROM ios_app_event_log
+                {where_clause}
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            rows = await cur.fetchall()
+
+    return [
+        {
+            "source": r[0], "user_id": r[1], "category": r[2], "event": r[3], "level": r[4],
+            "message": r[5], "detail": r[6],
+            "timestamp": r[7].isoformat() if r[7] else None,
+        }
+        for r in rows
+    ]
+
+
 @app.get("/admin/api/users", dependencies=[Depends(check_admin_or_operator)])
 async def admin_users(limit: int = Query(200, ge=1, le=1000)):
     pool = await get_pool()
