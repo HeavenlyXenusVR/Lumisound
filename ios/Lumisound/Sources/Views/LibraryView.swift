@@ -132,8 +132,13 @@ struct LibraryView: View {
                     .background(AppTheme.surface.opacity(0.5))
                 }
 
-                // Tab content
+                // Tab content. A plain crossfade on the internal tab switch —
+                // each `tabContent` case is a structurally distinct view, so
+                // without this SwiftUI just hard-cuts between them.
                 tabContent
+                    .id(selectedTab)
+                    .transition(.opacity)
+                    .animation(.easeInOut(duration: 0.18), value: selectedTab)
             }
             .background(GalleryBackgroundView().ignoresSafeArea())
             .navigationTitle("Library")
