@@ -23,6 +23,7 @@ struct LumisoundApp: App {
     @StateObject private var aiDJ = AIDJService()
     @StateObject private var silenceTrim = SilenceTrimService()
     @StateObject private var discordVerification = DiscordVerificationService.shared
+    @StateObject private var bluetoothBattery = BluetoothBatteryMonitorService.shared
     /// Singleton, like PresenceService: `LiveUpdateService`'s room-event callback
     /// needs a stable place to deliver pushes to, and it has no reference to
     /// whichever instance a view hierarchy happened to construct.
@@ -95,6 +96,7 @@ struct LumisoundApp: App {
                     .environmentObject(aiDJ)
                     .environmentObject(silenceTrim)
                     .environmentObject(discordVerification)
+                    .environmentObject(bluetoothBattery)
                     .environmentObject(listenRooms)
                     .opacity(showLaunch ? 0 : 1)
                     .animation(.easeInOut(duration: 0.4), value: showLaunch)
@@ -261,6 +263,7 @@ struct LumisoundApp: App {
 
                     physicalGestures.player = player
                     physicalGestures.start()
+                    bluetoothBattery.start()
 
                     discordVerification.attach(account: account)
                     if account.isLoggedIn {

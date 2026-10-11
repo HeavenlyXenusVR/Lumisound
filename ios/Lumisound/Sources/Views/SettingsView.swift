@@ -17,6 +17,7 @@ struct SettingsView: View {
     @EnvironmentObject var folderService: MusicFolderService
     @EnvironmentObject var appLock: AppLockService
     @EnvironmentObject var silenceTrim: SilenceTrimService
+    @EnvironmentObject var bluetoothBattery: BluetoothBatteryMonitorService
 
     /// Drives the Notifications entry row's status pill (On/Off/Needs Access)
     /// and the master toggle inside `NotificationsSettingsView`.

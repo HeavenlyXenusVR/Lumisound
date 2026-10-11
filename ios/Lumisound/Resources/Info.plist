@@ -146,6 +146,11 @@
          calling its APIs without this key present crashes the app. -->
     <key>NSMotionUsageDescription</key>
     <string>Lumisound uses head tracking to anchor Spatial Audio in place as you turn your head, and step counting (Workout Mode) to match playback speed to your pace.</string>
+    <!-- Required by CBCentralManager (Settings → Playback & Audio → Low
+         Battery Alerts) — only started if that opt-in toggle is turned on;
+         omitting this key crashes the app the moment CoreBluetooth is used. -->
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Lumisound checks your connected Bluetooth accessory's battery level so it can warn you before it dies.</string>
     <!-- Required to call LAContext.evaluatePolicy with Face ID (Settings →
          General → App Lock) — omitting this crashes the app on first use on
          a Face ID device, even though Touch ID/passcode need no such key. -->

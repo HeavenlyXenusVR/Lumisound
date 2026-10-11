@@ -440,6 +440,20 @@ extension SettingsView {
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
+            Toggle(isOn: $bluetoothBattery.isEnabled) {
+                Label("Low Battery Alerts", systemImage: "battery.25")
+                    .foregroundStyle(AppTheme.textPrimary)
+            }
+            .tint(.teal)
+
+            if bluetoothBattery.isEnabled {
+                Text("Alerts you when a connected Bluetooth accessory's battery drops to 5%. Only works for devices that report battery over the standard Bluetooth LE Battery Service — not AirPods/Beats, which use Apple's own private protocol with no third-party access. Turning this on will prompt for Bluetooth permission.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .padding(.leading, 16)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
             // Player error message (if any)
             if let error = player.errorMessage {
                 Label(error, systemImage: "exclamationmark.triangle")
@@ -463,5 +477,6 @@ extension SettingsView {
         .animation(.easeInOut(duration: 0.22), value: player.audioSettings.musicHapticsEnabled)
         .animation(.easeInOut(duration: 0.22), value: silenceTrim.isEnabled)
         .animation(.easeInOut(duration: 0.22), value: player.audioSettings.monoAudioEnabled)
+        .animation(.easeInOut(duration: 0.22), value: bluetoothBattery.isEnabled)
     }
 }
