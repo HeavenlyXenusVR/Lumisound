@@ -19,6 +19,11 @@ struct LumenHomeView: View {
     @State private var snapshot = HubContentBuilder.Snapshot()
     @State private var hasLoaded = false
     @State private var showAddMusic = false
+    // Classic's hub surfaces this as a compact teaser card (see
+    // HubOnThisDayTeaser); Lumen had the `.onThisDay` route wired up to push
+    // the full OnThisDayView, but nothing on Home ever actually navigated to
+    // it — reachable in theory, invisible in practice.
+    @State private var onThisDayGroups: [OnThisDayGroup] = []
 
     private var greeting: String {
         switch Calendar.current.component(.hour, from: Date()) {
@@ -101,6 +106,9 @@ struct LumenHomeView: View {
         guard !Task.isCancelled else { return }
         withAnimation(.easeOut(duration: hasLoaded ? 0.25 : 0)) { snapshot = result }
         hasLoaded = true
+        // Self-guards on `isLoggedIn` and swallows its own failures — safe to
+        // call unconditionally, same as every other account-backed fetch here.
+        onThisDayGroups = await account.fetchOnThisDay()
     }
 
     // MARK: Scan
@@ -268,6 +276,10 @@ struct LumenHomeView: View {
             songShelf("Recently Played", subtitle: "Pick up where you left off", songs: snapshot.recentlyPlayed)
         }
 
+        if !onThisDayGroups.isEmpty {
+            onThisDayTeaser
+        }
+
         if !library.playlists.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
                 ZStack(alignment: .trailing) {
@@ -389,6 +401,51 @@ struct LumenHomeView: View {
                 .scrollIndicators(.hidden)
             }
         }
+    }
+
+    /// A compact teaser for the server's "On This Day" throwback — the
+    /// `.onThisDay` route already pushed the full `OnThisDayView` just
+    /// fine, but nothing on Home ever actually linked to it. Mirrors
+    /// Classic's `HubOnThisDayTeaser` (a real preview of today's top match,
+    /// not a blind "Open On This Day" button) in Lumen's own card style.
+    private var onThisDayTeaser: some View {
+        let topGroup = onThisDayGroups.first
+        let topTrack = topGroup?.tracks.first
+        return NavigationLink(value: LumenRoute.onThisDay) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle().fill(LumenPalette.accent.opacity(0.16))
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(LumenPalette.accent)
+                }
+                .frame(width: 44, height: 44)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("On This Day")
+                        .font(LumenType.headline(15))
+                        .foregroundStyle(LumenPalette.textPrimary)
+                    if let topTrack, let year = topGroup?.year {
+                        Text("\(topTrack.title) — played in \(String(year))")
+                            .font(LumenType.caption(12))
+                            .foregroundStyle(LumenPalette.textSecondary)
+                            .lineLimit(1)
+                    } else {
+                        Text("See what you were listening to on this date")
+                            .font(LumenType.caption(12))
+                            .foregroundStyle(LumenPalette.textSecondary)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(LumenPalette.textSecondary)
+            }
+            .lumenCard(fill: LumenPalette.accent.opacity(0.08))
+            .padding(.horizontal, LumenMetrics.gutter)
+        }
+        .buttonStyle(LumenPressStyle())
     }
 
     private func songShelf(_ title: String, subtitle: String, songs: [Song], route: LumenRoute? = nil) -> some View {
