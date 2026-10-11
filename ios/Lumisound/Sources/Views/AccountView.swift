@@ -705,14 +705,39 @@ struct AccountView: View {
                             .foregroundStyle(AppTheme.textPrimary)
                     }
                     .tint(AppTheme.dynamicAccent)
+
+                    if aiDJ.isEnabled {
+                        Picker(selection: $aiDJ.voiceIdentifier) {
+                            Text("System Default").tag(nil as String?)
+                            ForEach(AIDJVoiceOption.available) { option in
+                                Text(option.displayName).tag(option.identifier as String?)
+                            }
+                        } label: {
+                            Label("Voice", systemImage: "waveform")
+                                .foregroundStyle(AppTheme.textPrimary)
+                        }
+                        .tint(AppTheme.dynamicAccent)
+
+                        HStack {
+                            Label("Pitch", systemImage: "tuningfork")
+                                .foregroundStyle(AppTheme.textPrimary)
+                            Spacer()
+                            Text(String(format: "%.2f×", aiDJ.pitchMultiplier))
+                                .font(AppTheme.monoFont(size: 13))
+                                .foregroundStyle(AppTheme.textSecondary)
+                        }
+                        Slider(value: $aiDJ.pitchMultiplier, in: 0.5...2.0, step: 0.02)
+                            .tint(AppTheme.dynamicAccent)
+                    }
                 } header: {
                     sectionHeader("AI Features")
                 } footer: {
-                    Text("Aria Lumi, Lumisound's built-in music intelligence, automatically helps pick the right metadata match for local files — using titles, artists, thumbnails, and how you actually listen. Always on; see Settings → Help → Library for details. No audio or file contents are ever sent.\n\nAI DJ Mode is opt-in: when on, Aria briefly speaks a short transition line (on-device text-to-speech) between tracks. Only the two track titles/artists involved are sent to write that line — never audio.")
+                    Text("Aria Lumi, Lumisound's built-in music intelligence, automatically helps pick the right metadata match for local files — using titles, artists, thumbnails, and how you actually listen. Always on; see Settings → Help → Library for details. No audio or file contents are ever sent.\n\nAI DJ Mode is opt-in: when on, Aria briefly speaks a short transition line (on-device text-to-speech) between tracks. Only the two track titles/artists involved are sent to write that line — never audio. Voice and Pitch pick from this device's installed system voices (Settings app → Accessibility → Spoken Content → Voices to add more) and tune how high/low she sounds — not a clone of any specific person's voice.")
                         .font(AppTheme.bodyFont(size: 12))
                         .foregroundStyle(AppTheme.textSecondary)
                 }
                 .listRowBackground(tintedRowBackground(.blue))
+                .animation(.easeInOut(duration: 0.2), value: aiDJ.isEnabled)
 
                 // MARK: Security Section
                 Section {

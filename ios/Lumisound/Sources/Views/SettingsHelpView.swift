@@ -577,7 +577,7 @@ struct SettingsHelpView: View {
             HelpTopic(
                 icon: "mic.fill",
                 title: "AI DJ Mode",
-                body: "Account → AI Features → AI DJ Mode. When on, Aria briefly ducks the volume and speaks a short transition line as each new track starts, like a real radio DJ handing off between songs, using on-device text-to-speech — nothing about your voice is recorded or sent anywhere. Only the two track titles/artists involved in a transition are sent to write that line. Off by default; requires being signed in."
+                body: "Account → AI Features → AI DJ Mode. When on, Aria briefly ducks the volume and speaks a short transition line as each new track starts, like a real radio DJ handing off between songs, using on-device text-to-speech — nothing about your voice is recorded or sent anywhere. Only the two track titles/artists involved in a transition are sent to write that line. Off by default; requires being signed in. Once on, a Voice picker (any installed system voice — download more under Settings app → Accessibility → Spoken Content → Voices) and a Pitch slider appear underneath, so you can shape how she sounds; pitch defaults a little above neutral for a livelier read."
             ),
             HelpTopic(
                 icon: "mic.and.signal.meter.fill",
