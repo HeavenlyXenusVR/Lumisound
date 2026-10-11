@@ -103,6 +103,17 @@ extension AudioPlayerManager {
         if position > lastStallCheckPosition + 0.05 {
             stalledTickCount = 0
             lastStallCheckPosition = position
+            // Confirms a past recovery actually stuck — played cleanly for
+            // several seconds past the spot it resumed from — rather than
+            // just coasting through the handful of ticks it takes for the
+            // SAME dead spot to stall out again. Only then forget it, so a
+            // fresh, unrelated hiccup later in the same track still gets its
+            // own full escalation budget below instead of inheriting a
+            // count left over from an old, already-resolved one.
+            if let recoveredAt = lastStallRecoveryPosition, position > recoveredAt + 3 {
+                lastStallRecoveryPosition = nil
+                consecutiveStallRecoveriesAtSamePosition = 0
+            }
             return
         }
 
@@ -116,11 +127,47 @@ extension AudioPlayerManager {
         let resumeAt = position
         stalledTickCount = 0
         lastStallCheckPosition = resumeAt
-        appWarn("Playback stalled — engine running but position frozen at \(String(format: "%.1f", resumeAt))s for 3s; rescheduling \"\(currentSong?.displayName ?? "?")\"", category: "audio")
+
+        // Simply rescheduling from the exact frozen position (the only thing
+        // this used to do) is the right fix for a transient engine/graph
+        // hiccup, but does nothing for a genuinely dead spot in the file
+        // itself (e.g. a corrupt run of bytes) — that reschedule hits the
+        // identical bytes, stalls again a few seconds later at essentially
+        // the same position, "recovers" again, and repeats forever: audibly
+        // "this one track freezes and keeps looping every few seconds,"
+        // reported as rare because it only happens for whatever specific
+        // track has the bad spot. Escalate instead of repeating the same
+        // fix once it's clearly not working.
+        if let lastPosition = lastStallRecoveryPosition, abs(resumeAt - lastPosition) < 1.5 {
+            consecutiveStallRecoveriesAtSamePosition += 1
+        } else {
+            consecutiveStallRecoveriesAtSamePosition = 1
+        }
+        lastStallRecoveryPosition = resumeAt
+
+        if consecutiveStallRecoveriesAtSamePosition >= 5 {
+            // Nudging past it didn't help either — stop chasing this track.
+            appError("Playback stall at \(String(format: "%.1f", resumeAt))s recurred \(consecutiveStallRecoveriesAtSamePosition)x despite nudging — giving up on \"\(currentSong?.displayName ?? "?")\" and skipping", category: "audio")
+            RemoteLogger.logError(category: "audio", event: "playback_stall_unrecoverable",
+                                  message: "position frozen at \(Int(resumeAt))s, \(consecutiveStallRecoveriesAtSamePosition) recovery attempts",
+                                  detail: ["position": Int(resumeAt), "duration": Int(duration)])
+            lastStallRecoveryPosition = nil
+            consecutiveStallRecoveriesAtSamePosition = 0
+            ToastCenter.shared.show("Couldn't play past a bad spot in \"\(currentSong?.displayName ?? "this track")\" — skipping", category: .error, icon: "exclamationmark.triangle.fill")
+            skipToNext()
+            return
+        }
+
+        // Three identical-position recoveries in a row means the exact same
+        // reschedule keeps failing — jump a few seconds past the dead spot
+        // rather than trying it a fourth time verbatim.
+        let nudging = consecutiveStallRecoveriesAtSamePosition >= 3
+        let target = nudging ? min(resumeAt + 5, max(0, duration - 0.5)) : resumeAt
+        appWarn("Playback stalled — engine running but position frozen at \(String(format: "%.1f", resumeAt))s for 3s; \(nudging ? "nudging to \(String(format: "%.1f", target))s" : "rescheduling") \"\(currentSong?.displayName ?? "?")\" (attempt \(consecutiveStallRecoveriesAtSamePosition))", category: "audio")
         RemoteLogger.logError(category: "audio", event: "playback_stall_recovered",
                               message: "position frozen at \(Int(resumeAt))s",
-                              detail: ["position": Int(resumeAt), "duration": Int(duration)])
-        playCurrent(from: resumeAt)
+                              detail: ["position": Int(resumeAt), "duration": Int(duration), "attempt": consecutiveStallRecoveriesAtSamePosition, "nudged": nudging])
+        playCurrent(from: target)
     }
 
     /// Starts the crossfade once playback actually reaches

@@ -533,6 +533,13 @@ final class AudioPlayerManager: ObservableObject {
     // `checkForPlaybackStall()`.
     var lastStallCheckPosition: TimeInterval = 0
     var stalledTickCount = 0
+    // Where the last stall-recovery reschedule resumed from, and how many
+    // times in a row a recovery has landed back in a stall at essentially
+    // that same spot — distinct from `stalledTickCount` above, which resets
+    // on every successful recovery and so can't see this by itself. See
+    // `checkForPlaybackStall()`'s escalation past a dead spot in the file.
+    var lastStallRecoveryPosition: TimeInterval?
+    var consecutiveStallRecoveriesAtSamePosition = 0
     // True when playback was auto-paused because the active output route
     // disappeared (e.g. Bluetooth disconnect) — used to auto-resume when a
     // route becomes available again.
