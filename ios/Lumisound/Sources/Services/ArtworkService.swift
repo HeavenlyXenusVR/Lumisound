@@ -113,10 +113,22 @@ final class ArtworkService {
         memoryCache.totalCostLimit = 100 * 1024 * 1024   // 100 MB (was 50; video frames are large)
 
         // Row/grid thumbnails are small (≤768px → ≤2.4 MB each, list rows
-        // ≤0.15 MB), so a high count limit still stays well under the cost
-        // cap — a whole library's worth of visible-row art can stay resident.
+        // ≤0.15 MB), so a high count limit should stay well under the cost
+        // cap — but the cap this used to carry (48 MB) didn't actually
+        // deliver that: at ≤0.15 MB/row, 48 MB only holds ~320 list-row
+        // thumbnails before NSCache's COST limit starts evicting, well
+        // short of the 1000-item `countLimit` above it, and the 768px grid
+        // bucket (folder/album covers — exactly what the Folders tab and
+        // folder/album grids use) fit barely ~20 before the same thing. Any
+        // library bigger than that re-hit disk (a visible placeholder
+        // flash, not just wasted CPU) every time a folder/list scrolled
+        // back into view — read as "artwork doesn't actually stay cached,"
+        // and a real contributor to Folders/Songs tab scroll lag. Sized up
+        // so the stated 1000-item intent is actually reachable for the
+        // common (list-row) case, with real headroom left for grid-bucket
+        // entries too.
         thumbnailCache.countLimit = 1000
-        thumbnailCache.totalCostLimit = 48 * 1024 * 1024
+        thumbnailCache.totalCostLimit = 192 * 1024 * 1024
 
         // Media-library lookups were previously unbounded; cap them like the
         // main cache so a huge Apple Music library can't accumulate freely.
