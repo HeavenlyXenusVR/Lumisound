@@ -43,7 +43,7 @@ struct NeonLineScrubberView: View {
                 // survive that frequent a re-render without freezing
                 // mid-cycle (same root cause documented in ArtworkClock's
                 // own doc comment, for every Now Playing artwork style).
-                TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isPlaying)) { context in
+                TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: !isPlaying)) { context in
                     let phase = isPlaying ? ArtworkClock.pingPong(context.date, legDuration: 1.2) : 0
                     ZStack(alignment: .leading) {
                         // Unlit tube

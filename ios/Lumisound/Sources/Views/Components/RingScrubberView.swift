@@ -44,7 +44,7 @@ struct RingScrubberView: View {
                     // ArtworkClock's own doc comment, for every Now Playing
                     // artwork style). Simply freezes in place on pause
                     // rather than easing back to a fixed rotation.
-                    TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isPlaying)) { context in
+                    TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: !isPlaying)) { context in
                         let glowPhase = isPlaying ? ArtworkClock.pingPong(context.date, legDuration: 1.6) : 0
                         let rotation = isPlaying ? ArtworkClock.loop(context.date, cycleDuration: 8) * 360 : 0
                         Circle()
@@ -59,33 +59,42 @@ struct RingScrubberView: View {
                     Circle()
                         .stroke(AppTheme.surface, lineWidth: 10)
 
-                    // Progress arc — its own wall-clock glow phase (same
-                    // `pingPong` shape as the outer dashed ring above), kept
-                    // on a separate TimelineView rather than sharing one with
-                    // the thumb dot below for the same reason described on
-                    // that view: a `repeatForever`/pulse value living on the
-                    // same view as a position-driven modifier drags that
-                    // modifier along with the pulse curve instead of letting
-                    // it animate independently.
-                    TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isPlaying)) { context in
-                        let phase = isPlaying ? ArtworkClock.pingPong(context.date, legDuration: 1.6) : 0
-                        Circle()
-                            .trim(from: 0, to: progress)
-                            .stroke(
-                                LinearGradient(
-                                    colors: [AppTheme.accentSoft, AppTheme.dynamicAccent],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ),
-                                style: StrokeStyle(lineWidth: 10, lineCap: .round)
-                            )
-                            .rotationEffect(.degrees(-90))
-                            .shadow(
-                                color: AppTheme.dynamicAccent.opacity(0.15 + 0.4 * phase),
-                                radius: 2 + 6 * phase
-                            )
-                            .animation(dragAngle == nil ? .easeInOut(duration: 0.12) : nil, value: progress)
-                    }
+                    // Progress arc. Deliberately NOT wrapped in a TimelineView
+                    // (unlike the outer ring/thumb dot) — an earlier attempt
+                    // at a wall-clock glow pulse here put `trim(to: progress)`
+                    // inside the SAME `TimelineView(.animation(...))` as the
+                    // pulse's `phase` value, and a `TimelineView(.animation)`
+                    // already establishes its own implicit per-frame
+                    // animation context for everything inside it. Nesting
+                    // this view's OWN explicit `.animation(value: progress)`
+                    // inside that ambient context fought with it: the arc's
+                    // actual fill extent went visibly wrong (full circle one
+                    // frame, correct amount the next, flickering between
+                    // them at random — confirmed on-device via a screen
+                    // recording) even though `progress` itself was computed
+                    // correctly. Worse, the Now Playing screen was already
+                    // driving THREE separate 60fps TimelineViews for this one
+                    // scrubber style alone, which is real sustained main-
+                    // thread load for as long as that screen stays open —
+                    // plausibly contributing to the "audio randomly stops
+                    // after a while" report filed alongside the visual one,
+                    // since the playback-stall recovery logic depends on the
+                    // same main thread staying responsive. Simplest fix: keep
+                    // this one plain and static (fixed glow, no pulse) —
+                    // same shape as the original pre-pulse implementation.
+                    Circle()
+                        .trim(from: 0, to: progress)
+                        .stroke(
+                            LinearGradient(
+                                colors: [AppTheme.accentSoft, AppTheme.dynamicAccent],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            style: StrokeStyle(lineWidth: 10, lineCap: .round)
+                        )
+                        .rotationEffect(.degrees(-90))
+                        .shadow(color: AppTheme.dynamicAccent.opacity(0.3), radius: 4)
+                        .animation(dragAngle == nil ? .easeInOut(duration: 0.12) : nil, value: progress)
 
                     // Thumb dot — positioning (offset/rotation) and the glow pulse are
                     // applied on separate nested views. A `repeatForever` animation on
@@ -95,7 +104,7 @@ struct RingScrubberView: View {
                     // curve instead of the quick progress animation — which is why
                     // the ball visibly lagged behind the actual playback time.
                     // Wall-clock-driven pulse — see the outer ring above for why.
-                    TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isPlaying)) { context in
+                    TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: !isPlaying)) { context in
                         let phase = isPlaying ? ArtworkClock.pingPong(context.date, legDuration: 1.6) : 0
                         Circle()
                             .fill(AppTheme.dynamicAccent)

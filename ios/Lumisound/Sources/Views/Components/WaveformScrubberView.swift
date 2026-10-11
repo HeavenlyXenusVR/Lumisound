@@ -81,7 +81,7 @@ struct WaveformScrubberView: View {
                     // artwork style). `paused: !isPlaying` stops the timer
                     // entirely rather than just visually stopping it, when the
                     // pulse isn't needed.
-                    TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isPlaying)) { context in
+                    TimelineView(.animation(minimumInterval: 1.0 / 24.0, paused: !isPlaying)) { context in
                         let phase = isPlaying ? ArtworkClock.pingPong(context.date, legDuration: 1.1) : 0
                         ZStack {
                             // Glow halo behind the line
