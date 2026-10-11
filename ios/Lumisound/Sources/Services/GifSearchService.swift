@@ -40,7 +40,42 @@ enum GifSearchService {
         guard let account = AccountService.shared,
               let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
         else { return [] }
-        return await fetch(path: "/api/gif-search?q=\(encoded)&limit=\(limit)&offset=\(offset)", account: account)
+        let startedAt = Date()
+        let results = await fetch(path: "/api/gif-search?q=\(encoded)&limit=\(limit)&offset=\(offset)", account: account)
+        // There was previously no telemetry at all for this feature — a
+        // query like "Zoey pfp from KPop Demon Hunters" coming back with
+        // unrelated results was impossible to tell apart from "nobody's
+        // searched that" purely from the server logs. This doesn't change
+        // what GIPHY itself returns (relevance for a specific/niche query is
+        // bounded by how its own catalog is tagged, not anything this app
+        // controls) — but a search that comes back empty, or an offset-0
+        // search whose own top-level `description` doesn't textually
+        // overlap the query at all, is now at least a queryable signal
+        // instead of invisible. Only logged for a non-trivial `offset == 0`
+        // fetch (not every `loadNextPage()` call) to keep this one event
+        // per user-initiated search, not one per page.
+        if offset == 0 {
+            let normalizedQuery = DuplicateFinderService.normalize(query)
+            let topResultOverlaps = results.first.map { top in
+                let normalizedTitle = DuplicateFinderService.normalize(top.description)
+                return normalizedTitle.contains(normalizedQuery) || normalizedQuery.contains(normalizedTitle)
+            }
+            RemoteLogger.log(
+                category: "gif-search",
+                event: "search",
+                level: results.isEmpty ? "warn" : "info",
+                message: results.isEmpty
+                    ? "GIF search for \"\(query)\" returned zero results"
+                    : "GIF search for \"\(query)\" returned \(results.count) result(s)",
+                detail: [
+                    "queryLength": query.count,
+                    "resultCount": results.count,
+                    "elapsedMs": Int(Date().timeIntervalSince(startedAt) * 1000),
+                    "topResultTitleOverlapsQuery": topResultOverlaps ?? false,
+                ]
+            )
+        }
+        return results
     }
 
     static func trending(limit: Int = 30, offset: Int = 0) async -> [GifSearchResult] {
