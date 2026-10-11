@@ -412,6 +412,17 @@ STALE_AFTER_SECONDS = 120
 # long outage is visible in the journal, rarely enough not to drown it.
 OUTAGE_REMINDER_SECONDS = 30 * 60
 
+# Discord allows 5 SET_ACTIVITY calls per 20s. Sending on every bridge poll
+# used to tie the IPC send rate directly to the poll interval, which meant a
+# poll interval fast enough to catch a track/play-state change quickly (under
+# ~2s) would blow through that limit. Polling the bridge (a cheap local HTTP
+# GET) and sending to Discord (rate-limited) are decoupled below instead: poll
+# fast to detect changes quickly, but only actually call SET_ACTIVITY when the
+# visible state changed, or when this many seconds have passed since the last
+# send (a periodic refresh/keep-alive, with headroom under the 4s minimum
+# spacing the limit requires).
+MIN_SEND_INTERVAL_SECONDS = 4.5
+
 
 def build_activity(
     state: dict,
@@ -543,7 +554,12 @@ def main() -> None:
     config = load_config(config_path)
 
     bridge_url = config.get("bridge_url") or DEFAULT_BRIDGE_URL
-    poll_interval = config.get("poll_interval_seconds", 5)
+    # Polling the bridge itself is cheap (a local-ish HTTP GET against our own
+    # server, no external rate limit) — this can run much faster than Discord's
+    # own SET_ACTIVITY limit allows, so a track/play-state change is picked up
+    # quickly without having to fall back to a slow fixed poll. See
+    # MIN_SEND_INTERVAL_SECONDS below for the actual IPC-send throttle.
+    poll_interval = config.get("poll_interval_seconds", 2)
     bridge = BridgeClient(bridge_url, config_path, config)
 
     # client_id/large_image can be set locally, but normally come from the
@@ -611,6 +627,7 @@ def main() -> None:
     ipc = DiscordIPC(client_id)
 
     last_activity_signature: Optional[tuple] = None
+    last_sent_at = 0.0
 
     # When the current Discord outage began, or None while connected — see the
     # IPC error handling below for why an outage is not logged on every poll.
@@ -672,27 +689,31 @@ def main() -> None:
         # --- Update Rich Presence ---------------------------------------
         activity = build_activity(state, large_image, small_image, show_buttons,
                                   show_when_paused)
-        try:
-            # Discord's rate limit (5 SET_ACTIVITY calls per 20s) is well
-            # above our poll interval, so we re-send every poll (timestamps
-            # need refreshing anyway) but only log when the track changes.
-            signature = (activity.get("details"), activity.get("state"), "timestamps" in activity) if activity else None
-            ipc.set_activity(activity)
-            if signature != last_activity_signature:
-                if activity:
-                    status = "Now playing" if "timestamps" in activity else "Paused"
-                    log(f"{status}: {activity.get('details')} {activity.get('state', '')}")
-                else:
-                    log("Cleared Rich Presence (idle)")
-                last_activity_signature = signature
-        except (DiscordIPCError, OSError) as exc:
-            # The IPC socket died under us — usually because Discord was
-            # restarted and replaced its socket file. Drop our handle so
-            # the next loop iteration reconnects.
-            log(f"Discord IPC error: {exc}")
-            if ipc.connected:
-                ipc.close()
-            last_activity_signature = None
+        signature = (activity.get("details"), activity.get("state"), "timestamps" in activity) if activity else None
+        now = time.time()
+        changed = signature != last_activity_signature
+        # Send immediately on a real change (track/play-state) so that's not
+        # stuck waiting out the rest of a keep-alive window; otherwise only
+        # refresh often enough to stay under Discord's rate limit.
+        if changed or now - last_sent_at >= MIN_SEND_INTERVAL_SECONDS:
+            try:
+                ipc.set_activity(activity)
+                last_sent_at = now
+                if changed:
+                    if activity:
+                        status = "Now playing" if "timestamps" in activity else "Paused"
+                        log(f"{status}: {activity.get('details')} {activity.get('state', '')}")
+                    else:
+                        log("Cleared Rich Presence (idle)")
+                    last_activity_signature = signature
+            except (DiscordIPCError, OSError) as exc:
+                # The IPC socket died under us — usually because Discord was
+                # restarted and replaced its socket file. Drop our handle so
+                # the next loop iteration reconnects.
+                log(f"Discord IPC error: {exc}")
+                if ipc.connected:
+                    ipc.close()
+                last_activity_signature = None
 
         time.sleep(poll_interval)
 
