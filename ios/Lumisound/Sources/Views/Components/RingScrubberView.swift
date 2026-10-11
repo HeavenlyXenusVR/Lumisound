@@ -59,23 +59,33 @@ struct RingScrubberView: View {
                     Circle()
                         .stroke(AppTheme.surface, lineWidth: 10)
 
-                    // Progress arc
-                    Circle()
-                        .trim(from: 0, to: progress)
-                        .stroke(
-                            LinearGradient(
-                                colors: [AppTheme.accentSoft, AppTheme.dynamicAccent],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            style: StrokeStyle(lineWidth: 10, lineCap: .round)
-                        )
-                        .rotationEffect(.degrees(-90))
-                        .shadow(
-                            color: AppTheme.dynamicAccent.opacity(ringGlow ? 0.55 : 0.15),
-                            radius: ringGlow ? 8 : 2
-                        )
-                        .animation(dragAngle == nil ? .easeInOut(duration: 0.12) : nil, value: progress)
+                    // Progress arc — its own wall-clock glow phase (same
+                    // `pingPong` shape as the outer dashed ring above), kept
+                    // on a separate TimelineView rather than sharing one with
+                    // the thumb dot below for the same reason described on
+                    // that view: a `repeatForever`/pulse value living on the
+                    // same view as a position-driven modifier drags that
+                    // modifier along with the pulse curve instead of letting
+                    // it animate independently.
+                    TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !isPlaying)) { context in
+                        let phase = isPlaying ? ArtworkClock.pingPong(context.date, legDuration: 1.6) : 0
+                        Circle()
+                            .trim(from: 0, to: progress)
+                            .stroke(
+                                LinearGradient(
+                                    colors: [AppTheme.accentSoft, AppTheme.dynamicAccent],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                style: StrokeStyle(lineWidth: 10, lineCap: .round)
+                            )
+                            .rotationEffect(.degrees(-90))
+                            .shadow(
+                                color: AppTheme.dynamicAccent.opacity(0.15 + 0.4 * phase),
+                                radius: 2 + 6 * phase
+                            )
+                            .animation(dragAngle == nil ? .easeInOut(duration: 0.12) : nil, value: progress)
+                    }
 
                     // Thumb dot — positioning (offset/rotation) and the glow pulse are
                     // applied on separate nested views. A `repeatForever` animation on
