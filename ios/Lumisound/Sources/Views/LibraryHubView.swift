@@ -611,17 +611,27 @@ struct LibraryHubView: View {
     // Update: the shelves no longer need the main actor. `HubContentBuilder`
     // works on a copy of the songs and play history, so all of them are now
     // built in one detached task — the main thread only takes the snapshot
-    // and assigns the results. Shortcuts (playlists/folders) still build
-    // here; they're a single cheap pass.
+    // and assigns the results. Shortcuts split into two tiers: favorites/
+    // playlists are a genuinely cheap O(1)/O(playlist count) pass and still
+    // build here, but the folder shortcuts (`buildFolderShortcuts` below) do
+    // an O(n) pass over the WHOLE library via `MusicFolderService
+    // .localFolderGroups` — the exact same main-thread stall `FoldersTab` was
+    // rewritten to avoid (that fix's own comment: "easily large enough to be
+    // a visible main-thread stall... what made the Folders grid freeze and
+    // lose scroll position"). This runs on every Home/Hub load, which is the
+    // default tab, so it fired on most tab switches — moved into the same
+    // detached task as the shelf snapshot below.
     private func reload() async {
         shortcuts = Self.buildShortcuts(library: library)
         await Task.yield()
         let builder = library.hubContent
         let favorites = library.favoriteSongs
-        let snapshot = await Task.detached(priority: .userInitiated) {
-            builder.snapshot(favorites: favorites)
+        let allSongs = library.allSongs
+        let (folderShortcuts, snapshot) = await Task.detached(priority: .userInitiated) {
+            (Self.buildFolderShortcuts(allSongs: allSongs), builder.snapshot(favorites: favorites))
         }.value
         guard !Task.isCancelled else { return }
+        shortcuts += folderShortcuts
         recentlyAdded = snapshot.recentlyAdded
         mostPlayed = snapshot.mostPlayed
         forgottenFavorites = snapshot.forgottenFavorites
@@ -659,14 +669,18 @@ struct LibraryHubView: View {
             ))
         }
 
-        for folder in MusicFolderService.localFolderGroups(from: library.allSongs) {
-            result.append(HubShortcut(
+        return result
+    }
+
+    /// The O(n) half of shortcut building — see the doc comment on `reload()`
+    /// for why this is split out and run off the main actor.
+    private static func buildFolderShortcuts(allSongs: [Song]) -> [HubShortcut] {
+        MusicFolderService.localFolderGroups(from: allSongs).map { folder in
+            HubShortcut(
                 id: "folder-\(folder.id)", kind: .folder(folder), title: folder.id,
                 songs: folder.songs, icon: "folder.fill"
-            ))
+            )
         }
-
-        return result
     }
 }
 

@@ -57,13 +57,18 @@ struct LocalFolderDetailView: View {
     @State private var showDuplicatesSheet = false
     @State private var showCreatePlaylistSheet = false
 
-    /// Off the render path (see `.task(id:)` below) so large libraries don't
-    /// re-filter the entire song list on every body evaluation. Filtering
-    /// only — sorting is applied separately by `sortedSongs` so changing the
+    /// Off the render path AND off the main actor (see `.task(id:)` below) so
+    /// large libraries don't re-filter the entire song list, synchronously
+    /// on the main thread, on every folder open — this ran an
+    /// `url.standardizedFileURL.path` resolution + string-prefix compare per
+    /// song in the WHOLE library, every single navigation push into any
+    /// folder, which is exactly the shape of stall `FoldersTab`'s own grid
+    /// load was fixed for (see that file). Filtering only — sorting is
+    /// applied separately by `sortedResult(songs:sortOrder:)` so changing the
     /// sort order doesn't require re-scanning `library.allSongs`.
-    private func computeSongs() -> [Song] {
+    private static func computeSongs(allSongs: [Song], folderURL: URL) -> [Song] {
         let prefix = folderURL.standardizedFileURL.path + "/"
-        return library.allSongs.filter { song in
+        return allSongs.filter { song in
             guard let url = song.url else { return false }
             return url.standardizedFileURL.path.hasPrefix(prefix)
         }
@@ -88,8 +93,11 @@ struct LocalFolderDetailView: View {
     /// Up to four songs with distinct artwork for the header mosaic.
     @State private var collageSongs: [Song] = []
 
-    private func refreshSortedSongs() {
-        albumSections = []
+    /// Off the main actor, same reasoning as `computeSongs` above — this is a
+    /// full sort (plus, for track order, a `Dictionary(grouping:)` and two
+    /// nested sorts) of the folder's songs, previously run synchronously on
+    /// every folder open and every sort-order change.
+    private static func sortedResult(songs: [Song], sortOrder: FolderSortOrder) -> (sorted: [Song], albumSections: [FolderAlbumSection]) {
         switch sortOrder {
         case .trackOrder:
             // Album by album, each in its own track order. Sorting by track
@@ -97,20 +105,20 @@ struct LocalFolderDetailView: View {
             // album's track 1, then every track 2, …) as soon as a folder
             // held more than one.
             let sections = Self.albumSections(for: songs)
-            sortedSongs = sections.flatMap(\.songs)
-            albumSections = sections.count > 1 ? sections : []
+            return (sections.flatMap(\.songs), sections.count > 1 ? sections : [])
         case .title:
-            sortedSongs = songs.sortedByDisplayName()
+            return (songs.sortedByDisplayName(), [])
         case .artist:
-            sortedSongs = songs.sorted {
+            let sorted = songs.sorted {
                 let cmp = $0.artistName.localizedCaseInsensitiveCompare($1.artistName)
                 if cmp != .orderedSame { return cmp == .orderedAscending }
                 return $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
             }
+            return (sorted, [])
         case .duration:
-            sortedSongs = songs.sorted { $0.duration > $1.duration }
+            return (songs.sorted { $0.duration > $1.duration }, [])
         case .dateAdded:
-            sortedSongs = songs.sorted {
+            let sorted = songs.sorted {
                 switch ($0.dateAdded, $1.dateAdded) {
                 case let (a?, b?):
                     return a > b
@@ -122,6 +130,7 @@ struct LocalFolderDetailView: View {
                     return $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
                 }
             }
+            return (sorted, [])
         }
     }
 
@@ -350,8 +359,17 @@ struct LocalFolderDetailView: View {
             }
         }
         .task(id: library.allSongs.count) {
-            songs = computeSongs()
-            refreshSortedSongs()
+            let allSongs = library.allSongs
+            let url = folderURL
+            let order = sortOrder
+            let (filtered, result) = await Task.detached(priority: .userInitiated) {
+                let filtered = Self.computeSongs(allSongs: allSongs, folderURL: url)
+                return (filtered, Self.sortedResult(songs: filtered, sortOrder: order))
+            }.value
+            guard !Task.isCancelled else { return }
+            songs = filtered
+            sortedSongs = result.sorted
+            albumSections = result.albumSections
             collageSongs = library.collageSongs(from: songs)
             recomputeTotalSize()
         }
@@ -359,7 +377,16 @@ struct LocalFolderDetailView: View {
             customCover = FolderCoverArtService.shared.cover(for: folderURL)
         }
         .onChange(of: sortOrderRaw) { _ in
-            refreshSortedSongs()
+            let currentSongs = songs
+            let order = sortOrder
+            Task {
+                let result = await Task.detached(priority: .userInitiated) {
+                    Self.sortedResult(songs: currentSongs, sortOrder: order)
+                }.value
+                guard !Task.isCancelled else { return }
+                sortedSongs = result.sorted
+                albumSections = result.albumSections
+            }
         }
         .onChange(of: columns) { newValue in
             // Multi-select only applies to the single-column List layout —

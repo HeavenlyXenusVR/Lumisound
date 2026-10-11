@@ -23,6 +23,17 @@ final class FolderCoverArtService: ObservableObject {
     /// render for a folder already visited this launch.
     private var cache: [String: UIImage] = [:]
 
+    /// Keys confirmed to have no custom cover on disk — the common case
+    /// (most folders never get one). Without this, every folder with no
+    /// custom cover paid a `Data(contentsOf:)` miss (a real disk stat/open
+    /// attempt, on the main actor — this type is `@MainActor`) on every
+    /// single `cover(for:)` call: once per `FolderGridCell.onAppear` as it
+    /// scrolls into view, and again every time a folder's detail screen
+    /// opens. Small in isolation, but it compounds with the other folder-
+    /// nav costs (see LocalFolderDetailView/LibraryHubView) scrolling a grid
+    /// or reopening the same folder repeatedly.
+    private var noCoverKeys: Set<String> = []
+
     private init() {}
 
     private var storageDir: URL {
@@ -64,9 +75,13 @@ final class FolderCoverArtService: ObservableObject {
     func cover(for folderURL: URL) -> UIImage? {
         let k = key(for: folderURL)
         if let cached = cache[k] { return cached }
+        if noCoverKeys.contains(k) { return nil }
         guard let data = try? Data(contentsOf: fileURL(for: folderURL)),
               let image = UIImage(data: data)
-        else { return nil }
+        else {
+            noCoverKeys.insert(k)
+            return nil
+        }
         cache[k] = image
         return image
     }
@@ -82,7 +97,9 @@ final class FolderCoverArtService: ObservableObject {
         do {
             try FileManager.default.createDirectory(at: storageDir, withIntermediateDirectories: true)
             try data.write(to: fileURL(for: folderURL), options: .atomic)
-            cache[key(for: folderURL)] = downsized
+            let k = key(for: folderURL)
+            cache[k] = downsized
+            noCoverKeys.remove(k)
             appLog("FolderCoverArtService: set custom cover for \"\(folderURL.lastPathComponent)\"", category: "library")
         } catch {
             appWarn("FolderCoverArtService: failed to save cover for \"\(folderURL.lastPathComponent)\": \(error.localizedDescription)", category: "library")
