@@ -91,6 +91,11 @@ struct SettingsHelpView: View {
                 title: "Hiding Tabs & Tab Bar Style",
                 body: "Settings → Appearance → Hidden Tabs lets you turn off any tab you don't use (Library, Playing, Queue, Cloud Services, Friends, Profile) — Settings itself can never be hidden, so you can always get back here to change your mind. A hidden tab's screen is still fully reachable through normal in-app navigation; it just doesn't get a button in the bar. Two more options above that control the Tabs-mode bar's look: Show Tab Labels (icon-only vs. icon+label) and Selection Style — Glass Pill (the original small bubble behind the icon), Underline, or Filled Capsule."
             ),
+            HelpTopic(
+                icon: "sparkles",
+                title: "Lumen vs. Classic Interface",
+                body: "Lumisound has two complete interfaces you can switch between any time in Settings → Appearance → Interface: Lumen, a full redesign with its own Home/Search/Library/Now Playing/You screens and a palette that shifts to match whatever's playing; and Classic, the original interface exactly as it's always been. Everything else in this guide works the same under both — Lumen just presents it differently. New installs see a one-time welcome card offering the choice on first launch; switching later never loses any data."
+            ),
         ]),
         HelpCategory(icon: "play.circle", title: "Playback", topics: [
             HelpTopic(
@@ -111,7 +116,7 @@ struct SettingsHelpView: View {
             HelpTopic(
                 icon: "moon.zzz",
                 title: "Sleep Timer",
-                body: "The Sleep Timer pauses playback after a set amount of time — useful for falling asleep to music without leaving audio running all night. Choose a preset duration (5 minutes to 2 hours) and tap Start. The remaining time appears as a pill in Now Playing. Tapping the pill opens the timer sheet where you can cancel early."
+                body: "The Sleep Timer pauses playback after a set amount of time — useful for falling asleep to music without leaving audio running all night. Choose a preset duration (5 minutes to 2 hours) and tap Start. The remaining time appears as a pill in Now Playing. Tapping the pill opens the timer sheet where you can cancel early. If you grant Health access, the sheet also offers a \"Use suggested\" duration learned from your own actual sleep data (via HealthKit) instead of guessing a fixed preset — it refines the longer you use it."
             ),
             HelpTopic(
                 icon: "timer",
@@ -154,6 +159,16 @@ struct SettingsHelpView: View {
                 body: "Now Playing → overflow menu → Practice Mode opens a dedicated tool for learning a track by ear: a visual metronome pulse synced to the track's detected tempo (adjusted live for playback speed, so it always matches what you're actually hearing), a speed slider capped at 100% with quick 50/75/90% presets, and Loop Region controls (the same A-B repeat markers available elsewhere) to repeat just the section you're working on. Built from existing playback controls, not a separate audio engine. Once a loop is set on a local (downloaded/imported) track, an Export Clip button saves that exact region as a standalone .m4a file you can share, AirDrop, or bring into GarageBand/Finder to set as a ringtone."
             ),
             HelpTopic(
+                icon: "waveform.badge.minus",
+                title: "Separate Vocals / Instrumental",
+                body: "Now Playing's overflow menu (⋯) → Separate Vocals / Instrumental runs real AI stem separation (Demucs, processed server-side) on the current track, splitting it into standalone vocal and instrumental versions you can play or save separately — not an EQ trick, an actual source-separation model. Takes a little while to process; works best on studio-produced tracks."
+            ),
+            HelpTopic(
+                icon: "video.badge.waveform",
+                title: "Share as Video (Lyric Clips)",
+                body: "Now Playing's overflow menu (⋯) → Share as Video turns a track (with synced lyrics) into a short shareable video clip — pick the section, and it renders the lyrics animating over the artwork as a video file ready for Stories or anywhere else that wants a video rather than a plain audio share."
+            ),
+            HelpTopic(
                 icon: "gobackward",
                 title: "Long Track Resume Points",
                 body: "Any local track 20 minutes or longer (a DJ mix, an audiobook file, a long mixtape) automatically remembers where you left off — no setup needed. Switch away partway through and come back later, even after closing the app, and it picks up right where you stopped, the same way podcast episodes already do. Doesn't apply to shorter tracks."
@@ -162,6 +177,26 @@ struct SettingsHelpView: View {
                 icon: "bookmark",
                 title: "Track Bookmarks",
                 body: "Bookmark specific timestamps within a long track (a DJ mix, podcast, or audiobook-style file) to jump straight back to them later — useful for marking \"the drop\" or a chapter start. Bookmarks are entirely on-device and don't require an account. Tap the mic icon on a bookmark to attach a short voice memo to it (up to 60 seconds) — handy for narrating why a moment matters instead of just typing a label. Voice memos are local-only: they stay on this device even if the bookmark itself syncs to your account."
+            ),
+            HelpTopic(
+                icon: "gobackward.15",
+                title: "Instant Replay",
+                body: "Now Playing → overflow menu (⋯) → Replay Last 15s jumps back 15 seconds on the spot — no sheet, nothing saved, just an instant \"wait, what was that\" rewind for whatever just played."
+            ),
+            HelpTopic(
+                icon: "waveform.and.magnifyingglass",
+                title: "Shake to Skip & Cover to Pause",
+                body: "Two independent gestures, both off by default, toggled separately from Now Playing's overflow menu (⋯): Shake to Skip advances to the next track when you physically shake the phone; Cover to Pause pauses when you cover the sensor near the earpiece/camera (held briefly, so a casual grip doesn't trigger it by accident). Turn on just one, both, or neither."
+            ),
+            HelpTopic(
+                icon: "rectangle.stack.badge.plus",
+                title: "Sync My Devices",
+                body: "Now Playing's overflow menu (⋯) → Sync My Devices broadcasts this device's current playback to your other signed-in devices, so a second phone or iPad can follow along in real time without starting its own separate playback. Any device willing to auto-pick-up a session has its own separate toggle elsewhere, since hosting and auto-joining are different decisions."
+            ),
+            HelpTopic(
+                icon: "pin",
+                title: "Playlist-Level Sound Override",
+                body: "A playlist can have its own saved sound settings, the same way an individual track can (see Per-Track Sound Settings above) — open a playlist while it's playing and save a \"Custom Sound for This Playlist\" panel the same way. Priority order: a track's own pin always wins first; otherwise, if it's playing as part of a playlist with a saved override, that applies; otherwise your regular default settings."
             ),
         ]),
         HelpCategory(icon: "slider.vertical.3", title: "Audio Effects", topics: [
@@ -203,15 +238,10 @@ struct SettingsHelpView: View {
             HelpTopic(
                 icon: "wand.and.stars",
                 title: "Auto EQ",
-                body: "Auto EQ (Settings → Audio, requires the Equalizer to be on) automatically switches the active EQ preset to match each track — first by its genre tag, falling back to its analyzed tempo when untagged. A couple of seconds into each track it also fine-tunes the bass/treble balance based on a live analysis of how the track actually sounds, so a bass-light mix gets a touch more low end and an already bass-heavy one doesn't get over-boosted by a generic preset. The manual preset picker is hidden while Auto EQ is on, since the preset changes automatically per track."
+                body: "Auto EQ (Settings → Audio, requires the Equalizer to be on) automatically switches the active EQ preset to match each track — first by its genre tag, falling back to its analyzed tempo when untagged. A couple of seconds into each track it also fine-tunes the bass/treble balance based on a live analysis of how the track actually sounds, so a bass-light mix gets a touch more low end and an already bass-heavy one doesn't get over-boosted by a generic preset. The manual preset picker is hidden while Auto EQ is on, since the preset changes automatically per track. A small \"why this pick\" line in the Equalizer screen explains the actual reason behind the current preset — genre, tempo, or a direct measurement of the mix — instead of leaving it unexplained."
             ),
         ]),
         HelpCategory(icon: "music.note.list", title: "Library", topics: [
-            HelpTopic(
-                icon: "music.note.house",
-                title: "Scanning iPhone Library",
-                body: "Lumisound can read your Apple Music / iTunes library directly from the iPhone without any file transfer. Go to Settings → Library and tap Grant Access, then approve the media library permission. After permission is granted, tap Scan Library to import all your songs, albums, artists, and playlists. The scan runs in the background and updates the counts automatically."
-            ),
             HelpTopic(
                 icon: "folder.badge.plus",
                 title: "Importing Files",
@@ -235,7 +265,7 @@ struct SettingsHelpView: View {
             HelpTopic(
                 icon: "arrow.clockwise",
                 title: "Refresh",
-                body: "The refresh button in the top-right of the Library tab re-scans your Documents folder, watched folders, and (if you've granted access) your Apple Music library for new or changed files. If you're signed in, it also pulls your latest favourites, playlists, and settings from the server — useful after making changes on another device."
+                body: "The refresh button in the top-right of the Library tab re-scans your Documents folder and watched folders for new or changed files. If you're signed in, it also pulls your latest favourites, playlists, and settings from the server — useful after making changes on another device."
             ),
             HelpTopic(
                 icon: "wand.and.stars",
@@ -386,7 +416,7 @@ struct SettingsHelpView: View {
             HelpTopic(
                 icon: "arrow.counterclockwise",
                 title: "After Reinstall",
-                body: "After reinstalling Lumisound, sign in with the same account and the app will automatically pull your favourites, playlists, and settings from the server. Your local audio files will not be restored automatically — you will need to re-scan Apple Music or re-import transferred files. Any streaming downloads that were saved to the app's Documents folder will also be gone and need to be re-downloaded."
+                body: "After reinstalling Lumisound, sign in with the same account and the app will automatically pull your favourites, playlists, and settings from the server. Your local audio files will not be restored automatically — you will need to re-import transferred files, or restore anything you previously uploaded via Cloud Backup. Any streaming downloads that were saved to the app's Documents folder will also be gone and need to be re-downloaded."
             ),
             HelpTopic(
                 icon: "clock.arrow.circlepath",
@@ -422,6 +452,11 @@ struct SettingsHelpView: View {
                 icon: "message",
                 title: "Discord Webhook (Now Playing posts)",
                 body: "Account → \"Now Playing Webhook\" is separate from Rich Presence: it posts a one-time message to a Discord channel via an incoming webhook whenever you start a new track, so a server can have a shared \"now playing\" feed. Create an incoming webhook in your Discord server under Channel Settings → Integrations → Webhooks, paste the URL in, and toggle it on or off at any time."
+            ),
+            HelpTopic(
+                icon: "ear",
+                title: "Hearing Health",
+                body: "Account → Hearing Health correlates your headphone audio-exposure data from Apple Health with how often and how much you've used Volume Boost, so you can see whether boosting volume is actually pushing your real listening levels higher over time rather than just assuming. Requires Health access; nothing here is sent anywhere — it's read and shown entirely on-device."
             ),
         ]),
         HelpCategory(icon: "person.2.wave.2.fill", title: "Friends & Profile", topics: [
@@ -507,7 +542,7 @@ struct SettingsHelpView: View {
             HelpTopic(
                 icon: "wand.and.stars",
                 title: "Discover Mix",
-                body: "Account → Discover → Discover Mix is a personalised list of tracks seeded from the artists you listen to most, automatically excluding anything already in your library or favourites. Tap Play All to queue the whole mix, or play/queue individual tracks. It refreshes as your listening history grows."
+                body: "Account → Discover → Discover Mix is a personalised list of tracks seeded from the artists you listen to most, automatically excluding anything already in your library or favourites. Tap Play All to queue the whole mix, or play/queue individual tracks. It refreshes as your listening history grows. Tap a track for a short \"why this pick\" explanation of what about your listening got it included, instead of the mix being a black box."
             ),
             HelpTopic(
                 icon: "person.2.wave.2",
@@ -538,6 +573,11 @@ struct SettingsHelpView: View {
                 icon: "mic.fill",
                 title: "AI DJ Mode",
                 body: "Account → AI Features → AI DJ Mode. When on, Aria briefly ducks the volume and speaks a short transition line as each new track starts, like a real radio DJ handing off between songs, using on-device text-to-speech — nothing about your voice is recorded or sent anywhere. Only the two track titles/artists involved in a transition are sent to write that line. Off by default; requires being signed in."
+            ),
+            HelpTopic(
+                icon: "mic.and.signal.meter.fill",
+                title: "Export AI DJ Set",
+                body: "Now Playing's overflow menu (⋯) → Export AI DJ Set bundles an AI DJ Mode listening session — the tracks played plus Aria's own transition lines — into one downloadable set, once there's been a session to export. Only available once AI DJ Mode has actually logged something this session."
             ),
             HelpTopic(
                 icon: "questionmark.circle",
