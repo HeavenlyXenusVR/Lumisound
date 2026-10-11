@@ -540,6 +540,10 @@ final class AudioPlayerManager: ObservableObject {
     // `checkForPlaybackStall()`'s escalation past a dead spot in the file.
     var lastStallRecoveryPosition: TimeInterval?
     var consecutiveStallRecoveriesAtSamePosition = 0
+    // Throttles `startEngineIfNeeded()`'s rebuild-and-retry path — see that
+    // function's doc comment for why an unthrottled retry here is a real,
+    // observed production incident, not a theoretical one.
+    var lastEngineStartFailureAt: Date?
     // True when playback was auto-paused because the active output route
     // disappeared (e.g. Bluetooth disconnect) — used to auto-resume when a
     // route becomes available again.

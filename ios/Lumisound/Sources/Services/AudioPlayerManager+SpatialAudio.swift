@@ -172,6 +172,24 @@ extension AudioPlayerManager {
         }
     }
 
+    /// Minimum gap between rebuild-and-retry attempts once one has already
+    /// failed. `handleEngineConfigurationChange` is called from `timerTick`
+    /// every 0.5s whenever `isPlaying && !engine.isRunning` — with no gate
+    /// here, a persistent engine.start() failure (confirmed in production
+    /// telemetry: error -10868/-10851, logged "121x in the last 60s" and
+    /// "118x in the last 60s") retried this function's full teardown +
+    /// configureEngine() + configureEqualizer() + start() sequence on
+    /// EVERY tick for as long as the underlying condition lasted — once a
+    /// minute at ~120 attempts, each doing real work on the main actor,
+    /// which is exactly what multi-second main-thread hangs (10.28s, 4.97s,
+    /// 4.87s) were measured back-to-back with in the same telemetry. This
+    /// doesn't fix whatever makes the hardware/session refuse to start in
+    /// the first place — it stops retrying a doomed operation in a tight
+    /// loop, the same "don't hammer it" principle already applied to
+    /// stream-load failures (OpusFallback) and stall recovery elsewhere in
+    /// this type.
+    private static let engineStartFailureCooldown: TimeInterval = 3.0
+
     func startEngineIfNeeded() {
         // Every play/resume path funnels through here — cancel any pending
         // idle-teardown grace-period timer (armed by `pause()`) right at the
@@ -179,6 +197,10 @@ extension AudioPlayerManager {
         idleTeardownTimer?.invalidate()
         idleTeardownTimer = nil
         guard !engine.isRunning else { return }
+        if let lastFailure = lastEngineStartFailureAt,
+           Date().timeIntervalSince(lastFailure) < Self.engineStartFailureCooldown {
+            return
+        }
         // Activate the audio session lazily, right before the engine starts —
         // not at launch — so the app only holds the audio system while actually
         // playing (see `configureAudioSession`).
@@ -186,6 +208,7 @@ extension AudioPlayerManager {
         do {
             try engine.start()
             errorMessage = nil
+            lastEngineStartFailureAt = nil
         } catch {
             // Full teardown + rebuild, then reactivate the audio session before retry.
             // engine.reset() detaches all nodes and clears connections, so configureEngine()
@@ -225,6 +248,7 @@ extension AudioPlayerManager {
                 try AVAudioSession.sharedInstance().setActive(true)
             } catch {
                 errorMessage = error.localizedDescription
+                lastEngineStartFailureAt = Date()
                 appWarn("Audio engine rebuild: audio session would not activate (\(error.localizedDescription)) — leaving the engine stopped; it will be retried when the session is available", category: "audio")
                 return
             }
@@ -233,6 +257,7 @@ extension AudioPlayerManager {
                 try engine.start()
                 appLog("Audio engine recovered after rebuild", category: "audio")
                 errorMessage = nil
+                lastEngineStartFailureAt = nil
                 // `configureEqualizer()` resets every band to gain=0/bypass=true —
                 // without reapplying the user's EQ/effects settings here, an engine
                 // rebuild (triggered by an interruption, route change, or hardware
@@ -241,6 +266,7 @@ extension AudioPlayerManager {
                 applyAudioSettings()
             } catch {
                 errorMessage = error.localizedDescription
+                lastEngineStartFailureAt = Date()
                 appError("Audio engine failed to recover: \(error.localizedDescription)", category: "audio")
             }
         }
