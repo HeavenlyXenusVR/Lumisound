@@ -468,12 +468,17 @@ struct SettingsHelpView: View {
             HelpTopic(
                 icon: "person.crop.circle",
                 title: "Your Profile",
-                body: "The Profile tab shows your profile exactly as friends see it — banner, avatar, bio, pinned tracks, and what you're currently listening to. Tap Edit Profile to change any of that: avatar and banner images (including animated GIFs), accent colors, up to 5 pinned favorite tracks, and whether your \"now playing\" status is shared with friends at all."
+                body: "The Profile tab shows your profile exactly as friends see it — banner, avatar, bio, pronouns, a status emoji + short status text, pinned tracks, and what you're currently listening to. Tap Edit Profile to change any of that: avatar and banner images (including animated GIFs), accent colors, up to 5 pinned favorite tracks, and whether your \"now playing\" status is shared with friends at all."
             ),
             HelpTopic(
                 icon: "sparkles",
-                title: "Avatar Decoration & Profile Effect",
-                body: "Edit Profile also has two purely-animated customizations: Avatar Decoration overlays a small looping animation on top of your avatar itself (Sparkles, Fireflies, Petals, Snowfall, Embers), and Profile Effect plays a looping animation across your whole banner (Blast Off, Aurora, Shooting Stars, Confetti, Rain). Both blend your own chosen Main/Sub accent colors, so they always match the rest of your profile rather than using a fixed palette. Card Style (also in Edit Profile) lets you pick Sharp, Soft, or Round corners for every card on the profile screen, and your Bio supports light Markdown — bold, italic, and links."
+                title: "Avatar Frame, Decoration & Profile Effect",
+                body: "Edit Profile has three purely-animated avatar/banner customizations, stackable together: Avatar Frame draws a ring/glow/dashed/pulse/gradient/double/beads/spin/orbit/halo/arc border around your avatar itself; Avatar Decoration overlays a small looping animation on top of it (Sparkles, Fireflies, Petals, Snowfall, Embers); and Profile Effect plays a looping animation across your whole banner (Blast Off, Aurora, Shooting Stars, Confetti, Rain). All three blend your own chosen Main/Sub accent colors, so they always match the rest of your profile rather than using a fixed palette. Card Style (also in Edit Profile) lets you pick Sharp, Soft, or Round corners for every card on the profile screen, and your Bio supports light Markdown — bold, italic, and links."
+            ),
+            HelpTopic(
+                icon: "bubble.left.and.bubble.right.fill",
+                title: "Guestbook, Visitors & Badges",
+                body: "A visitor to your profile can leave a short Guestbook message (visible to anyone, like an old-school profile wall) — toggle \"Allow Guestbook Messages\" off in Edit Profile if you'd rather not have that. Edit Profile also has show/hide toggles for your Visitor Count + recent-visitors list and for a Listening Stats card (current streak, badges earned from Achievements, top genres/artists) — each is opt-in since it's more about you showing up than anyone tracking you."
             ),
             HelpTopic(
                 icon: "waveform.path.ecg",
