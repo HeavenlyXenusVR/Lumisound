@@ -11,7 +11,12 @@ FROM python:3.12-slim
 # against libva already, but without this driver package `-vaapi_device` has
 # nothing to load and every hardware-encode attempt fails (safe: main.py's
 # motion-artwork extraction falls back to software libx264 automatically).
-RUN apt-get update && apt-get install -y ffmpeg curl unzip atomicparsley aria2 libchromaprint-tools mesa-va-drivers && rm -rf /var/lib/apt/lists/*
+# libsndfile1 is the system library torchaudio's `soundfile` backend links
+# against (see the stem-separation torch/torchaudio pin below) — without it,
+# torchaudio.save() has no backend at all ("Couldn't find appropriate
+# backend to handle uri ... and format None"), even with the matching Python
+# package installed.
+RUN apt-get update && apt-get install -y ffmpeg curl unzip atomicparsley aria2 libchromaprint-tools mesa-va-drivers libsndfile1 && rm -rf /var/lib/apt/lists/*
 
 # yt-dlp now needs a JS runtime to solve YouTube's player/signature challenge
 # (EJS) — without one, extraction fails for most videos with "This video is
@@ -51,7 +56,25 @@ RUN pip install --no-cache-dir -r requirements.txt
 # CUDA runtime libraries (multiple GB, entirely dead weight — this host has
 # no GPU). Still a real image-size and build-time cost; that's the accepted
 # tradeoff for actual separation quality over a cheaper EQ-notch fake.
-RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu \
+#
+# torch/torchaudio are PINNED, not left to float to latest — demucs==4.0.1
+# (2023) calls the legacy `torchaudio.save()` path unconditionally. Recent
+# torchaudio releases dropped that implementation's sox/soundfile backend in
+# favor of a separate `torchcodec` package that this image never installed,
+# so every separation job ran the full 1-4 minute model pass and then failed
+# at the very last step writing the output WAV ("ModuleNotFoundError: No
+# module named 'torchcodec'") — a 100% failure rate, confirmed by
+# reproducing the exact command inside the running container. 2.3.1 is the
+# newest line confirmed (by actually running torchaudio.save() against it,
+# not just importing it) to still carry that legacy backend — anything
+# older doesn't understand `numpy==2.3.3` (pinned in requirements.txt, which
+# installs before this), and silently crashes at inference time instead of
+# at import ("RuntimeError: Numpy is not available") despite looking fine on
+# import. The `soundfile` package (plus `libsndfile1` above) is what
+# actually backs torchaudio.save() here — without it this is the same
+# "couldn't find appropriate backend" failure by a different route.
+RUN pip install --no-cache-dir torch==2.3.1 torchaudio==2.3.1 --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir soundfile \
     && pip install --no-cache-dir demucs==4.0.1
 
 COPY . .
@@ -60,10 +83,15 @@ COPY . .
 # Whisper bake below — the first real request shouldn't pay a ~80 MB
 # download, and shouldn't silently depend on Meta's model host being
 # reachable at exactly that moment.
+#
+# TORCH_HOME must be a persisted ENV, not just set inside the RUN step's own
+# python process — that only affected the bake script itself. Without this,
+# the running container never saw TORCH_HOME at all, so `get_model()` always
+# fell back to re-downloading into `/root/.cache/torch/hub/checkpoints` on
+# first real use, defeating the whole point of baking it in.
 ENV LUMISOUND_DEMUCS_CACHE=/app/cache/demucs
+ENV TORCH_HOME=/app/cache/demucs
 RUN python -c "\
-import os; \
-os.environ['TORCH_HOME'] = '/app/cache/demucs'; \
 from demucs.pretrained import get_model; \
 get_model('htdemucs'); \
 print('demucs model htdemucs cached')"
