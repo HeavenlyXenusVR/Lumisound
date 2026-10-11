@@ -201,6 +201,7 @@ extension AudioPlayerManager {
         if isUsingOpusPlayer {
             opusPlayer?.seek(to: CMTime(seconds: target, preferredTimescale: 600))
             updateNowPlaying()
+            WidgetDataService.shared.updatePlayState(isPlaying: isPlaying, position: target, duration: duration)
             return
         }
         gaplessScheduled = false
@@ -213,6 +214,15 @@ extension AudioPlayerManager {
         }
         updateNowPlaying()
         pushPlaybackStateToBridge()
+        // The Live Activity/widget progress bar is a self-advancing
+        // `Text(timerInterval:)` anchored to a static `anchorDate` captured
+        // at the last push (see LumisoundActivityAttributes.ContentState) —
+        // without this, a seek moves `position` but leaves that anchor
+        // pointing at the pre-seek timeline, so the Live Activity keeps
+        // ticking from the OLD position and drifts further "behind" the
+        // real one with every rewind/fast-forward until the next play/pause
+        // or track change happens to refresh it.
+        WidgetDataService.shared.updatePlayState(isPlaying: isPlaying, position: target, duration: duration)
     }
 
     func skipToNext() {

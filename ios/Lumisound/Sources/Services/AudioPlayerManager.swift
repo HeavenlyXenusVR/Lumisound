@@ -36,6 +36,21 @@ final class AudioPlayerManager: ObservableObject {
             if currentSong?.id != oldValue?.id {
                 nowPlayingArtworkSongID = nil
                 updateNowPlaying()
+                let isFavoriteNow = currentSong.flatMap { LibraryManager.shared?.isFavorite(songID: $0.id) } ?? false
+                // Push the Live Activity's title/artist/anchorDate right away
+                // rather than waiting on `updateNowPlayingArtwork`'s async
+                // artwork load below — that load is a real disk/decode op
+                // that can take long enough to be visible as "the Live
+                // Activity is a few seconds behind the actual track". The
+                // Live Activity's `ContentState` doesn't carry artwork at all
+                // (read straight off the shared App Group file instead — see
+                // LumisoundActivityAttributes), so there's nothing it needs
+                // to wait on here; the artwork file gets written moments
+                // later by the same `WidgetDataService.update` call inside
+                // `updateNowPlayingArtwork`.
+                if #available(iOS 16.1, *) {
+                    LiveActivityManager.update(song: currentSong, isPlaying: isPlaying, position: position, duration: duration, isFavorite: isFavoriteNow)
+                }
                 Task { await updateNowPlayingArtwork(for: currentSong) }
                 applyTrackAudioSettings(previousID: oldValue?.id)
                 pushPlaybackStateToBridge()
@@ -43,9 +58,7 @@ final class AudioPlayerManager: ObservableObject {
                 // Keep the widget's heart badge in sync with the new track
                 // immediately, rather than waiting for the next play/pause
                 // toggle or backgrounding event to catch up.
-                WidgetDataService.shared.updateFavoriteState(
-                    isFavorite: currentSong.flatMap { LibraryManager.shared?.isFavorite(songID: $0.id) } ?? false
-                )
+                WidgetDataService.shared.updateFavoriteState(isFavorite: isFavoriteNow)
                 // If a SharePlay "listen together" session is active, let the
                 // other participants know the track changed — no-ops when no
                 // session is active or when this change came FROM applying a
@@ -395,6 +408,10 @@ final class AudioPlayerManager: ObservableObject {
     // Crossfade state
     var isCrossfading = false
     var crossfadeTimer: Timer?
+
+    /// Ramps the active node's volume back up after a hard seek-triggered
+    /// reschedule — see `rampNodeVolumeAfterSeek` in AudioPlayerManager+Scheduling.swift.
+    var seekFadeTimer: Timer?
 
     /// Playback position (in seconds, in the current track's own timeline) at
     /// which the crossfade into the next track should begin. `nil` when no
