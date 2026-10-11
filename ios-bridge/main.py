@@ -5924,9 +5924,32 @@ async def _match_spotify_track_to_youtube(
     query = f"{spotify_track['artist']} {spotify_track['title']}".strip()
     async with semaphore:
         if api_key:
-            results = await asyncio.to_thread(_youtube_search_via_api_sync, query, 1, api_key)
-            if results:
-                return results[0]
+            # Same cache key convention /api/search uses, so this shares its
+            # cache: a track that's already been searched directly (by this
+            # user or any other) or matched from a DIFFERENT Spotify playlist
+            # costs no quota here. Without this, every track in every
+            # playlist/album import spent its own fresh 100-unit search.list
+            # call — a single ~100-track playlist could burn the ENTIRE daily
+            # 10,000-unit quota (shared across every user on the server-wide
+            # key) in one import, which is what made quota exhaustion show up
+            # as sudden and unpredictable rather than tied to any one obvious
+            # heavy action. Also respects the cooldown /api/search already
+            # honors, instead of still attempting (and immediately failing)
+            # calls against a key already known to be quota-exhausted.
+            cache_key = f"youtube:1:{query.lower()}"
+            cached = _cache_get(cache_key)
+            if cached is not None:
+                # A cached authoritative "no match" ([]) falls through to the
+                # yt-dlp attempt below, same as a fresh empty result would —
+                # only a cached HIT short-circuits.
+                if cached:
+                    return cached[0]
+            elif not _youtube_quota_is_cooling_down(api_key):
+                results = await asyncio.to_thread(_youtube_search_via_api_sync, query, 1, api_key)
+                if results is not None:
+                    _cache_set(cache_key, results)
+                    if results:
+                        return results[0]
         try:
             entries = await _run_ytdlp(
                 *(await _ytdlp_listing_args(f"ytsearch1:{query}", "youtube", user_id)),
