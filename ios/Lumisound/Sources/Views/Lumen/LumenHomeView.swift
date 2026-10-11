@@ -83,7 +83,7 @@ struct LumenHomeView: View {
         }
         .task(id: snapshotKey) { await reload() }
         .sheet(isPresented: $showAddMusic) {
-            AddMusicView(onImportAppleMusic: { showAddMusic = false })
+            AddMusicView()
                 .environmentObject(library)
                 .environmentObject(folderService)
         }

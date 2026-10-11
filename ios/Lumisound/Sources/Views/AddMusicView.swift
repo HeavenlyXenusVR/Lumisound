@@ -1,17 +1,8 @@
 import SwiftUI
-import MediaPlayer
 
 struct AddMusicView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var library: LibraryManager
-
-    /// Called right after the "iPhone Music Library" row kicks off a scan —
-    /// lets the presenting screen (LibraryView) jump straight to the new
-    /// Apple Music tab so the user actually sees where the import lands,
-    /// instead of dismissing back to whatever tab they started from with no
-    /// visible sign anything happened. `nil` for any future presentation
-    /// context that doesn't have an Apple Music tab to jump to.
-    var onImportAppleMusic: (() -> Void)? = nil
 
     @State private var showFilePicker = false
     @State private var importSuccess: String? = nil
@@ -19,61 +10,6 @@ struct AddMusicView: View {
     var body: some View {
         NavigationStack {
             List {
-
-                // ─────────────────────────────────────────────────────────────
-                // MARK: Primary — iPhone Music Library (Apple Music / iTunes)
-                // This IS "the device's music library" on iOS.
-                // ─────────────────────────────────────────────────────────────
-                Section {
-                    Button {
-                        library.requestAccessAndScan()
-                        importSuccess = "Scanning iPhone music library…"
-                        onImportAppleMusic?()
-                        dismiss()
-                    } label: {
-                        HStack(spacing: 14) {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .fill(AppTheme.dynamicAccent)
-                                    .frame(width: 44, height: 44)
-                                Image(systemName: "music.note.house.fill")
-                                    .foregroundStyle(.white)
-                                    .font(.system(size: 20))
-                            }
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("iPhone Music Library")
-                                    .fontWeight(.semibold)
-                                    .foregroundStyle(AppTheme.textPrimary)
-                                Text("Your songs synced via iTunes, Finder, or Apple Music")
-                                    .font(.caption)
-                                    .foregroundStyle(AppTheme.textSecondary)
-                            }
-                            Spacer(minLength: 0)
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(AppTheme.textSecondary)
-                        }
-                    }
-                    .buttonStyle(.plain)
-
-                    // Show current access status
-                    let status = MPMediaLibrary.authorizationStatus()
-                    if status == .denied || status == .restricted {
-                        Label("Access denied — tap above to open Settings", systemImage: "exclamationmark.triangle")
-                            .font(.caption)
-                            .foregroundStyle(AppTheme.warning)
-                    } else if status == .authorized {
-                        Label("\(library.allSongs.count) songs in library", systemImage: "checkmark.circle.fill")
-                            .font(.caption)
-                            .foregroundStyle(AppTheme.success)
-                    }
-                } header: {
-                    sectionLabel("Your iPhone's Music")
-                } footer: {
-                    Text("On iOS, your iPhone's music library is managed by Apple Music / iTunes. Tap above to grant access and scan all songs stored on your device.")
-                        .font(.caption).foregroundStyle(AppTheme.textSecondary)
-                }
-                .listRowBackground(AppTheme.surface)
 
                 // ─────────────────────────────────────────────────────────────
                 // MARK: Scan app storage (files transferred via Mac/Finder)

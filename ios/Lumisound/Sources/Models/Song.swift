@@ -1,5 +1,4 @@
 import Foundation
-import MediaPlayer
 
 struct Song: Identifiable, Hashable, Codable {
     let id: String
@@ -200,25 +199,5 @@ struct Song: Identifiable, Hashable, Codable {
         guard duration.isFinite, duration > 0 else { return "0:00" }
         let total = Int(duration.rounded())
         return "\(total / 60):\(String(format: "%02d", total % 60))"
-    }
-}
-
-extension Song {
-    init?(mediaItem: MPMediaItem) {
-        guard let assetURL = mediaItem.assetURL else { return nil }
-        self.init(
-            id: String(mediaItem.persistentID),
-            title: mediaItem.title ?? assetURL.deletingPathExtension().lastPathComponent,
-            artist: mediaItem.artist ?? "",
-            album: mediaItem.albumTitle ?? "",
-            duration: mediaItem.playbackDuration,
-            url: assetURL,
-            persistentID: mediaItem.persistentID,
-            artworkCacheKey: String(mediaItem.persistentID),
-            trackNumber: mediaItem.albumTrackNumber,
-            year: "",
-            genre: mediaItem.genre ?? "",
-            dateAdded: mediaItem.dateAdded
-        )
     }
 }

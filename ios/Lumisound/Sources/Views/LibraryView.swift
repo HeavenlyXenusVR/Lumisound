@@ -1,5 +1,4 @@
 import SwiftUI
-import MediaPlayer
 
 // MARK: - Tab enum
 
@@ -11,14 +10,6 @@ enum LibraryTab: String, CaseIterable {
     // every tab that existed before this redesign is still here, unchanged.
     case hub       = "Home"
     case songs     = "Songs"
-    // Songs already merges mediaSongs (Apple Music/iTunes) + importedSongs
-    // (manual imports/watched folders/Documents) into one flat list — this
-    // tab exists alongside it specifically to surface just the Apple Music
-    // subset (`LibraryManager.mediaSongs`) on its own, since that source has
-    // its own permission/scan lifecycle (MPMediaLibrary authorization,
-    // "songs found but not downloaded to this device", the scan crash-loop
-    // guard) that's otherwise invisible once AddMusicView's sheet closes.
-    case appleMusic = "Apple Music"
     case artists   = "Artists"
     case albums    = "Albums"
     case folders   = "Folders"
@@ -38,7 +29,6 @@ enum LibraryTab: String, CaseIterable {
         switch self {
         case .hub:        return "square.grid.2x2.fill"
         case .songs:      return "music.note"
-        case .appleMusic: return "music.note.house.fill"
         case .artists:    return "music.mic"
         case .albums:     return "square.stack"
         case .folders:    return "folder"
@@ -127,29 +117,15 @@ struct LibraryView: View {
                     .padding(.top, 8)
                     .padding(.bottom, 4)
 
-                // Error banner — gains a real "Retry" button when the crash-loop
-                // guard is active, since its message explicitly tells the user
-                // to tap one (see LibraryManager.retryMediaLibraryScanAfterCrashGuard).
+                // Error banner.
                 if let error = library.errorMessage {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(alignment: .top) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(AppTheme.warning)
-                            Text(error)
-                                .font(.caption)
-                                .foregroundStyle(AppTheme.warning)
-                            Spacer()
-                        }
-                        if library.scanCrashGuardActive {
-                            Button {
-                                library.retryMediaLibraryScanAfterCrashGuard()
-                            } label: {
-                                Label("Retry", systemImage: "arrow.clockwise")
-                                    .font(.caption.weight(.semibold))
-                            }
-                            .buttonStyle(.bordered)
-                            .tint(AppTheme.warning)
-                        }
+                    HStack(alignment: .top) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(AppTheme.warning)
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.warning)
+                        Spacer()
                     }
                     .padding(.horizontal)
                     .padding(.vertical, 8)
@@ -212,7 +188,7 @@ struct LibraryView: View {
                 }
             }
             .sheet(isPresented: $showAddMusic) {
-                AddMusicView(onImportAppleMusic: { selectedTab = .appleMusic })
+                AddMusicView()
                     .environmentObject(library)
                     .environmentObject(folderService)
             }
@@ -224,20 +200,8 @@ struct LibraryView: View {
                     .environmentObject(library)
             }
             .onAppear {
-                let scanSource = UserDefaults.standard.string(forKey: "default_scan_source") ?? "apple_music"
                 library.scanWatchedFolders(using: folderService)
-                switch scanSource {
-                case "app_storage":
-                    library.scanLocalDocuments()
-                case "both":
-                    library.scanLocalDocuments()
-                    library.requestAccessAndScan()
-                default: // "apple_music" — also scan Documents for transferred files
-                    library.scanLocalDocuments()
-                    if library.allSongs.isEmpty && !library.isScanning {
-                        library.requestAccessAndScan()
-                    }
-                }
+                library.scanLocalDocuments()
                 scheduleBackupSync()
             }
             // Debounce search: wait 0.3 s after the user stops typing
@@ -300,8 +264,6 @@ struct LibraryView: View {
                 isSelecting: $isSelecting,
                 selectedSongIDs: $selectedSongIDs
             )
-        case .appleMusic:
-            AppleMusicTab()
         case .artists:
             ArtistsTab(searchText: debouncedSearch)
         case .albums:

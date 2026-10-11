@@ -1,5 +1,4 @@
 import Foundation
-import MediaPlayer
 import UIKit
 
 extension LibraryManager {
@@ -59,17 +58,14 @@ extension LibraryManager {
     /// whose on-disk `(mtime, size)` changed since they were imported (e.g.
     /// tags edited in place via the Files app or a desktop tool), not just
     /// brand-new files — the periodic/automatic scan keeps its faster
-    /// new-files-only path. Also re-scans watched folders and (if authorized)
-    /// Apple Music, and publishes a `lastScanResult` summary the UI can toast.
+    /// new-files-only path. Also re-scans watched folders, and publishes a
+    /// `lastScanResult` summary the UI can toast.
     func refreshAll(folderService: MusicFolderService) async {
         beginScan()
         defer { endScan() }
         let before = importedSongs.count
         await performLocalDocumentsScan(force: true)
         await scanWatchedFoldersAsync(using: folderService)
-        if MPMediaLibrary.authorizationStatus() == .authorized {
-            scanMediaLibrary()
-        }
         let after = allSongs.count
         let delta = after - before
         lastScanResult = delta > 0

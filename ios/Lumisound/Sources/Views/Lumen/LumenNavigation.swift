@@ -25,7 +25,6 @@ enum LumenRoute: Hashable {
     // Existing screens hosted inside Lumen
     case playlistEditor(UUID)
     case folders
-    case appleMusic
     case moods
     case podcasts
     case smartPlaylists
@@ -103,7 +102,6 @@ struct LumenRouteDestination: View {
                     .lumenScreen()
             }
         case .folders:         hosted(FoldersTab(), title: "Folders")
-        case .appleMusic:      hosted(AppleMusicTab(), title: "Apple Music")
         case .moods:           hosted(MoodPlaylistsView(), title: "Moods")
         case .podcasts:        hosted(PodcastsView(), title: "Podcasts")
         case .smartPlaylists:  hosted(SmartPlaylistsView(), title: "Smart Playlists")

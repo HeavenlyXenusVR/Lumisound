@@ -1,4 +1,3 @@
-import MediaPlayer
 import SwiftUI
 
 extension SettingsView {
@@ -7,59 +6,6 @@ extension SettingsView {
 
     var librarySection: some View {
         Section {
-            // Default scan source picker
-            Picker(selection: Binding(
-                get: { UserDefaults.standard.string(forKey: "default_scan_source") ?? "apple_music" },
-                set: { UserDefaults.standard.set($0, forKey: "default_scan_source") }
-            )) {
-                Text("iPhone Music Library (Apple Music)").tag("apple_music")
-                Text("App Files (Transferred via Mac)").tag("app_storage")
-                Text("Both").tag("both")
-            } label: {
-                Label("Scan on Launch", systemImage: "magnifyingglass.circle")
-                    .foregroundStyle(AppTheme.textPrimary)
-            }
-            .pickerStyle(.menu)
-            .tint(.pink)
-
-            // Access status row
-            HStack {
-                Label("Media Library Access", systemImage: "music.note.house")
-                    .foregroundStyle(AppTheme.textPrimary)
-                Spacer()
-                Text(mediaAccessStatusText)
-                    .font(AppTheme.bodyFont(size: 13))
-                    .foregroundStyle(mediaAccessStatusColor)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(mediaAccessStatusColor.opacity(0.15), in: Capsule())
-            }
-
-            // Grant / Scan button
-            if MPMediaLibrary.authorizationStatus() != .authorized {
-                Button {
-                    library.requestAccessAndScan()
-                } label: {
-                    Label("Grant Access", systemImage: "checkmark.shield")
-                        .foregroundStyle(AppTheme.dynamicAccent)
-                }
-            } else {
-                Button {
-                    library.scanMediaLibrary()
-                } label: {
-                    HStack {
-                        Label("Scan Library", systemImage: "arrow.clockwise")
-                            .foregroundStyle(AppTheme.dynamicAccent)
-                        Spacer()
-                        if library.isScanning {
-                            ProgressView()
-                                .tint(.pink)
-                        }
-                    }
-                }
-                .disabled(library.isScanning)
-            }
-
             // Library error message (if any)
             if let error = library.errorMessage {
                 Label(error, systemImage: "exclamationmark.triangle")

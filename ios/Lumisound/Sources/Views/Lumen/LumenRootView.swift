@@ -289,26 +289,13 @@ struct LumenRootView: View {
     // MARK: Library bootstrap
     //
     // Classic kicks off the launch scan from LibraryView.onAppear. Lumen's
-    // shell is the first thing on screen, so it does the same here — same
-    // `default_scan_source` handling, same deferral to an existing scan.
+    // shell is the first thing on screen, so it does the same here.
 
     private func bootstrapLibrary() {
         guard !didBootstrapLibrary else { return }
         didBootstrapLibrary = true
-        let scanSource = UserDefaults.standard.string(forKey: "default_scan_source") ?? "apple_music"
         library.scanWatchedFolders(using: folderService)
-        switch scanSource {
-        case "app_storage":
-            library.scanLocalDocuments()
-        case "both":
-            library.scanLocalDocuments()
-            library.requestAccessAndScan()
-        default:
-            library.scanLocalDocuments()
-            if library.allSongs.isEmpty && !library.isScanning {
-                library.requestAccessAndScan()
-            }
-        }
+        library.scanLocalDocuments()
         scheduleBackupSync()
     }
 

@@ -1,10 +1,9 @@
 import Foundation
-import MediaPlayer
 import UIKit
 
-/// Progress snapshot for an in-flight `scanMediaLibrary` run — lets the launch
-/// screen show "Scanning 340 of 1,100 songs…" instead of a generic spinner for
-/// users with big libraries, where the scan can take many seconds.
+/// Progress snapshot for an in-flight library scan — lets the launch screen
+/// show "Scanning 340 of 1,100 songs…" instead of a generic spinner for users
+/// with big libraries, where a scan can take many seconds.
 struct LibraryScanProgress: Equatable {
     let current: Int
     let total: Int
@@ -49,10 +48,6 @@ final class LibraryManager: ObservableObject {
     private(set) var favoriteKeyCache: Set<String> = []
     @Published var isScanning: Bool = false
     @Published var scanProgress: LibraryScanProgress? = nil
-    /// Set when `scanMediaLibrary` has bailed out after repeated incomplete
-    /// attempts (see the crash-loop guard in `scanMediaLibrary`). Lets the UI
-    /// explain *why* the media library never loaded instead of just spinning.
-    @Published var scanCrashGuardActive: Bool = false
     @Published var errorMessage: String?
     @Published var lastScanResult: String? = nil
 

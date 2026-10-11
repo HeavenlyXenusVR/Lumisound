@@ -1,4 +1,3 @@
-import MediaPlayer
 import SwiftUI
 
 /// Settings redesign, part 2: each section's row background gets a very
@@ -121,22 +120,6 @@ extension SettingsView {
                 .foregroundStyle(AppTheme.textSecondary)
                 .kerning(0.8)
         }
-    }
-
-    var mediaAccessStatusText: String {
-        switch MPMediaLibrary.authorizationStatus() {
-        case .authorized:    return "Allowed"
-        case .denied:        return "Denied"
-        case .restricted:    return "Restricted"
-        case .notDetermined: return "Not Asked"
-        @unknown default:    return "Unknown"
-        }
-    }
-
-    var mediaAccessStatusColor: Color {
-        MPMediaLibrary.authorizationStatus() == .authorized
-            ? AppTheme.success
-            : AppTheme.warning
     }
 
     func pitchLabel(_ semitones: Float) -> String {

@@ -142,8 +142,6 @@
     <true/>
 
     <!-- Privacy usage descriptions -->
-    <key>NSAppleMusicUsageDescription</key>
-    <string>Lumisound reads your music library to display and play your songs.</string>
     <!-- Required by CMHeadphoneMotionManager (Spatial Audio's head tracking) —
          calling its APIs without this key present crashes the app. -->
     <key>NSMotionUsageDescription</key>

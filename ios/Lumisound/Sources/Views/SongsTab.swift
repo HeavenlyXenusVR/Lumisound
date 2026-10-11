@@ -430,8 +430,7 @@ struct SongsTab: View {
                                 if songs.isEmpty {
                                     EmptyLibraryView(
                                         isScanning: library.isScanning,
-                                        onAddMusic: { showAddMusic = true },
-                                        onScan: { library.requestAccessAndScan() }
+                                        onAddMusic: { showAddMusic = true }
                                     )
                                     .listRowBackground(Color.clear)
                                 } else if showsIndexRail {
@@ -485,8 +484,7 @@ struct SongsTab: View {
                         if songs.isEmpty {
                             EmptyLibraryView(
                                 isScanning: library.isScanning,
-                                onAddMusic: { showAddMusic = true },
-                                onScan: { library.requestAccessAndScan() }
+                                onAddMusic: { showAddMusic = true }
                             )
                             .padding(.top, 60)
                         } else {
@@ -597,7 +595,6 @@ struct SongsTab: View {
 private struct EmptyLibraryView: View {
     let isScanning: Bool
     let onAddMusic: () -> Void
-    let onScan: () -> Void
 
     var body: some View {
         VStack(spacing: 20) {
@@ -610,33 +607,21 @@ private struct EmptyLibraryView: View {
                 .foregroundStyle(AppTheme.textPrimary)
 
             if !isScanning {
-                Text("Add music from your Files app, iTunes library, or connect via USB")
+                Text("Add music from your Files app or connect via USB")
                     .font(.subheadline)
                     .foregroundStyle(AppTheme.textSecondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
 
-                VStack(spacing: 12) {
-                    Button {
-                        onAddMusic()
-                    } label: {
-                        Label("Add Music", systemImage: "plus.circle.fill")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(AppTheme.dynamicAccent)
-
-                    Button {
-                        onScan()
-                    } label: {
-                        Label("Scan Apple Music Library", systemImage: "arrow.clockwise")
-                            .font(.subheadline)
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(AppTheme.dynamicAccent)
+                Button {
+                    onAddMusic()
+                } label: {
+                    Label("Add Music", systemImage: "plus.circle.fill")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(AppTheme.dynamicAccent)
                 .padding(.horizontal, 32)
             }
         }

@@ -46,7 +46,6 @@ struct LumenLibraryView: View {
             Category(id: "smart", title: "Smart Playlists", icon: "wand.and.stars", tint: LumenPalette.iris, route: .smartPlaylists),
             Category(id: "moods", title: "Moods", icon: "theatermasks.fill", tint: Color(red: 0.95, green: 0.45, blue: 0.85), route: .moods),
             Category(id: "podcasts", title: "Podcasts", icon: "mic.square.fill", tint: Color(red: 0.6, green: 0.35, blue: 0.95), route: .podcasts),
-            Category(id: "apple", title: "Apple Music", icon: "music.note.house.fill", tint: LumenPalette.error, route: .appleMusic),
             Category(id: "downloads", title: "Downloads", icon: "arrow.down.circle.fill", tint: LumenPalette.azure, route: .downloads),
             Category(id: "deleted", title: "Recently Deleted", icon: "trash.fill", tint: LumenPalette.textTertiary, route: .recentlyDeleted),
         ]
@@ -81,14 +80,7 @@ struct LumenLibraryView: View {
                 if let error = library.errorMessage {
                     HStack(alignment: .top, spacing: 10) {
                         Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(LumenPalette.warning)
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(error).font(LumenType.caption(13)).foregroundStyle(LumenPalette.textPrimary)
-                            if library.scanCrashGuardActive {
-                                LumenSecondaryButton(title: "Retry", systemImage: "arrow.clockwise") {
-                                    library.retryMediaLibraryScanAfterCrashGuard()
-                                }
-                            }
-                        }
+                        Text(error).font(LumenType.caption(13)).foregroundStyle(LumenPalette.textPrimary)
                         Spacer(minLength: 0)
                     }
                     .lumenCard(fill: LumenPalette.warning.opacity(0.12))
@@ -124,7 +116,7 @@ struct LumenLibraryView: View {
         .toolbar(.hidden, for: .navigationBar)
         .refreshable { await refreshAsync() }
         .sheet(isPresented: $showAddMusic) {
-            AddMusicView(onImportAppleMusic: { showAddMusic = false })
+            AddMusicView()
                 .environmentObject(library)
                 .environmentObject(folderService)
         }
