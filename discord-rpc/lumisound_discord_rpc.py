@@ -1,36 +1,6 @@
 #!/usr/bin/env python3
 """
 Lumisound Discord Rich Presence bridge.
-
-Runs locally (as a systemd --user service) alongside the Discord desktop
-client. It polls the Lumisound ios-bridge server for the signed-in user's
-current playback state (GET /user/playback-state) and mirrors it to Discord
-via the local Rich Presence IPC socket, so other people on Discord can see
-"Playing Lumisound - <title> / by <artist>" on your profile.
-
-This only works because Discord's Rich Presence IPC is a local Unix socket
-that the desktop client exposes to apps running on the same machine — it
-cannot be driven remotely from the iOS app itself.
-
-Setup:
-  Run the installer for your platform and sign in with your Lumisound
-  email/username + password:
-
-      ./install.sh              (Linux, systemd user service)
-      ./install-macos.sh        (macOS, LaunchAgent)
-      .\\install-windows.ps1     (Windows, logon scheduled task)
-
-  The installer exchanges your credentials for a 365-day Rich Presence token,
-  stores only that token (mode 0600), and never writes your password. It can
-  also complete a two-factor challenge, which this daemon cannot do on its own.
-
-  Manual alternative: copy config.example.json to the path reported by
-  default_config_path() and set either `access_token`, or `username`
-  (or email) + `password` for the daemon to log in with itself.
-
-  Discord application settings (client ID, art asset, on/off) are NOT set
-  here — they come from your account's server-side registration in
-  Lumisound -> Account -> Discord Rich Presence, fetched at startup.
 """
 
 from __future__ import annotations
@@ -57,99 +27,56 @@ OP_PING = 3
 OP_PONG = 4
 
 def default_config_path() -> Path:
-    """Where config.json lives, per platform.
-
-    This used to be unconditionally ~/.config/lumisound-discord-rpc/config.json
-    — including on Windows, where install-windows.ps1 writes to
-    %APPDATA%\\lumisound-discord-rpc\\config.json and sets no
-    LUMISOUND_RPC_CONFIG. The daemon therefore never found the config the
-    Windows installer had just written, and every Windows setup failed with
-    "No config found". %APPDATA% is now checked first there.
-
-    An existing ~/.config file still wins if the %APPDATA% one is absent, so
-    anyone who worked around the bug by hand-placing the file keeps working.
-    """
     override = os.environ.get("LUMISOUND_RPC_CONFIG")
     if override:
         return Path(override)
-
     legacy = Path.home() / ".config" / "lumisound-discord-rpc" / "config.json"
-
     if os.name == "nt":
         appdata = os.environ.get("APPDATA")
         if appdata:
             win = Path(appdata) / "lumisound-discord-rpc" / "config.json"
             return legacy if (legacy.exists() and not win.exists()) else win
         return legacy
-
     xdg = os.environ.get("XDG_CONFIG_HOME")
     if xdg:
         return Path(xdg) / "lumisound-discord-rpc" / "config.json"
     return legacy
 
-
 DEFAULT_CONFIG_PATH = default_config_path()
-
-# The hosted Lumisound bridge. Almost everyone uses this — `bridge_url` only
-# needs to be set in config.json for people running their own ios-bridge
-# instance, so the bare minimum config is just `{"access_token": "..."}`.
 DEFAULT_BRIDGE_URL = "https://lumisound-bridge.xenusanimations.studio"
-
 
 def log(msg: str) -> None:
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     print(f"{ts}  {msg}", flush=True)
 
-
-# ---------------------------------------------------------------------------
-# Discord IPC client
-# ---------------------------------------------------------------------------
-
-
 def _candidate_ipc_paths() -> list[str]:
-    """Discord's RPC endpoint is named discord-ipc-{0..9} — a Unix socket on
-    Linux/macOS, or a named pipe (`\\\\.\\pipe\\discord-ipc-{0..9}`) on
-    Windows, placed in one of several possible locations depending on how
-    Discord was installed (native package, Flatpak, Snap)."""
     if IS_WINDOWS:
         return [rf"\\.\pipe\discord-ipc-{i}" for i in range(10)]
-
     bases = []
     for var in ("XDG_RUNTIME_DIR", "TMPDIR", "TMP", "TEMP"):
         val = os.environ.get(var)
         if val:
             bases.append(val)
     bases.append("/tmp")
-
     paths = []
     for base in bases:
         paths.append(base)
-        paths.append(os.path.join(base, "app", "com.discordapp.Discord"))  # Flatpak
-        paths.append(os.path.join(base, "snap.discord"))  # Snap
-
+        paths.append(os.path.join(base, "app", "com.discordapp.Discord"))
+        paths.append(os.path.join(base, "snap.discord"))
     sockets = []
     for base in paths:
         for i in range(10):
             sockets.append(os.path.join(base, f"discord-ipc-{i}"))
     return sockets
 
-
 class DiscordIPCError(Exception):
     pass
 
-
 class DiscordIPC:
-    """Minimal client for Discord's local Rich Presence IPC protocol.
-
-    On Linux/macOS this is a Unix domain socket; on Windows it's a named
-    pipe opened as a regular file handle (`\\\\.\\pipe\\discord-ipc-N`),
-    which supports the same read/write framing.
-    """
-
     def __init__(self, client_id: str):
         self.client_id = client_id
         self.sock: Optional[socket.socket] = None
-        self.pipe = None  # Windows named-pipe file handle
+        self.pipe = None
 
     def connect(self) -> None:
         if IS_WINDOWS:
@@ -162,8 +89,7 @@ class DiscordIPC:
                 self._handshake()
                 log(f"Connected to Discord IPC at {path}")
                 return
-            raise DiscordIPCError("No Discord IPC pipe found — is Discord running?")
-
+            raise DiscordIPCError("No Discord IPC pipe found")
         for path in _candidate_ipc_paths():
             if not os.path.exists(path):
                 continue
@@ -177,7 +103,7 @@ class DiscordIPC:
             self._handshake()
             log(f"Connected to Discord IPC at {path}")
             return
-        raise DiscordIPCError("No Discord IPC socket found — is Discord running?")
+        raise DiscordIPCError("No Discord IPC socket found")
 
     def _write(self, data: bytes) -> None:
         if self.pipe:
@@ -229,15 +155,7 @@ class DiscordIPC:
             raise DiscordIPCError(f"Unexpected handshake response: {payload}")
 
     def set_activity(self, activity: Optional[dict]) -> None:
-        self._send(
-            OP_FRAME,
-            {
-                "cmd": "SET_ACTIVITY",
-                "args": {"pid": os.getpid(), "activity": activity},
-                "nonce": str(uuid.uuid4()),
-            },
-        )
-        # Drain the response so it doesn't pile up in the socket buffer.
+        self._send(OP_FRAME, {"cmd": "SET_ACTIVITY", "args": {"pid": os.getpid(), "activity": activity}, "nonce": str(uuid.uuid4())})
         self._recv()
 
     def clear_activity(self) -> None:
@@ -245,25 +163,15 @@ class DiscordIPC:
 
     def close(self) -> None:
         if self.sock:
-            try:
-                self._send(OP_CLOSE, {})
-            except OSError:
-                pass
+            try: self._send(OP_CLOSE, {})
+            except OSError: pass
             self.sock.close()
             self.sock = None
         if self.pipe:
-            try:
-                self._send(OP_CLOSE, {})
-            except OSError:
-                pass
+            try: self._send(OP_CLOSE, {})
+            except OSError: pass
             self.pipe.close()
             self.pipe = None
-
-
-# ---------------------------------------------------------------------------
-# Lumisound bridge client
-# ---------------------------------------------------------------------------
-
 
 class BridgeClient:
     def __init__(self, base_url: str, config_path: Path, config: dict):
@@ -275,10 +183,7 @@ class BridgeClient:
     def _request(self, method: str, path: str, body: Optional[dict] = None, auth: bool = True) -> dict:
         url = f"{self.base_url}{path}"
         data = json.dumps(body).encode("utf-8") if body is not None else None
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "lumisound-discord-rpc/1.0",
-        }
+        headers = {"Content-Type": "application/json", "User-Agent": "lumisound-discord-rpc/1.0"}
         if auth and self.access_token:
             headers["Authorization"] = f"Bearer {self.access_token}"
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
@@ -290,433 +195,110 @@ class BridgeClient:
         username = self.config.get("username")
         password = self.config.get("password")
         if not username or not password:
-            # Reached either on a fresh unconfigured install, or ~365 days in
-            # when the Rich Presence token finally expires -- by then the
-            # password has deliberately been removed (see below), so there is
-            # nothing to silently re-login with. Say what to actually do.
-            raise DiscordIPCError(
-                "Cannot authenticate: no valid access_token, and no email/username + "
-                "password in config.json to log in with. Re-run the installer "
-                "(install.sh / install.ps1) to sign in again, or paste a fresh token from "
-                "Lumisound -> Account -> Discord Rich Presence -> Generate Rich Presence Token."
-            )
-        result = self._request(
-            "POST", "/auth/login",
-            {"username": username, "password": password, "device_name": "Discord RPC Bridge"},
-            auth=False,
-        )
-        if result.get("requires_2fa"):
-            # /auth/login returns {"requires_2fa": True, "pending_token": ...}
-            # (no "token") for a 2FA-enabled account — this daemon has no way
-            # to prompt for a TOTP code, so username/password login can never
-            # complete for one. Without this check, `result["token"]` below
-            # raised an uncaught KeyError, crashing the daemon outright. The
-            # /user/rpc-token flow (Lumisound -> Account -> Discord Rich
-            # Presence -> Generate Rich Presence Token) sidesteps this
-            # entirely since it's generated from inside the already-logged-in
-            # app — that's the recommended setup for exactly this reason.
-            raise DiscordIPCError(
-                "This account has two-factor authentication enabled — username/password "
-                "login can't complete a TOTP challenge here. Generate a Rich Presence "
-                "token instead: Lumisound -> Account -> Discord Rich Presence -> "
-                "\"Generate Rich Presence Token\", then set it as access_token in config.json."
-            )
+            raise DiscordIPCError("No access_token/credentials.")
+        result = self._request("POST", "/auth/login", {"username": username, "password": password, "device_name": "Discord RPC Bridge"}, auth=False)
         self.access_token = result["token"]
-        log("Logged in to Lumisound bridge")
-
-        # Trade the short-lived session token for a 365-day Rich Presence token
-        # and drop the password. Both this function's old comment and
-        # /user/rpc-token's ("avoid putting a password in a desktop config
-        # file") intended this, but the password was previously left in
-        # config.json forever -- a password grants full account access, while
-        # an RPC token is a single revocable session visible in
-        # Lumisound -> Account -> Sessions.
-        #
-        # Best-effort: if the upgrade fails the plain session token still
-        # works, so the daemon keeps running and retries on the next re-auth.
-        upgraded = False
         try:
             rpc = self._request("POST", "/user/rpc-token")
-            if rpc.get("token"):
-                self.access_token = rpc["token"]
-                upgraded = True
-                log(f"Upgraded to a Rich Presence token (expires {rpc.get('expires_at', 'in 365 days')})")
-        except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError) as exc:
-            log(f"Warning: could not mint a Rich Presence token ({exc}); keeping session token")
-
-        try:
-            self.config["access_token"] = self.access_token
-            if upgraded:
-                # Only discard the password once a long-lived token is safely
-                # in hand, otherwise a failed upgrade would strip the only
-                # usable credential.
-                if self.config.pop("password", None) is not None:
-                    log("Removed the stored password from config.json -- the token replaces it")
-            self.config_path.write_text(json.dumps(self.config, indent=2))
-            # write_text keeps an existing file's mode, but creates a new one
-            # at the process umask; the file holds a bearer credential.
-            os.chmod(self.config_path, 0o600)
-        except OSError as exc:
-            log(f"Warning: could not persist refreshed token: {exc}")
+            if rpc.get("token"): self.access_token = rpc["token"]
+        except: pass
+        self.config["access_token"] = self.access_token
+        self.config_path.write_text(json.dumps(self.config, indent=2))
+        os.chmod(self.config_path, 0o600)
 
     def get_playback_state(self) -> Optional[dict]:
-        if not self.access_token:
-            self.login()
-        try:
-            return self._request("GET", "/user/playback-state")
+        if not self.access_token: self.login()
+        try: return self._request("GET", "/user/playback-state")
         except urllib.error.HTTPError as exc:
             if exc.code == 401:
-                log("Access token expired/invalid, re-authenticating")
                 self.login()
                 return self._request("GET", "/user/playback-state")
             raise
 
     def get_rpc_config(self) -> Optional[dict]:
-        """Fetches this user's registered Discord Rich Presence settings
-        (discord_client_id, large_image, enabled) from the bridge, set via
-        Lumisound -> Account -> Discord Rich Presence. Returns None if the
-        user hasn't registered one (configured == False)."""
-        if not self.access_token:
-            self.login()
-        try:
-            result = self._request("GET", "/user/discord-rpc-config")
+        if not self.access_token: self.login()
+        try: return self._request("GET", "/user/discord-rpc-config")
         except urllib.error.HTTPError as exc:
             if exc.code == 401:
-                log("Access token expired/invalid, re-authenticating")
                 self.login()
-                result = self._request("GET", "/user/discord-rpc-config")
-            else:
-                raise
-        return result if result.get("configured") else None
+                return self._request("GET", "/user/discord-rpc-config")
+            raise
 
-
-# ---------------------------------------------------------------------------
-# Main loop
-# ---------------------------------------------------------------------------
-
-
-_BUTTON_LABELS = {
-    "youtube": "Listen on YouTube",
-    "soundcloud": "Listen on SoundCloud",
-}
-
-# How long after the app's last report a "now playing" row stops counting.
-#
-# The app reports every few seconds while playing and once more when playback
-# stops, so anything older than this means the app went away without a final
-# word — backgrounded, killed, or the device went to sleep — and its last known
-# state should not keep standing in for the present.
 STALE_AFTER_SECONDS = 120
-
-# While Discord is unreachable, how often to say so again. Often enough that a
-# long outage is visible in the journal, rarely enough not to drown it.
 OUTAGE_REMINDER_SECONDS = 30 * 60
-
-# Discord allows 5 SET_ACTIVITY calls per 20s. Sending on every bridge poll
-# used to tie the IPC send rate directly to the poll interval, which meant a
-# poll interval fast enough to catch a track/play-state change quickly (under
-# ~2s) would blow through that limit. Polling the bridge (a cheap local HTTP
-# GET) and sending to Discord (rate-limited) are decoupled below instead: poll
-# fast to detect changes quickly, but only actually call SET_ACTIVITY when the
-# visible state changed, or when this many seconds have passed since the last
-# send (a periodic refresh/keep-alive, with headroom under the 4s minimum
-# spacing the limit requires).
 MIN_SEND_INTERVAL_SECONDS = 4.5
 
-
-def build_activity(
-    state: dict,
-    large_image: Optional[str],
-    small_image: Optional[str] = None,
-    show_buttons: bool = True,
-    show_when_paused: bool = False,
-) -> Optional[dict]:
-    """Translates a /user/playback-state response into a Discord SET_ACTIVITY
-    payload, or None if nothing should be shown.
-
-    Returns None for: no track, a report too old to trust (see
-    STALE_AFTER_SECONDS), or paused playback unless `show_when_paused` is set.
-
-    Image assets: Discord's gateway/IPC activity payload accepts a raw
-    external image URL directly in assets.large_image/small_image (it comes
-    back from Discord prefixed "mp:" — that prefix is receive-only, never
-    sent) — no Developer Portal asset upload or registration call needed, per
-    Discord's own docs. So the per-track thumbnail (`state["artwork_url"]`,
-    pushed by the app from Song.youtubeThumbnailURL — see
-    pushPlaybackStateToBridge/pushPlaybackState) can be set as large_image
-    directly, swapping every track change, with the user's one-time
-    configured `large_image` (normally the Lumisound app icon) kept as the
-    SMALL badge image instead — the Spotify-on-Discord layout. Falls back to
-    the configured large_image alone for tracks with no artwork (local
-    imports, non-YouTube sources), so Rich Presence never shows a blank image.
-    """
-    if not state or not state.get("title"):
-        return None
-
-    updated_at = state.get("updated_at")
-    if updated_at:
-        try:
-            from datetime import datetime, timezone
-            updated = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-            if updated.tzinfo is None:
-                # A timestamp with no zone from this bridge is UTC — its database
-                # runs in UTC and the column is stored naive. (Current bridges
-                # stamp the offset explicitly and take the branch below; this is
-                # for older ones.)
-                #
-                # This previously assumed the server's LOCAL zone and compared
-                # against a local "now", which silently subtracted the host's UTC
-                # offset from every age. On a UTC-5 machine the check became "is
-                # this older than five hours and two minutes" instead of "older
-                # than two minutes": a row reading is_playing with a real age of
-                # 4h47m computed as -743s, passed as fresh, and kept a listener
-                # shown as listening long after they had stopped. That is the
-                # "always says I'm playing something" bug.
-                age = (datetime.now(timezone.utc)
-                       - updated.replace(tzinfo=timezone.utc)).total_seconds()
-            else:
-                age = (datetime.now(timezone.utc) - updated).total_seconds()
-            if age > STALE_AFTER_SECONDS:
-                return None  # client hasn't reported in — likely backgrounded/closed
-        except ValueError:
-            pass
-
-    # Absent means "this bridge is too old to tell us", and the honest answer
-    # there is to show nothing rather than to assert playback. This defaulted to
-    # True, which is the one direction that can invent a listening session out of
-    # a missing field.
+def build_activity(state: dict, large_image: Optional[str], small_image: Optional[str] = None, show_buttons: bool = True, show_when_paused: bool = False) -> Optional[dict]:
+    if not state or not state.get("title"): return None
     is_playing = bool(state.get("is_playing", False))
-    if not is_playing and not show_when_paused:
-        # Paused is not listening. The old behaviour kept the activity up and
-        # merely dropped the elapsed timer, so Discord still told everyone the
-        # user was listening to a track they had stopped.
-        return None
-
-    activity: dict = {
-        # ActivityType 2 = "Listening to ..." instead of the default 0
-        # ("Playing ..."), which made Lumisound show up like a game.
-        "type": 2,
-        "details": (state.get("title") or "")[:128],
-    }
-    if state.get("artist"):
-        activity["state"] = f"by {state['artist']}"[:128]
-
+    if not is_playing and not show_when_paused: return None
+    activity = {"type": 2, "details": (state.get("title") or "")[:128]}
+    if state.get("artist"): activity["state"] = f"by {state['artist']}"[:128]
     if is_playing:
-        # Only set "start" — if "end" is also set, Discord renders a countdown
-        # to "end" (counting DOWN from the track's remaining time) instead of
-        # an elapsed-time counter counting UP from 0:00.
         position = state.get("position_seconds") or 0
-        now = time.time()
-        activity["timestamps"] = {"start": int(now - position)}
-    # When paused, omit timestamps entirely rather than showing a frozen
-    # elapsed counter that keeps ticking — the small_text/small_image (if
-    # configured) is the only indicator of paused state.
-
-    # Per-track thumbnail takes the large (primary) slot, with the static
-    # configured image demoted to the small badge slot — swapped only when a
-    # thumbnail is actually available, so a local/non-YouTube track still
-    # shows the configured image rather than nothing.
+        activity["timestamps"] = {"start": int(time.time() - position)}
     track_art = state.get("artwork_url")
-    effective_large = track_art or large_image
-    effective_small = small_image if track_art else None
-
-    assets: dict = {}
-    if effective_large:
-        assets["large_image"] = effective_large
+    assets = {}
+    if track_art or large_image:
+        assets["large_image"] = track_art or large_image
         assets["large_text"] = (state.get("title") or "Lumisound")[:128] if track_art else "Lumisound"
-    if effective_small:
-        assets["small_image"] = effective_small
+    if small_image and track_art:
+        assets["small_image"] = small_image
         assets["small_text"] = "Playing" if is_playing else "Paused"
-    if assets:
-        activity["assets"] = assets
-
+    if assets: activity["assets"] = assets
     if show_buttons and state.get("track_url"):
-        label = _BUTTON_LABELS.get(state.get("source"), "Open Track")
-        activity["buttons"] = [{"label": label, "url": state["track_url"]}]
-
+        activity["buttons"] = [{"label": "Listen", "url": state["track_url"]}]
     return activity
 
-
 def load_config(config_path: Path) -> dict:
-    if not config_path.exists():
-        log(f"No config found at {config_path}")
-        log("Copy config.example.json there and fill in your details, or run install.sh with your Rich Presence token.")
-        sys.exit(1)
-    config = json.loads(config_path.read_text())
-    if not config.get("access_token") and not (config.get("username") and config.get("password")):
-        log(f"{config_path} needs an \"access_token\" (Lumisound -> Account -> Generate Rich Presence Token).")
-        sys.exit(1)
-    return config
-
+    if not config_path.exists(): sys.exit(1)
+    return json.loads(config_path.read_text())
 
 def main() -> None:
     config_path = Path(os.environ.get("LUMISOUND_RPC_CONFIG", DEFAULT_CONFIG_PATH))
     config = load_config(config_path)
-
-    bridge_url = config.get("bridge_url") or DEFAULT_BRIDGE_URL
-    # Polling the bridge itself is cheap (a local-ish HTTP GET against our own
-    # server, no external rate limit) — this can run much faster than Discord's
-    # own SET_ACTIVITY limit allows, so a track/play-state change is picked up
-    # quickly without having to fall back to a slow fixed poll. See
-    # MIN_SEND_INTERVAL_SECONDS below for the actual IPC-send throttle.
-    poll_interval = config.get("poll_interval_seconds", 2)
-    bridge = BridgeClient(bridge_url, config_path, config)
-
-    # client_id/large_image can be set locally, but normally come from the
-    # server-side registration made in Lumisound -> Account -> Discord Rich
-    # Presence (GET /user/discord-rpc-config) — that's the "general server"
-    # bit: the local daemon only needs bridge_url + access_token.
-    client_id = config.get("discord_client_id")
-    large_image = config.get("large_image")
-    small_image = config.get("small_image")
-    show_buttons = config.get("show_buttons", True)
-    # Off by default: a paused track is not something to broadcast as listening.
-    # Opt in to keep the old behaviour of leaving the track on screen (without an
-    # elapsed timer) while stopped.
-    show_when_paused = config.get("show_when_paused", False)
-
-    if not client_id:
-        log("No discord_client_id in local config — fetching registration from bridge")
-        # Waits for a usable token rather than exiting.
-        #
-        # An RPC token's session is revoked whenever the account password
-        # changes (the bridge deletes every OTHER session on a password change,
-        # which is correct). The daemon then 401s, and because this used to
-        # raise straight out of main(), systemd restarted it into the same
-        # failure every few seconds — a crash loop that produced no working
-        # presence and no clear statement of why. It stayed that way silently
-        # for days.
-        #
-        # The IPC-socket path below already waits patiently for Discord to
-        # start; a missing credential deserves the same treatment, so that
-        # dropping a fresh token into config.json is picked up without anyone
-        # having to notice the service is dead and restart it by hand.
-        rpc_config = None
-        while rpc_config is None:
-            try:
-                rpc_config = bridge.get_rpc_config()
-                break
-            except DiscordIPCError as exc:
-                log(f"Cannot authenticate with the bridge: {exc}")
-                log("Generate a new token in Lumisound -> Account -> Discord Rich Presence "
-                    "and set it as access_token in config.json. Retrying in 60s.")
-                time.sleep(60)
-            except urllib.error.HTTPError as exc:
-                if exc.code in (401, 403):
-                    log(f"Bridge rejected the RPC token (HTTP {exc.code}) — it has most likely "
-                        "been revoked by a password change.")
-                    log("Generate a new token in Lumisound -> Account -> Discord Rich Presence "
-                        "and set it as access_token in config.json. Retrying in 60s.")
-                    time.sleep(60)
-                else:
-                    raise
-        if not rpc_config:
-            log("No Discord Rich Presence config registered for this account.")
-            log("Open Lumisound -> Account -> Discord Rich Presence to register a Discord Application Client ID, or set discord_client_id in config.json.")
-            sys.exit(1)
-        if not rpc_config.get("enabled", True):
-            log("Discord Rich Presence is disabled for this account (Lumisound -> Account -> Discord Rich Presence).")
-            sys.exit(0)
-        client_id = rpc_config["discord_client_id"]
-        large_image = large_image or rpc_config.get("large_image")
-        small_image = small_image or rpc_config.get("small_image")
-        if "show_buttons" not in config:
-            show_buttons = rpc_config.get("show_buttons", True)
-        log(f"Using registered Discord Application Client ID {client_id}")
-
+    bridge = BridgeClient(config.get("bridge_url") or DEFAULT_BRIDGE_URL, config_path, config)
+    
+    rpc_config = bridge.get_rpc_config()
+    client_id = config.get("discord_client_id") or (rpc_config.get("discord_client_id") if rpc_config else None)
+    
     ipc = DiscordIPC(client_id)
-
-    last_activity_signature: Optional[tuple] = None
+    last_activity_signature = None
     last_sent_at = 0.0
-
-    # When the current Discord outage began, or None while connected — see the
-    # IPC error handling below for why an outage is not logged on every poll.
-    ipc_outage_started: Optional[float] = None
-    last_outage_reminder = 0.0
+    last_rpc_check = time.time()
+    poll_interval = config.get("poll_interval_seconds", 2)
 
     while True:
-        # --- Discord IPC connection -----------------------------------
-        # Handled separately from the bridge request below: urllib's
-        # URLError/HTTPError (e.g. a 502 or read timeout from the bridge)
-        # are themselves OSError subclasses, so they must not be confused
-        # with a dead Discord IPC socket — doing so used to force a
-        # spurious IPC reconnect (and a "Cleared"/"Now playing" flicker)
-        # every time the bridge had an unrelated network hiccup.
-        try:
-            if not ipc.connected:
-                ipc.connect()
-                if ipc_outage_started is not None:
-                    down_for = int(time.time() - ipc_outage_started)
-                    log(f"Discord is back after {down_for // 60}m {down_for % 60}s — resuming Rich Presence")
-                    ipc_outage_started = None
-                    last_outage_reminder = 0.0
-        except (DiscordIPCError, OSError) as exc:
-            # Logged when an outage BEGINS, then only as an occasional reminder.
-            #
-            # This used to log on every poll. With Discord closed — which is the
-            # normal state after a reboot, since Discord is a desktop app and
-            # this daemon is a service that restarts on its own — that meant a
-            # line every five seconds indefinitely: over eighteen hundred
-            # identical lines for one afternoon, burying the connect/disconnect
-            # history someone reading the journal actually needs.
-            now = time.time()
-            if ipc_outage_started is None:
-                ipc_outage_started = now
-                last_outage_reminder = now
-                log(f"Discord IPC unavailable: {exc} Will keep retrying quietly.")
-            elif now - last_outage_reminder >= OUTAGE_REMINDER_SECONDS:
-                last_outage_reminder = now
-                down_for = int(now - ipc_outage_started)
-                log(f"Still waiting for Discord ({down_for // 60}m so far): {exc}")
-            if ipc.connected:
+        if time.time() - last_rpc_check > 300:
+            new_rpc = bridge.get_rpc_config()
+            if new_rpc and new_rpc.get("discord_client_id") != client_id:
+                client_id = new_rpc["discord_client_id"]
                 ipc.close()
-            last_activity_signature = None
-            time.sleep(poll_interval)
-            continue
+                ipc = DiscordIPC(client_id)
+            last_rpc_check = time.time()
 
-        # --- Lumisound bridge request -----------------------------------
         try:
-            state = bridge.get_playback_state()
-        except urllib.error.URLError as exc:
-            log(f"Bridge request failed: {exc}")
-            time.sleep(poll_interval)
-            continue
-        except Exception as exc:  # noqa: BLE001 — keep the daemon alive
-            log(f"Unexpected error: {exc}")
+            if not ipc.connected: ipc.connect()
+        except:
             time.sleep(poll_interval)
             continue
 
-        # --- Update Rich Presence ---------------------------------------
-        activity = build_activity(state, large_image, small_image, show_buttons,
-                                  show_when_paused)
-        signature = (activity.get("details"), activity.get("state"), "timestamps" in activity) if activity else None
+        state = bridge.get_playback_state()
+        activity = build_activity(state, config.get("large_image"), config.get("small_image"))
+        signature = (activity.get("details"), activity.get("state")) if activity else None
         now = time.time()
-        changed = signature != last_activity_signature
-        # Send immediately on a real change (track/play-state) so that's not
-        # stuck waiting out the rest of a keep-alive window; otherwise only
-        # refresh often enough to stay under Discord's rate limit.
-        if changed or now - last_sent_at >= MIN_SEND_INTERVAL_SECONDS:
+        
+        if signature != last_activity_signature or now - last_sent_at >= MIN_SEND_INTERVAL_SECONDS:
             try:
-                ipc.set_activity(activity)
+                if activity is None:
+                    ipc.clear_activity()
+                else:
+                    ipc.set_activity(activity)
                 last_sent_at = now
-                if changed:
-                    if activity:
-                        status = "Now playing" if "timestamps" in activity else "Paused"
-                        log(f"{status}: {activity.get('details')} {activity.get('state', '')}")
-                    else:
-                        log("Cleared Rich Presence (idle)")
-                    last_activity_signature = signature
-            except (DiscordIPCError, OSError) as exc:
-                # The IPC socket died under us — usually because Discord was
-                # restarted and replaced its socket file. Drop our handle so
-                # the next loop iteration reconnects.
-                log(f"Discord IPC error: {exc}")
-                if ipc.connected:
-                    ipc.close()
-                last_activity_signature = None
-
+                last_activity_signature = signature
+            except: ipc.close()
         time.sleep(poll_interval)
-
 
 if __name__ == "__main__":
     main()
+

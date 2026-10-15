@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker exec *)",
+      "Bash(sleep 5 *)",
+      "Bash(gh run *)",
+      "Bash(lscpu)",
+      "Bash(lspci)"
+    ]
+  }
+}
