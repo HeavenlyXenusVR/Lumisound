@@ -509,8 +509,25 @@ final class ArtworkService {
         // ImageIO returns nil for a missing/unreadable file, so there's no
         // need to `fileExists`-check first — this saves a stat per miss on
         // the scroll hot path.
+        //
+        // BUGFIX (reported: scrolling still jank/stutters through a large
+        // library, confirmed in a screen recording as a continuous ragged
+        // frame cadence during a fast flick through the Folders grid, not a
+        // multi-hundred-ms freeze): this was `.userInitiated` — the highest
+        // background QoS, scheduled with near-interactive urgency, directly
+        // competing with the scroll view's own rendering for CPU time. Every
+        // OTHER decode path in this file already uses `.utility` for exactly
+        // this reason; this was the one spot that didn't, and it's the
+        // highest-traffic one — a cell for every song scrolling into view
+        // fires one of these. A fast fling through a grid surfaces half a
+        // dozen-plus brand new cells at once, each spawning a `.userInitiated`
+        // decode that fights the renderer for the same CPU cycles frame by
+        // frame — exactly the shape of dropped-frame scroll jank, as opposed
+        // to a dead stop. `.utility` is the same priority UIKit's own
+        // prefetch APIs recommend for scroll-driven image decode for this
+        // exact reason.
         let path = diskPath(key: key)
-        let thumb = await Task.detached(priority: .userInitiated) {
+        let thumb = await Task.detached(priority: .utility) {
             ImageDownsampler.downsampled(at: path, maxPixelSize: bucket)
         }.value
         if let thumb {
