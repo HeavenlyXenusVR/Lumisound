@@ -478,6 +478,23 @@ struct LibraryHubView: View {
     /// Fetches the network-backed hub extras once — independent of
     /// `reload()`'s on-device `library.allSongs.count` trigger, since these
     /// don't change just because the local library was rescanned.
+    ///
+    /// `@MainActor` is required, not cosmetic: `account`/`streaming`/`social`
+    /// are all `@MainActor`-isolated services, so once e.g. `await
+    /// streaming.fetchWeeklyMix(token:)` returns, a NONISOLATED caller
+    /// resumes on an arbitrary background executor, not necessarily back on
+    /// the main thread. The very next line here assigns straight into
+    /// `@State` (`weeklyMixSongs`/`onThisDayGroups`/`continueListeningPodcasts`)
+    /// — mutating SwiftUI `@State` off the main actor is a real crash, not
+    /// just a warning, and matches a crash signature (SIGTRAP/SIGABRT inside
+    /// this function's async continuation) confirmed recurring across
+    /// several builds in production MetricKit telemetry (`crash_diagnostic`
+    /// events, symbolicated via the release dSYMs). Pinning this function to
+    /// `@MainActor` keeps every one of its own `async let` bodies — and the
+    /// code that runs right after each inner `await` — on the main actor,
+    /// while the awaited calls themselves still do their real work wherever
+    /// they need to.
+    @MainActor
     private func loadServerExtras() async {
         async let weeklyMix: Void = {
             guard let token = account.token else { return }
@@ -621,6 +638,18 @@ struct LibraryHubView: View {
     // lose scroll position"). This runs on every Home/Hub load, which is the
     // default tab, so it fired on most tab switches — moved into the same
     // detached task as the shelf snapshot below.
+    //
+    // `@MainActor` is load-bearing here, not cosmetic: `await Task.detached
+    // { ... }.value` resumes on a background executor, not necessarily the
+    // main thread, and the very next lines assign straight into `@State`
+    // (`shortcuts`/`recentlyAdded`/`mostPlayed`/etc.) — mutating SwiftUI
+    // `@State` off the main actor is a real crash. `async` functions do NOT
+    // inherit a type's MainActor isolation the way synchronous members do,
+    // so this needs the annotation explicitly rather than relying on
+    // `LibraryHubView` being a `View`. Same bug class, same fix, as
+    // `loadServerExtras()` above — confirmed as a recurring production
+    // crash (SIGTRAP/SIGABRT) via MetricKit `crash_diagnostic` telemetry.
+    @MainActor
     private func reload() async {
         shortcuts = Self.buildShortcuts(library: library)
         await Task.yield()
