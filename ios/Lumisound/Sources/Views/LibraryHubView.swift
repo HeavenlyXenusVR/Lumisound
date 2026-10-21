@@ -496,43 +496,63 @@ struct LibraryHubView: View {
     /// they need to.
     @MainActor
     private func loadServerExtras() async {
-        async let weeklyMix: Void = {
-            guard let token = account.token else { return }
-            await streaming.fetchWeeklyMix(token: token)
-            weeklyMixSongs = streaming.weeklyMix.map { streaming.toSong(weeklyMixTrack: $0, token: token) }
-        }()
+        // Each step is a named @MainActor function rather than an inline
+        // `async let x: Void = { ... }()` closure — an inline closure here
+        // ambiguously inherits this function's @MainActor isolation in a way
+        // the compiler can't reconcile with `async let`'s child-task model
+        // ("expression is 'async' but is not marked with 'await'"); a named
+        // async method called directly (same shape as `account.
+        // fetchSimilarListeners()` below, which never had this problem) does
+        // not have that ambiguity.
+        async let weeklyMix: Void = loadWeeklyMix()
         async let similarListeners: Void = account.fetchSimilarListeners()
         async let ariaDailyPick: Void = account.fetchAriaDailyPick()
         async let friendsActivity: Void = social.fetchFriendsActivity()
-        async let onThisDay: Void = {
-            guard account.isLoggedIn else { return }
-            onThisDayGroups = await account.fetchOnThisDay()
-        }()
+        async let onThisDay: Void = loadOnThisDay()
         // Reuses the existing GET /user/achievements endpoint (already
         // powering the standalone `AchievementsView` reachable from
         // Settings) rather than adding new server support — the Home tab
         // just needed a compact teaser for data that already existed.
-        async let achievements: Void = {
-            guard account.isLoggedIn else { return }
-            await account.fetchAchievements()
-        }()
+        async let achievements: Void = loadAchievements()
         // Cross-feed (no feed_url filter -- see main.py's doc comment on
         // get_podcast_episode_progress), paired with subscriptions for
         // display (show title/artwork) and playback (PodcastPlayback.play
         // needs the PodcastSubscription, not just the progress row).
-        async let continueListeningPodcastsTask: Void = {
-            guard account.isLoggedIn else { return }
-            async let subsResult = account.fetchPodcastSubscriptions()
-            async let progressResult = account.fetchRecentPodcastProgress(limit: 10)
-            let subs = await subsResult
-            let progressEntries = await progressResult
-            let subsByFeed = Dictionary(subs.map { ($0.feedURL, $0) }, uniquingKeysWith: { first, _ in first })
-            continueListeningPodcasts = progressEntries.compactMap { progress -> ContinueListeningPodcastItem? in
-                guard let feedURL = progress.feedURL, let sub = subsByFeed[feedURL] else { return nil }
-                return ContinueListeningPodcastItem(subscription: sub, progress: progress)
-            }
-        }()
+        async let continueListeningPodcastsTask: Void = loadContinueListeningPodcasts()
         _ = await (weeklyMix, similarListeners, ariaDailyPick, friendsActivity, onThisDay, achievements, continueListeningPodcastsTask)
+    }
+
+    @MainActor
+    private func loadWeeklyMix() async {
+        guard let token = account.token else { return }
+        await streaming.fetchWeeklyMix(token: token)
+        weeklyMixSongs = streaming.weeklyMix.map { streaming.toSong(weeklyMixTrack: $0, token: token) }
+    }
+
+    @MainActor
+    private func loadOnThisDay() async {
+        guard account.isLoggedIn else { return }
+        onThisDayGroups = await account.fetchOnThisDay()
+    }
+
+    @MainActor
+    private func loadAchievements() async {
+        guard account.isLoggedIn else { return }
+        await account.fetchAchievements()
+    }
+
+    @MainActor
+    private func loadContinueListeningPodcasts() async {
+        guard account.isLoggedIn else { return }
+        async let subsResult = account.fetchPodcastSubscriptions()
+        async let progressResult = account.fetchRecentPodcastProgress(limit: 10)
+        let subs = await subsResult
+        let progressEntries = await progressResult
+        let subsByFeed = Dictionary(subs.map { ($0.feedURL, $0) }, uniquingKeysWith: { first, _ in first })
+        continueListeningPodcasts = progressEntries.compactMap { progress -> ContinueListeningPodcastItem? in
+            guard let feedURL = progress.feedURL, let sub = subsByFeed[feedURL] else { return nil }
+            return ContinueListeningPodcastItem(subscription: sub, progress: progress)
+        }
     }
 
     // MARK: Mixes carousel
