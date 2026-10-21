@@ -1,170 +1,66 @@
+# Standalone compose for ios-bridge, now that it runs back on this host
+# (moved off Mel 2026-10-21 -- same CPU-headroom reasoning as Nyxframe/
+# SwarmPanel's move, see migration-services.nix's header comment). Was
+# previously a service inside Music/docker-compose.yml; that file lives
+# with the bots on Mel now, so this is its own compose file. Database
+# stays on Mel (the discord_music_gws DB it piggybacks on belongs to the
+# gws bot, which stays there) -- DB_HOST below is Mel's LAN IP, same
+# pattern SwarmPanel's PANEL_DB_HOST uses.
 services:
-  # POT (proof-of-origin token) server for yt-dlp — a valid token meaningfully
-  # speeds up/stabilizes YouTube extraction, which otherwise routinely takes
-  # 70-100+ seconds per video without one (YouTube's anti-bot check). The
-  # ios-bridge image already has the matching client-side plugin installed
-  # (see its Dockerfile) and points at this service by default below.
-  # https://github.com/Brainicism/bgutil-ytdlp-pot-provider
-  #
-  # Published on 4417, NOT the provider's default 4416: the Discord music bots'
-  # own compose project already runs a bgutil provider on 4416 with
-  # network_mode: host, so this service could never start ("failed to bind host
-  # port 0.0.0.0:4416: address already in use") and ios-bridge silently fell
-  # through to *their* instance. That instance is pinned to an older image, and
-  # the version skew was real: it served 1.3.2 while this image's client plugin
-  # is 2.0.0, which yt-dlp rejects outright ("Plugin and HTTP server major
-  # versions are mismatched. Update both ... to proceed"), so every extraction
-  # ran with no token at all — exactly the 70-100s slow path this service
-  # exists to avoid. On a dedicated port the two projects can hold independent,
-  # independently-upgradable providers. 4417 is published on the host but not
-  # exposed externally; the container still listens on its own default 4416
-  # internally, which is why the mapping is asymmetric.
-  bgutil-pot-provider:
+  bgutil-provider:
     image: brainicism/bgutil-ytdlp-pot-provider:latest
-    container_name: bgutil_pot_provider
-    restart: always
-    ports:
-      - "${YTDLP_POT_PROVIDER_PORT:-4417}:4416"
+    container_name: ios_bgutil_provider
+    restart: unless-stopped
+    network_mode: "host"
+    environment:
+      - PORT=4417
 
   ios-bridge:
-    build: .
-    container_name: ios_bridge
     restart: always
     network_mode: "host"
+    build: .
+    container_name: ios_bridge
     depends_on:
-      - bgutil-pot-provider
+      - bgutil-provider
     environment:
       - YTDLP_CACHE_DIR=/app/.cache/yt-dlp
-      # YouTube session cookies (Netscape format) used for flat-playlist extraction,
-      # so playlist imports/resolves aren't capped at ~100 entries. Swap out
-      # ./cookies.txt on the host to refresh the session without a rebuild.
       - YTDLP_COOKIES_FILE=/app/cookies.txt
-      # Base URL of the bgutil-pot-provider service above (see main.py's
-      # YTDLP_POT_PROVIDER_URL comment). This container uses
-      # network_mode: host, so the provider's published port is reachable at
-      # http://127.0.0.1:<port> here, same as if it were running directly on
-      # the host. Set to empty to disable (yt-dlp just extracts without a
-      # token, as before this was added).
-      # Must match this file's bgutil-pot-provider published port (4417, see the
-      # comment on that service for why it is not the upstream default 4416).
-      - YTDLP_POT_PROVIDER_URL=${YTDLP_POT_PROVIDER_URL:-http://127.0.0.1:${YTDLP_POT_PROVIDER_PORT:-4417}}
-      # Optional: YouTube Data API v3 key (console.cloud.google.com, enable
-      # "YouTube Data API v3"). When set, /api/resolve enumerates YouTube
-      # playlists via playlistItems.list, which paginates with no ~205-entry
-      # cap (unlike yt-dlp's flat-playlist scrape). Falls back to yt-dlp if unset.
-      - YOUTUBE_API_KEY=${YOUTUBE_API_KEY:-}
-      # Optional: Spotify Web API app credentials (developer.spotify.com/dashboard
-      # -> Create app -> Web API; no OAuth/redirect URI needed for this use).
-      # When both are set, /api/spotify/resolve lets clients paste a Spotify
-      # track/album/playlist share link — only public metadata is read from
-      # Spotify (never audio), and each track is matched to a playable YouTube
-      # result. Unset disables Spotify link import entirely.
-      - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID:-}
-      - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET:-}
-      # Optional: APNs auth key (developer.apple.com/account/resources/authkeys,
-      # create an "APNs" key, download the .p8 once). APNS_KEY_BASE64 is the
-      # base64 of that .p8 file's raw bytes (e.g. `base64 -w0 AuthKey_XXXX.p8`).
-      # When set, ios_notifications events (playlist source updates, new
-      # channel uploads, playlist collaborator adds, etc.) are also delivered
-      # as real background push, not just visible on next foreground poll.
-      # Unset disables push sending; token registration keeps working either way.
-      - APNS_KEY_BASE64=${APNS_KEY_BASE64:-}
-      - APNS_KEY_ID=${APNS_KEY_ID:-}
-      - APNS_TEAM_ID=${APNS_TEAM_ID:-}
-      - APNS_TOPIC=${APNS_TOPIC:-com.lumisound.ios}
-      # AltStore/Sideloadly builds use a development provisioning profile, which
-      # only accepts push from Apple's sandbox APNs environment. Set to "0" only
-      # when distributing a true App Store build.
-      - APNS_USE_SANDBOX=${APNS_USE_SANDBOX:-1}
       - IOS_BRIDGE_API_KEY=${IOS_BRIDGE_API_KEY:-}
-      # Discord OAuth — powers BOTH "Continue with Discord" on the login
-      # screen (/auth/discord/start) and linking Discord to an existing
-      # account (/api/discord/oauth/start). main.py reads all three and
-      # returns 503 "Discord sign-in isn't configured on this server yet"
-      # unless every one is non-empty.
-      #
-      # These were never passed through to the container at all, so the
-      # feature could not be enabled no matter what was put in .env — the
-      # code, the UI button and the error message all existed while the one
-      # thing that would switch it on had no way in.
-      #
-      # The redirect URI must ALSO be registered, byte-identical, under
-      # OAuth2 → Redirects for this application in the Discord Developer
-      # Portal; Discord rejects the authorize request outright otherwise.
-      - DISCORD_OAUTH_CLIENT_ID=${DISCORD_OAUTH_CLIENT_ID:-}
-      - DISCORD_OAUTH_CLIENT_SECRET=${DISCORD_OAUTH_CLIENT_SECRET:-}
-      - DISCORD_OAUTH_REDIRECT_URI=${DISCORD_OAUTH_REDIRECT_URI:-}
-      # Optional: Gemini API key (aistudio.google.com). When set, powers
-      # the opt-in "AI-assisted suggestions" feature (see intelligence.py) —
-      # metadata disambiguation today, EQ/duplicate/mix suggestions planned.
-      # Off (no calls made, falls back to heuristics) when unset.
+      - ADMIN_TOKEN=${ADMIN_TOKEN:-}
+      - GIPHY_API_KEY=${GIPHY_API_KEY:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - PORT=8002
-      # PostgreSQL credentials for the Lumisound iOS app (migrated from
-      # MariaDB — see db.py). Point DB_HOST at wherever Postgres actually
-      # runs (a separate host-level service/container; this compose file
-      # doesn't define one). Override via a .env file or the host
-      # environment; these are just local-dev-friendly defaults matching
-      # db.py's own fallbacks.
-      - DB_HOST=${DB_HOST:-127.0.0.1}
-      - DB_PORT=${DB_PORT:-5432}
-      - DB_USER=${DB_USER:-botuser}
-      - DB_PASSWORD=${DB_PASSWORD:-bot_logins}
-      - DB_NAME=${DB_NAME:-discord_music_gws}
-      # JWT secret for account tokens
-      - IOS_JWT_SECRET=${IOS_JWT_SECRET:?set IOS_JWT_SECRET in .env before deploying}
-      # Optional: set SERVER_MUSIC_DIR to a path inside the container to enable
-      # the server music library feature. Mount your music directory as a volume.
-      # Example: SERVER_MUSIC_DIR=/music  (then add: - /your/music:/music:ro)
-      - SERVER_MUSIC_DIR=${SERVER_MUSIC_DIR:-}
-      # Per-user music storage. Each user gets their own subdirectory under this path.
-      # Defaults to /mnt/fastssd/lumisound-user-music (mounted as /usermusic).
-      - USER_MUSIC_DIR=${USER_MUSIC_DIR:-/usermusic}
-      # When "1", per-user cloud-backup uploads are stored gzip-compressed
-      # (reversible/lossless — transparently decompressed on stream/download).
-      # Only affects NEW uploads; already-stored files keep working either way.
-      - USER_MUSIC_COMPRESSION=${USER_MUSIC_COMPRESSION:-0}
-      # Durable holding area for finished /api/download jobs the client hasn't
-      # fetched yet, so a download that completes while the app is closed/
-      # backgrounded survives both the old 15-minute temp-dir sweep AND a
-      # container restart until the client reconciles it. Bind-mounted below
-      # (unlike the plain-temp-path fallback) so it survives rebuilds/redeploys.
-      - PENDING_DOWNLOADS_DIR=${PENDING_DOWNLOADS_DIR:-/app/.cache/pending-downloads}
-    # Passes the host's AMD iGPU render node through so ffmpeg can hardware-
-    # encode via VAAPI (h264_vaapi) instead of software libx264 — currently
-    # only used by /api/motion-artwork's clip extraction (main.py's
-    # _extract_motion_clip), which falls back to libx264 automatically if
-    # this device is missing/unusable. Requires /dev/dri/renderD128 to exist
-    # on the host (world-writable by default on most distros; if not, add
-    # the container user to the host's `render` group's GID).
-    devices:
-      - /dev/dri:/dev/dri
+      - YTDLP_POT_PROVIDER_URL=http://127.0.0.1:4417
+      - DB_HOST=192.168.1.87
+      - DB_PORT=5432
+      - DB_USER=botuser
+      - DB_PASSWORD=bot_logins
+      - DB_NAME=discord_music_gws
+      - IOS_JWT_SECRET=${IOS_JWT_SECRET:-stash-opus-player-jwt-secret-2026}
+      - DISCORD_OAUTH_CLIENT_ID=${DISCORD_OAUTH_CLIENT_ID:-}
+      - DISCORD_OAUTH_CLIENT_SECRET=${DISCORD_OAUTH_CLIENT_SECRET:-}
+      - DISCORD_OAUTH_REDIRECT_URI=https://lumisound-bridge.xenusanimations.studio/api/discord/oauth/callback
+      - GITHUB_RELEASES_TOKEN=${GITHUB_RELEASES_TOKEN:-}
+      - DISCORD_RPC_DEFAULT_CLIENT_ID=1538651456910004355
+      - DISCORD_RPC_DEFAULT_LARGE_IMAGE=lumisound
+      - DISCORD_RPC_DEFAULT_SMALL_IMAGE=playpause-small
+      - USER_MUSIC_DIR=/usermusic
+      - SERVER_MUSIC_DIR=/serverlibrary
+      - PENDING_DOWNLOADS_DIR=/app/.cache/pending-downloads
+      - YTDLP_MAX_CONCURRENT=4
     volumes:
       - ./cache/yt-dlp:/app/.cache/yt-dlp
       - ./cache/pending-downloads:/app/.cache/pending-downloads
-      - ./cookies.txt:/app/cookies.txt
-      # LOWERCASE "fastssd" — this is the real mountpoint (`/dev/sda`, label
-      # FASTSSD, mounted at /mnt/fastssd). This line said "/mnt/FastSSD", which
-      # on a case-sensitive filesystem is a completely different path, and
-      # Docker silently CREATES a missing bind source rather than failing — so
-      # it quietly made an empty directory on the root disk and mounted that as
-      # the user's entire cloud library.
-      #
-      # It stayed harmless only because the running container predated this
-      # line and kept its original, correct bind. The moment the container was
-      # recreated, the library went from 2,837 files / 11GB to 146 files, every
-      # track lost its stored metadata (so titles fell back to the filename —
-      # ".opus" and all — and artists to "Unknown Artist"), and fresh uploads
-      # started landing on the root disk instead of the SSD.
-      #
-      # If this ever needs to move, change it here rather than relying on the
-      # container's existing mount: a bind source that doesn't exist is created
-      # empty, not reported.
+      - ./cookies.txt:/app/cookies.txt:ro
       - /mnt/fastssd/lumisound-user-music:/usermusic
-      # Optional: server-wide shared music directory (read-only)
-      # - /path/to/your/music:/music:ro
+      - /mnt/fastssd/lumisound-server-library:/serverlibrary
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
       interval: 30s
       timeout: 5s
       retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1.50'
+          memory: 1024M
