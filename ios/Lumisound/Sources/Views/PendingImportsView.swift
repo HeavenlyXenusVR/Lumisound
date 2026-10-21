@@ -18,12 +18,6 @@ struct PendingImportsView: View {
     @State private var pending: [StreamingService.PendingDownloadInfo] = []
     @State private var isLoading = false
     @State private var isImportingAll = false
-    /// Per-row folder override, keyed by job_id — pre-filled from
-    /// `entry.destination_folder` the first time a row appears, then left
-    /// alone so the picker doesn't reset itself out from under a change the
-    /// user just made on refresh.
-    @State private var folderOverrides: [String: String] = [:]
-    @State private var importingJobIDs: Set<String> = []
 
     var body: some View {
         List {
@@ -51,7 +45,9 @@ struct PendingImportsView: View {
             if !pending.isEmpty {
                 Section {
                     ForEach(pending, id: \.job_id) { entry in
-                        pendingRow(entry)
+                        PendingImportRow(entry: entry, isImportingAllDisabled: isImportingAll) { entry, folderOverride in
+                            await importNow(entry, folderOverride: folderOverride)
+                        }
                     }
                     Button {
                         Task { await importAll() }
@@ -66,7 +62,7 @@ struct PendingImportsView: View {
                             Spacer()
                         }
                     }
-                    .disabled(isImportingAll || !importingJobIDs.isEmpty)
+                    .disabled(isImportingAll)
                 } header: {
                     Text("Pending (\(pending.count))")
                 }
@@ -93,41 +89,6 @@ struct PendingImportsView: View {
     // MARK: Rows
 
     @ViewBuilder
-    private func pendingRow(_ entry: StreamingService.PendingDownloadInfo) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(entry.title ?? entry.filename)
-                    .font(AppTheme.bodyFont(size: 15))
-                    .fontWeight(.semibold)
-                    .foregroundStyle(AppTheme.textPrimary)
-                    .lineLimit(1)
-                if let artist = entry.artist, !artist.isEmpty {
-                    Text(artist)
-                        .font(AppTheme.bodyFont(size: 13))
-                        .foregroundStyle(AppTheme.textSecondary)
-                        .lineLimit(1)
-                }
-            }
-            HStack {
-                DownloadFolderPicker(folderName: folderBinding(for: entry))
-                Spacer()
-                Button {
-                    Task { await importNow(entry) }
-                } label: {
-                    if importingJobIDs.contains(entry.job_id) {
-                        ProgressView()
-                    } else {
-                        Label("Import Now", systemImage: "tray.and.arrow.down")
-                            .font(AppTheme.bodyFont(size: 13))
-                    }
-                }
-                .disabled(importingJobIDs.contains(entry.job_id) || isImportingAll)
-            }
-        }
-        .padding(.vertical, 4)
-    }
-
-    @ViewBuilder
     private func recentImportRow(_ item: StreamingService.RecentImport) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
@@ -148,24 +109,14 @@ struct PendingImportsView: View {
 
     // MARK: Actions
 
-    private func folderBinding(for entry: StreamingService.PendingDownloadInfo) -> Binding<String> {
-        Binding(
-            get: { folderOverrides[entry.job_id] ?? entry.destination_folder ?? "" },
-            set: { folderOverrides[entry.job_id] = $0 }
-        )
-    }
-
     private func refresh() async {
         isLoading = true
         pending = await streaming.fetchPendingDownloads()
         isLoading = false
     }
 
-    private func importNow(_ entry: StreamingService.PendingDownloadInfo) async {
-        importingJobIDs.insert(entry.job_id)
-        defer { importingJobIDs.remove(entry.job_id) }
-        let override = folderOverrides[entry.job_id]
-        guard await streaming.importPendingDownload(entry, folderOverride: override) else {
+    private func importNow(_ entry: StreamingService.PendingDownloadInfo, folderOverride: String?) async {
+        guard await streaming.importPendingDownload(entry, folderOverride: folderOverride) else {
             ToastCenter.shared.show("Couldn't import \"\(entry.title ?? entry.filename)\"", category: .error)
             return
         }
@@ -178,5 +129,83 @@ struct PendingImportsView: View {
         defer { isImportingAll = false }
         await streaming.reconcilePendingDownloads()
         await refresh()
+    }
+}
+
+/// Isolates one pending-download row — including its "Save to" folder
+/// picker — from the rest of `PendingImportsView`.
+///
+/// Reported (same shape as the tracked-playlist "Save to" dropdown fix):
+/// the folder picker here flickers/resets while open too. The row used to
+/// read its folder override and "is this one importing" state from
+/// dictionaries keyed by job_id on the PARENT (`folderOverrides`/
+/// `importingJobIDs`) — so any parent re-render for an unrelated reason
+/// (and `streaming`/`library` are both held broadly here, with plenty of
+/// their own unrelated `@Published` churn from other features) rebuilt
+/// every row's dropdown right along with it. Each row now owns its folder
+/// override and importing state as its OWN local `@State`, seeded once at
+/// init from `entry.destination_folder` — no parent dictionary lookup, so
+/// nothing about this row depends on why the parent's body last ran.
+/// `onImport` is the one thing it still needs from the parent: performing
+/// the actual import needs `streaming`/`library`, which stay there.
+private struct PendingImportRow: View {
+    let entry: StreamingService.PendingDownloadInfo
+    let isImportingAllDisabled: Bool
+    let onImport: (StreamingService.PendingDownloadInfo, String?) async -> Void
+
+    @State private var folderOverride: String
+    @State private var isImporting = false
+
+    init(entry: StreamingService.PendingDownloadInfo, isImportingAllDisabled: Bool, onImport: @escaping (StreamingService.PendingDownloadInfo, String?) async -> Void) {
+        self.entry = entry
+        self.isImportingAllDisabled = isImportingAllDisabled
+        self.onImport = onImport
+        _folderOverride = State(initialValue: entry.destination_folder ?? "")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.title ?? entry.filename)
+                    .font(AppTheme.bodyFont(size: 15))
+                    .fontWeight(.semibold)
+                    .foregroundStyle(AppTheme.textPrimary)
+                    .lineLimit(1)
+                if let artist = entry.artist, !artist.isEmpty {
+                    Text(artist)
+                        .font(AppTheme.bodyFont(size: 13))
+                        .foregroundStyle(AppTheme.textSecondary)
+                        .lineLimit(1)
+                }
+            }
+            HStack {
+                DownloadFolderPicker(folderName: $folderOverride)
+                Spacer()
+                Button {
+                    Task {
+                        isImporting = true
+                        // Passed through as-is, including empty — importPendingDownload
+                        // treats an empty string as "explicitly the Imported Music
+                        // root" (same convention DownloadFolderPicker itself uses),
+                        // distinct from nil ("no override, fall back to the entry's
+                        // own destination_folder"). folderOverride here always
+                        // reflects whatever the picker is currently showing — seeded
+                        // from entry.destination_folder at init, so leaving it
+                        // untouched reproduces the same resolved folder either way.
+                        await onImport(entry, folderOverride)
+                        isImporting = false
+                    }
+                } label: {
+                    if isImporting {
+                        ProgressView()
+                    } else {
+                        Label("Import Now", systemImage: "tray.and.arrow.down")
+                            .font(AppTheme.bodyFont(size: 13))
+                    }
+                }
+                .disabled(isImporting || isImportingAllDisabled)
+            }
+        }
+        .padding(.vertical, 4)
     }
 }
