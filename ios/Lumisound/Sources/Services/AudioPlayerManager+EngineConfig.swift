@@ -144,9 +144,21 @@ extension AudioPlayerManager {
 
         switch reason {
         case .oldDeviceUnavailable:
+            // Only arm the auto-resume-on-reconnect below for a device loss
+            // that actually interrupted something. `pause()` itself clears
+            // `pausedByRouteChange` (same reset-then-rearm shape as
+            // `wasInterrupted`, just below) so a route loss while already
+            // paused, or a deliberate pause made in between, can't leave this
+            // flag stuck true — without this, it stayed set until the NEXT
+            // `newDeviceAvailable` no matter how much later or how unrelated
+            // (even a different Bluetooth device, hours on), silently forcing
+            // playback back on for a listener who'd since paused on purpose.
+            let wasActuallyPlaying = isPlaying
             appLog("Audio route changed — output device removed, pausing", category: "audio")
             pause()
-            pausedByRouteChange = true
+            if wasActuallyPlaying {
+                pausedByRouteChange = true
+            }
         case .newDeviceAvailable:
             // A Bluetooth device (or other output) just connected. If playback was
             // paused because the previous route disappeared (headphones unplugged,
@@ -171,6 +183,21 @@ extension AudioPlayerManager {
                     try? AVAudioSession.sharedInstance().setActive(true)
                     startEngineIfNeeded()
                 }
+                // A plugged-back-in headphone/Bluetooth device routinely fires
+                // its interruption `.began` within ~100ms of this very
+                // notification (confirmed in production logs: "Audio session
+                // interrupted" / "output device available, resuming" /
+                // "interruption ended — resuming" / "engine configuration
+                // changed" all within the same ~100ms burst) — three
+                // independent handlers each stopping/restarting/playing the
+                // SAME AVAudioEngine back-to-back is exactly the shape
+                // AVAudioEngine is known to crash on. `wasInterrupted` being
+                // true means `handleAudioInterruption`'s `.ended` case will
+                // fire its own `setActive(true)` + `resume()` once the
+                // interruption genuinely ends — defer to that one instead of
+                // calling `resume()` (and `activeNode.play()`) here too while
+                // the session may still be mid-interruption.
+                guard !wasInterrupted else { return }
                 resume()
             }
         default:
