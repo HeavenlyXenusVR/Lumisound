@@ -244,6 +244,25 @@ def build_activity(state: dict, large_image: Optional[str], small_image: Optiona
     if not state or not state.get("title"): return None
     is_playing = bool(state.get("is_playing", False))
     if not is_playing and not show_when_paused: return None
+    # BUGFIX (reported: "the last known track I was playing is still going,
+    # even after I closed the app"): `STALE_AFTER_SECONDS` was defined but
+    # never actually checked anywhere — this function trusted whatever
+    # `is_playing`/`position_seconds` the bridge last had on file, with no
+    # way to tell "genuinely still playing" apart from "the app got force-
+    # quit (or crashed, or the OS killed it, or the battery died) before it
+    # ever got a chance to push a final stopped state." iOS gives an app no
+    # guaranteed opportunity to clean up on termination, so the daemon
+    # polling a possibly-stale row is the only place this can actually be
+    # caught — not something the app can be relied on to always prevent by
+    # pushing one more update on its way out. A row that hasn't been
+    # refreshed in over `STALE_AFTER_SECONDS` means nothing on the phone has
+    # reported in for two full minutes — long enough that no real,
+    # currently-running session looks like this (steady playback pushes
+    # every ~5s; even a pause/seek pushes immediately) — so treat it as
+    # "nothing is actually playing" rather than keep showing it.
+    sampled_at = _sampled_at_epoch(state)
+    if sampled_at is not None and time.time() - sampled_at > STALE_AFTER_SECONDS:
+        return None
     activity = {"type": 2, "details": (state.get("title") or "")[:128]}
     if state.get("artist"): activity["state"] = f"by {state['artist']}"[:128]
     if is_playing:
