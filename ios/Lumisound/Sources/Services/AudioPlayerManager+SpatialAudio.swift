@@ -122,7 +122,22 @@ extension AudioPlayerManager {
         AudioUnitSetParameter(unit, kDynamicsProcessorParam_Threshold, kAudioUnitScope_Global, 0, -6.0, 0)    // dB — soft-knee region starts here, well below full scale
         AudioUnitSetParameter(unit, kDynamicsProcessorParam_HeadRoom, kAudioUnitScope_Global, 0, 2.0, 0)      // dB — hard ceiling at threshold+headroom = -4 dBFS
         AudioUnitSetParameter(unit, kDynamicsProcessorParam_AttackTime, kAudioUnitScope_Global, 0, 0.001, 0)  // seconds — fast enough to catch transients
-        AudioUnitSetParameter(unit, kDynamicsProcessorParam_ReleaseTime, kAudioUnitScope_Global, 0, 0.05, 0)  // seconds — short so it doesn't pump audibly
+        // BUGFIX (operator report: with Volume Boost + Bass Boost both pushed
+        // up, "the volume isn't consistent — it dips and then climbs back up
+        // to where it should be" on louder passages): this was 0.05s, which
+        // is the textbook cause of audible limiter "pumping" — a release
+        // fast enough to fully recover gain between individual loud
+        // transients modulates the output at roughly the transient rate
+        // (a handful of Hz on most music), which is perceived as exactly
+        // this "dips, then climbs back to the real level" wobble rather than
+        // a single clean, steady gain reduction. Slowing the release lets it
+        // average over a whole loud passage instead of chasing every
+        // transient, so gain reduction reads as "a bit quieter here" instead
+        // of an audible dip-and-recover. Threshold/headroom (peak safety,
+        // measured against real tracks — see this function's header
+        // comment) are unchanged, so this cannot reintroduce clipping; only
+        // how smoothly gain recovers once a loud passage ends.
+        AudioUnitSetParameter(unit, kDynamicsProcessorParam_ReleaseTime, kAudioUnitScope_Global, 0, 0.2, 0)   // seconds — slow enough to average over a passage instead of pumping per-transient
         AudioUnitSetParameter(unit, kDynamicsProcessorParam_OverallGain, kAudioUnitScope_Global, 0, 0, 0)
         limiter.bypass = false
     }
