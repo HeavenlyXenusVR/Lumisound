@@ -440,6 +440,23 @@ extension AudioPlayerManager {
                     appLog("scheduleAnalyzerEQCorrection: generation \(generation) fired but Auto EQ was disabled meanwhile — discarding", category: "audio")
                     return
                 }
+                // BUGFIX (reported: the phone runs warm during ordinary
+                // playback — confirmed as a real, continuous cost, not a
+                // one-off): nothing below this point ever stopped the
+                // analyzer tap, so once Auto EQ measured one track it
+                // just kept running a full FFT pass on every single audio
+                // buffer for the rest of the session — the ONLY thing that
+                // ever turned it off was the user explicitly flipping the
+                // Auto EQ setting itself back off. The real need for live
+                // analysis is exactly the 2.5s window this function already
+                // waits out per track; stop it the moment that measurement
+                // is read below, same as every other caller of `start(for:)`
+                // already pairs with its own `stop(for:)`. Deferred (not
+                // called immediately) because the correction logic just
+                // below still needs the live `analyzer.bassLevel`/
+                // `trebleLevel` values — `stop(for:)` zeroes them out the
+                // instant the tap actually comes down.
+                defer { AudioVisualizerService.shared.stop(for: .autoEQ) }
                 let analyzer = AudioVisualizerService.shared
                 // Bass vs. treble balance, roughly -1...1 (negative = measured
                 // bass-light, positive = measured bass-heavy relative to
