@@ -502,7 +502,7 @@ struct TrackedPlaylistDetailView: View {
 /// re-renders when the store's own `playlists` actually changes — e.g. the
 /// user flips the toggle — not on every download-progress tick.
 private struct TrackedPlaylistSettingsRow: View {
-    let playlistID: UUID
+    let playlistID: String
     @ObservedObject private var trackedStore = TrackedPlaylistStore.shared
 
     var body: some View {
