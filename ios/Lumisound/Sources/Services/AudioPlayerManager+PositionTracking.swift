@@ -48,6 +48,7 @@ extension AudioPlayerManager {
         }
 
         checkForPlaybackStall()
+        checkForOpusPlayerStall()
 
         // AB Repeat enforcement
         if abRepeatEnabled,
@@ -190,6 +191,104 @@ extension AudioPlayerManager {
                               message: "position frozen at \(Int(resumeAt))s",
                               detail: ["position": Int(resumeAt), "duration": Int(duration), "attempt": consecutiveStallRecoveriesAtSamePosition, "nudged": nudging])
         playCurrent(from: target)
+    }
+
+    /// Same stall watchdog as `checkForPlaybackStall()`, for the AVPlayer
+    /// (opus/webm/ogg/ipod-library) fallback path — which that function
+    /// explicitly excludes (`!isUsingOpusPlayer`) because it watches
+    /// AVAudioEngine-specific state (`engine.isRunning`, `activeNode`) that
+    /// doesn't apply here.
+    ///
+    /// Without this, an AVPlayer-backed stream that stalls — buffering
+    /// indefinitely on a flaky connection, or just getting stuck internally,
+    /// both real AVPlayer failure modes — had NO recovery at all: `isPlaying`
+    /// stays true, nothing is audible, and nothing ever retries. Reported as
+    /// "plays but nothing can be heard, and the phone runs warm" — AVPlayer's
+    /// own buffering/retry machinery kept working (real, if moderate, CPU
+    /// use: re-requesting segments, re-attempting to fill its buffer) while
+    /// never actually getting unstuck, which is a very different shape from
+    /// the AVAudioEngine stall this manager already recovers from (that one
+    /// is a dead render graph doing nothing at all).
+    ///
+    /// Opus/webm/ogg is the common case for this app's YouTube-sourced
+    /// library (anything AVAudioFile can't decode natively, or a corrupted/
+    /// mismatched download `scheduleCurrent`'s own fallbacks route here) —
+    /// this isn't a rare corner, it's the path most streamed tracks are one
+    /// network hiccup away from landing on.
+    func checkForOpusPlayerStall() {
+        guard isPlaying, isUsingOpusPlayer, let player = opusPlayer,
+              currentSong != nil,
+              duration > 0, position < duration - 1.0
+        else {
+            opusStalledTickCount = 0
+            lastOpusStallCheckPosition = position
+            return
+        }
+
+        if position > lastOpusStallCheckPosition + 0.05 {
+            opusStalledTickCount = 0
+            lastOpusStallCheckPosition = position
+            if let recoveredAt = lastOpusStallRecoveryPosition, position > recoveredAt + 3 {
+                lastOpusStallRecoveryPosition = nil
+                consecutiveOpusStallRecoveriesAtSamePosition = 0
+            }
+            return
+        }
+
+        opusStalledTickCount += 1
+        guard opusStalledTickCount >= 6 else { return }
+
+        let resumeAt = position
+        opusStalledTickCount = 0
+        lastOpusStallCheckPosition = resumeAt
+
+        if let lastPosition = lastOpusStallRecoveryPosition, abs(resumeAt - lastPosition) < 1.5 {
+            consecutiveOpusStallRecoveriesAtSamePosition += 1
+        } else {
+            consecutiveOpusStallRecoveriesAtSamePosition = 1
+        }
+        lastOpusStallRecoveryPosition = resumeAt
+
+        if consecutiveOpusStallRecoveriesAtSamePosition >= 5 {
+            appError("AVPlayer stall at \(String(format: "%.1f", resumeAt))s recurred \(consecutiveOpusStallRecoveriesAtSamePosition)x — giving up on \"\(currentSong?.displayName ?? "?")\" and skipping", category: "audio")
+            RemoteLogger.logError(category: "audio", event: "opus_playback_stall_unrecoverable",
+                                  message: "position frozen at \(Int(resumeAt))s, \(consecutiveOpusStallRecoveriesAtSamePosition) recovery attempts",
+                                  detail: ["position": Int(resumeAt), "duration": Int(duration)])
+            lastOpusStallRecoveryPosition = nil
+            consecutiveOpusStallRecoveriesAtSamePosition = 0
+            ToastCenter.shared.show("Couldn't play past a bad spot in \"\(currentSong?.displayName ?? "this track")\" — skipping", category: .error, icon: "exclamationmark.triangle.fill")
+            skipToNext()
+            return
+        }
+
+        // First attempt: a cheap pause/play kick, same reasoning as
+        // checkForPlaybackStall's. Only escalate to a real re-seek (which
+        // forces AVPlayer to drop and refill its buffer from scratch — a
+        // real fix for a stuck buffer, unlike the kick above) once that's
+        // confirmed not to be enough.
+        if consecutiveOpusStallRecoveriesAtSamePosition == 1 {
+            appWarn("AVPlayer stalled — reports playing but position frozen at \(String(format: "%.1f", resumeAt))s for 3s; kicking \"\(currentSong?.displayName ?? "?")\"", category: "audio")
+            RemoteLogger.logError(category: "audio", event: "opus_playback_stall_recovered",
+                                  message: "position frozen at \(Int(resumeAt))s",
+                                  detail: ["position": Int(resumeAt), "duration": Int(duration), "attempt": consecutiveOpusStallRecoveriesAtSamePosition, "kicked": true])
+            player.pause()
+            player.play()
+            return
+        }
+
+        let nudging = consecutiveOpusStallRecoveriesAtSamePosition >= 3
+        let target = nudging ? min(resumeAt + 5, max(0, duration - 0.5)) : resumeAt
+        appWarn("AVPlayer stalled — reports playing but position frozen at \(String(format: "%.1f", resumeAt))s for 3s; re-seeking \(nudging ? "(nudging) " : "")\"\(currentSong?.displayName ?? "?")\" (attempt \(consecutiveOpusStallRecoveriesAtSamePosition))", category: "audio")
+        RemoteLogger.logError(category: "audio", event: "opus_playback_stall_recovered",
+                              message: "position frozen at \(Int(resumeAt))s",
+                              detail: ["position": Int(resumeAt), "duration": Int(duration), "attempt": consecutiveOpusStallRecoveriesAtSamePosition, "nudged": nudging])
+        // A fresh seek forces AVPlayer to drop whatever it had buffered and
+        // refill from the new position — unlike the kick above, this
+        // actually recovers a genuinely stuck internal buffer, not just a
+        // paused-looking timebase.
+        player.seek(to: CMTime(seconds: target, preferredTimescale: 600)) { [weak self] _ in
+            self?.opusPlayer?.play()
+        }
     }
 
     /// Starts the crossfade once playback actually reaches

@@ -580,6 +580,15 @@ final class AudioPlayerManager: ObservableObject {
     // `checkForPlaybackStall()`'s escalation past a dead spot in the file.
     var lastStallRecoveryPosition: TimeInterval?
     var consecutiveStallRecoveriesAtSamePosition = 0
+    // Same shape as the pair above, for the AVPlayer (opus/webm/ogg/
+    // ipod-library) fallback path — see `checkForOpusPlayerStall()`. Kept
+    // separate from the AVAudioEngine counters even though the two paths
+    // are mutually exclusive at any given moment, so the two recovery
+    // strategies can never be confused for each other while reading this code.
+    var lastOpusStallCheckPosition: TimeInterval = 0
+    var opusStalledTickCount = 0
+    var lastOpusStallRecoveryPosition: TimeInterval?
+    var consecutiveOpusStallRecoveriesAtSamePosition = 0
     // Throttles `startEngineIfNeeded()`'s rebuild-and-retry path — see that
     // function's doc comment for why an unthrottled retry here is a real,
     // observed production incident, not a theoretical one.
