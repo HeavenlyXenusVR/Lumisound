@@ -379,7 +379,23 @@ extension LibraryManager {
         }
 
         // Only process files we haven't seen before.
-        let newURLs = cleanedCandidates.filter { !existingURLs.contains($0.standardizedFileURL) }
+        //
+        // BUGFIX (reported: scrolling/browsing hangs for a few seconds,
+        // "like there's another reload process going on all the time" on a
+        // large library): this ran synchronously on the main actor —
+        // `standardizedFileURL` per candidate plus a Set lookup, over
+        // `cleanedCandidates`, which is every audio file still found in
+        // Documents, not just new ones. Every neighboring step in this same
+        // function (the enumeration pass, eviction, orphan cleanup, the
+        // `force`-path dedup) was already moved off the main actor for
+        // exactly this reason; this one wasn't, and it runs on every regular
+        // scan trigger — not just an explicit pull-to-refresh, but also
+        // every background-download completion and foreground return — so
+        // on a large library it fired this same multi-second main-thread
+        // cost repeatedly during ordinary use, not just once.
+        let newURLs = await Task.detached(priority: .userInitiated) {
+            cleanedCandidates.filter { !existingURLs.contains($0.standardizedFileURL) }
+        }.value
         guard !newURLs.isEmpty else { return }
 
         let newSongs = await resolveSongs(for: newURLs)
