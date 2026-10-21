@@ -32,6 +32,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Optional
 from urllib.parse import urlencode, urlsplit
+from zoneinfo import ZoneInfo
 import urllib.error
 
 import email_validator
@@ -2476,6 +2477,52 @@ def _youtube_mark_quota_exceeded(api_key: str) -> None:
     _youtube_quota_exceeded_until[api_key] = time.monotonic() + _YOUTUBE_QUOTA_COOLDOWN_SECONDS
 
 
+# Feature: youtube-api-key-quota-check — the Data API has no endpoint that
+# reports how much of a key's quota has been spent; that figure only exists
+# in the Google Cloud Console. The best this server can honestly offer is to
+# track the cost of every call IT makes with the key and report that running
+# total — a floor on real usage, not an authoritative one (another app, or
+# testing the key directly against Google, spends quota this count never
+# sees). Surfaced that way rather than implied to be exact.
+#
+# Cost in units per `.list` method, per Google's published quota calculator —
+# independent of `part`/other params. Only resources this server actually
+# calls need entries; an uncosted path would silently undercount, so default
+# to the common 1-unit case rather than 0 for anything missing, see `_youtube_
+# record_quota_usage`.
+_YOUTUBE_QUOTA_COST_UNITS: dict[str, int] = {
+    "search": 100,
+    "videos": 1,
+    "channels": 1,
+    "playlistItems": 1,
+    "playlists": 1,
+}
+# api_key -> (Pacific calendar date it was last reset for, units spent that day)
+_youtube_quota_units_used: dict[str, tuple[str, int]] = {}
+
+
+def _youtube_quota_pacific_date() -> str:
+    """Google resets Data API quota at midnight Pacific (not UTC, not server-
+    local) — track against the same boundary so the running count actually
+    lines up with the quota it's estimating."""
+    return datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d")
+
+
+def _youtube_record_quota_usage(path: str, api_key: str) -> None:
+    today = _youtube_quota_pacific_date()
+    cost = _YOUTUBE_QUOTA_COST_UNITS.get(path, 1)
+    last_date, used = _youtube_quota_units_used.get(api_key, (today, 0))
+    if last_date != today:
+        used = 0
+    _youtube_quota_units_used[api_key] = (today, used + cost)
+
+
+def _youtube_quota_usage_today(api_key: str) -> int:
+    today = _youtube_quota_pacific_date()
+    last_date, used = _youtube_quota_units_used.get(api_key, (today, 0))
+    return used if last_date == today else 0
+
+
 def _youtube_data_api_get(path: str, params: dict, api_key: str) -> dict:
     """Synchronous GET against the YouTube Data API v3 — call via asyncio.to_thread.
 
@@ -2487,6 +2534,7 @@ def _youtube_data_api_get(path: str, params: dict, api_key: str) -> dict:
     """
     query = urlencode({**params, "key": api_key})
     req = urllib.request.Request(f"https://www.googleapis.com/youtube/v3/{path}?{query}")
+    _youtube_record_quota_usage(path, api_key)
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read())
@@ -2703,6 +2751,7 @@ def _youtube_data_api_get_raw(path: str, params: dict, api_key: str) -> tuple[in
     (used by /youtube/validate-key and /youtube/key-exposure-check)."""
     query = urlencode({**params, "key": api_key})
     req = urllib.request.Request(f"https://www.googleapis.com/youtube/v3/{path}?{query}")
+    _youtube_record_quota_usage(path, api_key)
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return resp.status, json.loads(resp.read())
@@ -19830,8 +19879,20 @@ async def _acoustid_api_key_for_user(user_id: str) -> Optional[str]:
 @app.post("/youtube/validate-key")
 async def validate_youtube_api_key(payload: dict = Depends(get_current_user)):
     """Validates the caller's stored YouTube Data API key with a minimal
-    (1 quota unit) videos.list call. The key is read server-side only and
-    never echoed back."""
+    (1 quota unit) videos.list call, and reports its quota usage for today.
+    The key is read server-side only and never echoed back.
+
+    The Data API has no endpoint that reports remaining/used quota — that
+    figure only exists in the Google Cloud Console, tied to the GCP project
+    the key belongs to, not to the key itself. `quota_units_used_today` is
+    this server's own running count of the cost of calls IT has made with
+    this key since the last Pacific-midnight reset (see
+    `_youtube_record_quota_usage`) — a floor on real usage, not an
+    authoritative total, since a key used anywhere else (another app,
+    testing it directly) spends quota this count never sees. Reported as an
+    estimate for exactly that reason, alongside the one piece of fully
+    authoritative signal available: whether this key is CURRENTLY in a
+    quota-exceeded cooldown from an actual 403 Google returned."""
     user_id = payload["sub"]
     api_key = await _youtube_api_key_for_user(user_id)
     if not api_key:
@@ -19842,8 +19903,14 @@ async def validate_youtube_api_key(payload: dict = Depends(get_current_user)):
         {"part": "id", "chart": "mostPopular", "maxResults": 1}, api_key,
     )
 
+    quota_info = {
+        "quota_units_used_today": _youtube_quota_usage_today(api_key),
+        "quota_units_used_today_is_estimate": True,
+        "quota_cooldown_active": _youtube_quota_is_cooling_down(api_key),
+    }
+
     if 200 <= status_code < 300:
-        return {"status": "valid"}
+        return {"status": "valid", **quota_info}
 
     reason = ""
     errors = (data.get("error") or {}).get("errors") or []
@@ -19851,10 +19918,10 @@ async def validate_youtube_api_key(payload: dict = Depends(get_current_user)):
         reason = errors[0].get("reason", "")
 
     if reason == "quotaExceeded" or status_code == 403 and "quota" in reason.lower():
-        return {"status": "quota_exceeded"}
+        return {"status": "quota_exceeded", **quota_info}
     if reason in ("keyInvalid", "badRequest") or status_code in (400, 403):
-        return {"status": "invalid"}
-    return {"status": "invalid"}
+        return {"status": "invalid", **quota_info}
+    return {"status": "invalid", **quota_info}
 
 
 @app.get("/youtube/key-exposure-check")
