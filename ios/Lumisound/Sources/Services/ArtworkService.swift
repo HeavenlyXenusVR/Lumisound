@@ -6,6 +6,48 @@ import UIKit
 final class ArtworkService {
     static let shared = ArtworkService()
 
+    /// Caps how many thumbnail decodes run at once, regardless of how many
+    /// cells ask for one in the same instant.
+    ///
+    /// BUGFIX (reported: scrolling is fine until the grid is set to 3
+    /// columns, where it lags the most): lowering the decode `Task`'s
+    /// priority to `.utility` (previous fix) controls how the SCHEDULER
+    /// favors this work relative to rendering, but not how MUCH of it runs
+    /// at the same instant — priority is a scheduling hint, not a
+    /// concurrency cap. A fast fling through a 3-column grid brings several
+    /// more brand-new cells into view per scroll step than 1 or 2 columns
+    /// do, each firing its own independent decode with no shared limit
+    /// between them — a burst the CPU still has to absorb all at once
+    /// regardless of priority, which is exactly why column count was the
+    /// variable that mattered. Same actor-based semaphore shape as
+    /// `LumisoundExclusiveExtensionService`'s own `ConvertConcurrencyLimiter`
+    /// for its (unrelated) conversion pipeline. A low cap smooths a burst
+    /// into a short queue instead of letting it all land on the CPU at once,
+    /// at the cost of the tail of a big burst finishing a little later —
+    /// imperceptible for a decode this cheap, unlike blocking on it.
+    private actor DecodeConcurrencyLimiter {
+        private let limit = 3
+        private var active = 0
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+
+        func acquire() async {
+            if active < limit {
+                active += 1
+                return
+            }
+            await withCheckedContinuation { waiters.append($0) }
+        }
+
+        func release() {
+            if !waiters.isEmpty {
+                waiters.removeFirst().resume()
+            } else {
+                active -= 1
+            }
+        }
+    }
+    private let thumbnailDecodeLimiter = DecodeConcurrencyLimiter()
+
     private let memoryCache = NSCache<NSString, UIImage>()
     private let diskCacheURL: URL
 
@@ -526,6 +568,14 @@ final class ArtworkService {
         // to a dead stop. `.utility` is the same priority UIKit's own
         // prefetch APIs recommend for scroll-driven image decode for this
         // exact reason.
+        // Caps how many of these run AT ONCE — see `DecodeConcurrencyLimiter`'s
+        // doc comment for why priority alone (the fix above) wasn't enough
+        // once the grid holds more simultaneous cells (3 columns): a burst
+        // of new cells all requesting a decode in the same instant still
+        // lands on the CPU all at once regardless of what priority they're
+        // scheduled at.
+        await thumbnailDecodeLimiter.acquire()
+        defer { Task { await thumbnailDecodeLimiter.release() } }
         let path = diskPath(key: key)
         let thumb = await Task.detached(priority: .utility) {
             ImageDownsampler.downsampled(at: path, maxPixelSize: bucket)
