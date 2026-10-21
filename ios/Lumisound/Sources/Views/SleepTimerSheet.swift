@@ -4,6 +4,11 @@ import SwiftUI
 
 struct SleepTimerSheet: View {
     @EnvironmentObject private var sleepTimer: SleepTimerService
+    // See `SleepTimerProgress`'s doc comment — observed separately so the
+    // once-a-second countdown tick doesn't force this whole sheet's body
+    // (including the duration/fade `Picker`s in `inactiveContent`) to
+    // re-evaluate every second.
+    @EnvironmentObject private var sleepProgress: SleepTimerProgress
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var adaptiveSleep = AdaptiveSleepTimerService.shared
 
@@ -50,12 +55,12 @@ struct SleepTimerSheet: View {
                     .foregroundStyle(AppTheme.dynamicAccent)
                     .padding(.bottom, 4)
 
-                Text(sleepTimer.formattedRemaining)
+                Text(SleepTimerService.formatRemaining(sleepProgress.remainingSeconds))
                     .font(.system(size: 64, weight: .thin, design: .monospaced))
                     .foregroundStyle(AppTheme.textPrimary)
                     .monospacedDigit()
                     .contentTransition(.numericText())
-                    .animation(.linear(duration: 0.5), value: sleepTimer.remainingSeconds)
+                    .animation(.linear(duration: 0.5), value: sleepProgress.remainingSeconds)
 
                 Text("Music will pause when the timer ends")
                     .font(.subheadline)

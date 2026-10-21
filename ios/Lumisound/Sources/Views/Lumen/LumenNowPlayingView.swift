@@ -71,6 +71,7 @@ struct LumenNowPlayingView: View {
         .sheet(isPresented: $showSleepTimer) {
             SleepTimerSheet()
                 .environmentObject(sleepTimer)
+                .environmentObject(sleepTimer.progress)
                 .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showFormatInfo) {
@@ -416,16 +417,7 @@ struct LumenNowPlayingView: View {
                 stageButton(.lyrics, icon: "quote.bubble", label: "Lyrics")
                 Spacer()
                 Button { showSleepTimer = true } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: sleepTimer.isActive ? "moon.zzz.fill" : "moon.zzz")
-                        if sleepTimer.isActive {
-                            Text(LumenFormat.clock(sleepTimer.remainingSeconds))
-                                .font(LumenType.mono(12))
-                        }
-                    }
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(sleepTimer.isActive ? LumenPalette.accent : LumenPalette.textSecondary)
-                    .frame(height: 40)
+                    SleepTimerButtonLabel(isActive: sleepTimer.isActive)
                 }
                 .accessibilityLabel("Sleep Timer")
                 Spacer()
@@ -637,6 +629,33 @@ struct LumenVolumeSlider: View {
             @unknown default: break
             }
         }
+    }
+}
+
+// MARK: - Sleep timer button label
+
+/// Split out so the once-a-second countdown tick re-renders only this small
+/// label, not all of `LumenNowPlayingView` — which also hosts the `moreMenu`
+/// "•••" dropdown via the same struct's computed properties. See
+/// `SleepTimerProgress`'s doc comment. `isActive` is passed in as a plain
+/// `Bool` from the parent (which already reads `sleepTimer.isActive` safely —
+/// that field doesn't tick) rather than observed here, so this view's own
+/// `EnvironmentObject` subscription stays limited to the ticking value alone.
+private struct SleepTimerButtonLabel: View {
+    @EnvironmentObject private var sleepProgress: SleepTimerProgress
+    let isActive: Bool
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: isActive ? "moon.zzz.fill" : "moon.zzz")
+            if isActive {
+                Text(LumenFormat.clock(sleepProgress.remainingSeconds))
+                    .font(LumenType.mono(12))
+            }
+        }
+        .font(.system(size: 18, weight: .semibold))
+        .foregroundStyle(isActive ? LumenPalette.accent : LumenPalette.textSecondary)
+        .frame(height: 40)
     }
 }
 

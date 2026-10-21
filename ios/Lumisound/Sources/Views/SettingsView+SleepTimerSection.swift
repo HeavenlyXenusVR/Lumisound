@@ -8,16 +8,9 @@ extension SettingsView {
     var sleepTimerSection: some View {
         Section {
             if sleepTimer.isActive {
-                HStack {
-                    Label("Active — \(sleepTimer.formattedRemaining)", systemImage: "moon.zzz")
-                        .foregroundStyle(AppTheme.textPrimary)
-                        .font(.system(.subheadline).monospacedDigit())
-                    Spacer()
-                    Button("Cancel") {
-                        sleepTimer.cancel()
-                        ToastCenter.shared.show("Sleep timer cancelled", category: .info, icon: "moon.zzz")
-                    }
-                    .foregroundStyle(AppTheme.warning)
+                SleepTimerActiveRow {
+                    sleepTimer.cancel()
+                    ToastCenter.shared.show("Sleep timer cancelled", category: .info, icon: "moon.zzz")
                 }
             } else {
                 Picker("Duration", selection: $sleepTimer.selectedDuration) {
@@ -41,5 +34,28 @@ extension SettingsView {
             sectionHeader("Sleep Timer", icon: "moon.stars.fill", tint: .indigo)
         }
         .listRowBackground(tintedRowBackground(.indigo))
+    }
+}
+
+/// Isolates the once-a-second countdown from the rest of `SettingsView` —
+/// observing `SleepTimerProgress` here (instead of reading `sleepTimer.
+/// formattedRemaining` directly from `SettingsView`'s own body) means only
+/// THIS row re-renders every second a sleep timer is active, not the whole
+/// Settings screen. See `SleepTimerProgress`'s doc comment: without this,
+/// every `Picker(.menu)` dropdown elsewhere in Settings (EQ preset, reverb
+/// preset, etc.) rebuilt right along with it, every second.
+private struct SleepTimerActiveRow: View {
+    @EnvironmentObject private var sleepProgress: SleepTimerProgress
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack {
+            Label("Active — \(SleepTimerService.formatRemaining(sleepProgress.remainingSeconds))", systemImage: "moon.zzz")
+                .foregroundStyle(AppTheme.textPrimary)
+                .font(.system(.subheadline).monospacedDigit())
+            Spacer()
+            Button("Cancel", action: onCancel)
+                .foregroundStyle(AppTheme.warning)
+        }
     }
 }

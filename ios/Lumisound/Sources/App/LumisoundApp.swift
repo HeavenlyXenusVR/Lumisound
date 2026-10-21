@@ -79,6 +79,7 @@ struct LumisoundApp: App {
                     .environmentObject(player)
                     .environmentObject(player.progress)
                     .environmentObject(sleepTimer)
+                    .environmentObject(sleepTimer.progress)
                     .environmentObject(updater)
                     .environmentObject(streaming)
                     .environmentObject(folderService)

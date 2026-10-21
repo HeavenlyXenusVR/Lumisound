@@ -1,10 +1,26 @@
 import Foundation
 import Combine
 
+/// Holds just the once-a-second countdown value, observed separately from the
+/// rest of `SleepTimerService`'s `@Published` state — same reasoning as
+/// `PlaybackProgress` on `AudioPlayerManager` (see that type's doc comment).
+/// Any `@Published` change fires `objectWillChange` for the WHOLE object, so
+/// publishing `remainingSeconds` directly on `SleepTimerService` meant every
+/// view holding it via `@EnvironmentObject` — e.g. `SettingsView`, which
+/// pulls it in just to read `isActive`/`selectedDuration` — re-evaluated its
+/// entire `body` once a second for as long as a sleep timer ran, rebuilding
+/// every `Picker(.menu)` dropdown in Settings right along with it (reported
+/// as "dropdown menus constantly refresh"). Views that need the live
+/// countdown (the big countdown display in `SleepTimerSheet`) observe this
+/// lightweight object instead, so the once-a-second tick stays scoped there.
+@MainActor
+final class SleepTimerProgress: ObservableObject {
+    @Published var remainingSeconds: TimeInterval = 0
+}
+
 @MainActor
 final class SleepTimerService: ObservableObject {
     @Published private(set) var isActive = false
-    @Published private(set) var remainingSeconds: TimeInterval = 0
     @Published var selectedDuration: TimeInterval = 30 * 60
     /// Set to `true` for one tick when the timer expires; AudioPlayerManager observes this.
     @Published private(set) var didExpire = false
@@ -19,6 +35,17 @@ final class SleepTimerService: ObservableObject {
         ("1 hr",   60 * 60),
         ("90 min", 90 * 60),
     ]
+
+    /// Backing store for `remainingSeconds` — see `SleepTimerProgress` for why
+    /// this is split out instead of `@Published` directly on this object.
+    /// Every internal read/write site keeps working unchanged since this
+    /// remains a plain gettable/settable property.
+    let progress = SleepTimerProgress()
+
+    var remainingSeconds: TimeInterval {
+        get { progress.remainingSeconds }
+        set { progress.remainingSeconds = newValue }
+    }
 
     private var timer: Timer?
     private var fadeTimer: Timer?
@@ -69,7 +96,11 @@ final class SleepTimerService: ObservableObject {
         appLog("SleepTimer: cancelled", category: "general")
     }
 
-    var formattedRemaining: String {
+    /// Shared formatting logic, also usable directly against
+    /// `SleepTimerProgress.remainingSeconds` by any view that needs to
+    /// re-render on every tick WITHOUT observing the whole service — see
+    /// that type's doc comment.
+    static func formatRemaining(_ remainingSeconds: TimeInterval) -> String {
         guard remainingSeconds > 0 else { return "0:00" }
         let total = Int(remainingSeconds)
         let h = total / 3600
@@ -78,6 +109,10 @@ final class SleepTimerService: ObservableObject {
         return h > 0
             ? String(format: "%d:%02d:%02d", h, m, s)
             : String(format: "%d:%02d", m, s)
+    }
+
+    var formattedRemaining: String {
+        Self.formatRemaining(remainingSeconds)
     }
 
     private func tick() {

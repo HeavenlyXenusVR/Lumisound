@@ -316,6 +316,7 @@ struct NowPlayingView: View {
         .sheet(isPresented: $showSleepTimerSheet) {
             SleepTimerSheet()
                 .environmentObject(sleepTimer)
+                .environmentObject(sleepTimer.progress)
         }
         .sheet(isPresented: $showStemSeparationSheet) {
             if let song = player.currentSong {
