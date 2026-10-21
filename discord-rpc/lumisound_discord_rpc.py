@@ -15,6 +15,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -228,6 +229,17 @@ STALE_AFTER_SECONDS = 120
 OUTAGE_REMINDER_SECONDS = 30 * 60
 MIN_SEND_INTERVAL_SECONDS = 4.5
 
+def _sampled_at_epoch(state: dict) -> Optional[float]:
+    """Parses the bridge's `updated_at` (ISO 8601 with an explicit UTC
+    offset — see get_playback_state's own doc comment on why that offset
+    matters) into a Unix epoch, i.e. the wall-clock moment `position_seconds`
+    was actually true on the phone — NOT whenever this daemon happens to be
+    polling. `None` if missing/unparseable, so the caller can fall back."""
+    raw = state.get("updated_at")
+    if not raw: return None
+    try: return datetime.fromisoformat(raw).timestamp()
+    except ValueError: return None
+
 def build_activity(state: dict, large_image: Optional[str], small_image: Optional[str] = None, show_buttons: bool = True, show_when_paused: bool = False) -> Optional[dict]:
     if not state or not state.get("title"): return None
     is_playing = bool(state.get("is_playing", False))
@@ -236,7 +248,24 @@ def build_activity(state: dict, large_image: Optional[str], small_image: Optiona
     if state.get("artist"): activity["state"] = f"by {state['artist']}"[:128]
     if is_playing:
         position = state.get("position_seconds") or 0
-        activity["timestamps"] = {"start": int(time.time() - position)}
+        # BUGFIX (reported: Discord's shown elapsed time is "always a few
+        # ticks behind" the real playback position): this used `time.time()`
+        # — the moment THIS DAEMON happens to poll — instead of the moment
+        # `position_seconds` was actually sampled on the phone. The iOS app
+        # only pushes playback state every ~5s during steady playback (see
+        # AudioPlayerManager+PositionTracking's bridgePushTickCounter), so
+        # `position_seconds` is routinely a few seconds stale by the time
+        # this daemon reads it — recomputing `start` from the CURRENT time
+        # against a STALE position baked that staleness into `start` itself,
+        # on every single poll. `start` only needs to be computed once per
+        # sample, from when the sample was actually true; Discord's own
+        # client then ticks the displayed time forward live from that fixed
+        # epoch with no further input from here, so it reads accurately
+        # regardless of how infrequently the phone pushes or this daemon
+        # polls. Falls back to `time.time()` if `updated_at` is missing
+        # (older bridge response shape) rather than failing outright.
+        sampled_at = _sampled_at_epoch(state) or time.time()
+        activity["timestamps"] = {"start": int(sampled_at - position)}
     track_art = state.get("artwork_url")
     assets = {}
     if track_art or large_image:

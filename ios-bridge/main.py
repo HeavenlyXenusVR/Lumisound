@@ -14220,13 +14220,14 @@ async def update_playback_state(
             await cur.execute(
                 """
                 INSERT INTO ios_playback_state
-                    (user_id, song_id, title, artist, track_url, source, position_seconds, duration_seconds, is_playing, bpm, artwork_url)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (user_id, song_id, title, artist, track_url, source, position_seconds, duration_seconds, is_playing, bpm, artwork_url, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                 ON CONFLICT (user_id) DO UPDATE SET
                     song_id = EXCLUDED.song_id, title = EXCLUDED.title, artist = EXCLUDED.artist,
                     track_url = EXCLUDED.track_url, source = EXCLUDED.source,
                     position_seconds = EXCLUDED.position_seconds, duration_seconds = EXCLUDED.duration_seconds,
-                    is_playing = EXCLUDED.is_playing, bpm = EXCLUDED.bpm, artwork_url = EXCLUDED.artwork_url
+                    is_playing = EXCLUDED.is_playing, bpm = EXCLUDED.bpm, artwork_url = EXCLUDED.artwork_url,
+                    updated_at = EXCLUDED.updated_at
                 """,
                 (
                     user_id, body.song_id, body.title, body.artist, body.track_url,
@@ -18887,13 +18888,14 @@ async def transfer_playback(
             await cur.execute(
                 """
                 INSERT INTO ios_playback_state
-                    (user_id, song_id, title, artist, track_url, source, position_seconds, duration_seconds, is_playing, bpm)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (user_id, song_id, title, artist, track_url, source, position_seconds, duration_seconds, is_playing, bpm, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                 ON CONFLICT (user_id) DO UPDATE SET
                     song_id = EXCLUDED.song_id, title = EXCLUDED.title, artist = EXCLUDED.artist,
                     track_url = EXCLUDED.track_url, source = EXCLUDED.source,
                     position_seconds = EXCLUDED.position_seconds, duration_seconds = EXCLUDED.duration_seconds,
-                    is_playing = EXCLUDED.is_playing, bpm = EXCLUDED.bpm
+                    is_playing = EXCLUDED.is_playing, bpm = EXCLUDED.bpm,
+                    updated_at = EXCLUDED.updated_at
                 """,
                 (
                     user_id, body.song_id, body.title, body.artist, body.track_url,
