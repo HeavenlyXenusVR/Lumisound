@@ -127,8 +127,19 @@ final class ArtworkService {
         // so the stated 1000-item intent is actually reachable for the
         // common (list-row) case, with real headroom left for grid-bucket
         // entries too.
+        // BUGFIX (reported: track cards randomly going blank mid-scroll in a
+        // large folder/library, then reloading once almost off-screen): the
+        // 768px grid bucket (folder/album covers, and any grid-style list)
+        // costs ~2.25 MB per entry, so 192 MB only holds ~85 of them before
+        // NSCache starts evicting — easy to blow through scrolling a single
+        // folder with hundreds of tracks in grid view, at which point a
+        // thumbnail scrolled back into view is a genuine cache miss and has
+        // to re-hit disk (a visible blank-then-reload, not just wasted CPU).
+        // Raised for real headroom on that specific bucket; still well
+        // within a safe mobile memory budget, and this cache is already
+        // cleared outright on a memory warning or while backgrounded (below).
         thumbnailCache.countLimit = 1000
-        thumbnailCache.totalCostLimit = 192 * 1024 * 1024
+        thumbnailCache.totalCostLimit = 256 * 1024 * 1024
 
         // Media-library lookups were previously unbounded; cap them like the
         // main cache so a huge Apple Music library can't accumulate freely.

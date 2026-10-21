@@ -61,6 +61,21 @@ struct ArtworkThumbnail: View {
         // without the size in the id, a thumbnail fetched for the initial
         // (smaller) size would never be upgraded.
         .task(id: ThumbnailRequestID(songID: song.id, pixelBucket: Int(size * displayScale))) {
+            // Grid cells size this view from a `GeometryReader` (see
+            // `SongGridCell`/`LumenSongGridContent`), which can report a
+            // transient near-zero width on a cell's very first layout pass
+            // inside a `LazyVGrid` — a real, observed SwiftUI quirk, not a
+            // hypothetical. Without this guard, that bogus size changed
+            // `pixelBucket` above, which cancelled whatever load was already
+            // showing and reset `image` to nil below for a size nobody
+            // actually wants — reported as "track cards randomly disappear
+            // while scrolling, reappear once almost off-screen" (that
+            // timing matches: the cell gets a real layout pass, and so a
+            // real task, only as it settles near the edge of the lazy
+            // container's render window). Skip outright rather than touch
+            // any state; the next real layout pass re-triggers this task
+            // with a legitimate id.
+            guard size >= 1 else { return }
             // Load at (bucketed) display size, not the full 1200px cache size —
             // a 44pt row only needs ~132 physical px, and the thumbnail path
             // keeps disk reads/decodes off the main thread. The synchronous
