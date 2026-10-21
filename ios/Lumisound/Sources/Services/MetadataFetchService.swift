@@ -140,7 +140,7 @@ actor MetadataFetchService {
         else { return nil }
 
         var req = URLRequest(url: url)
-        req.setValue("Lumisound/1.0 (https://github.com/HeavenlyXenusVR/Lumisound)", forHTTPHeaderField: "User-Agent")
+        req.setValue("Lumisound/1.0 (https://github.com/HollowHeavenXR/Lumisound)", forHTTPHeaderField: "User-Agent")
         req.timeoutInterval = 10
 
         guard let (data, response) = try? await URLSession.shared.data(for: req),

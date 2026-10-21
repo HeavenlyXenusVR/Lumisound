@@ -255,7 +255,7 @@ final class ArtistImageService {
     /// Wikimedia ask third-party clients to provide.
     private func fetchJSON(_ url: URL) async -> [String: Any]? {
         var request = URLRequest(url: url)
-        request.setValue("Lumisound/1.0 (https://github.com/HeavenlyXenusVR/Lumisound)", forHTTPHeaderField: "User-Agent")
+        request.setValue("Lumisound/1.0 (https://github.com/HollowHeavenXR/Lumisound)", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 12
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               (response as? HTTPURLResponse)?.statusCode == 200,

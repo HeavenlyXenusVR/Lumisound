@@ -9901,7 +9901,7 @@ async def get_on_this_day(payload: dict = Depends(get_current_user)):
 # Both MusicBrainz's and Wikipedia's API policies expect a descriptive
 # User-Agent identifying the calling application; a missing/generic one
 # risks harsher rate-limiting or an outright block. Neither API needs a key.
-_ARTIST_BIO_USER_AGENT = "Lumisound-iOS-Bridge/1.0 (+https://github.com/HeavenlyXenusVR/Lumisound)"
+_ARTIST_BIO_USER_AGENT = "Lumisound-iOS-Bridge/1.0 (+https://github.com/HollowHeavenXR/Lumisound)"
 _ARTIST_BIO_CACHE_TTL_DAYS = 30
 
 
@@ -19682,7 +19682,7 @@ _GITHUB_RELEASES_CACHE_TTL = 300.0
 
 def _fetch_github_releases_sync() -> Optional[list]:
     req = urllib.request.Request(
-        "https://api.github.com/repos/HeavenlyXenusVR/Lumisound/releases",
+        "https://api.github.com/repos/HollowHeavenXR/Lumisound/releases",
         headers={
             "User-Agent": "Lumisound-Bridge",
             "Accept": "application/vnd.github+json",
