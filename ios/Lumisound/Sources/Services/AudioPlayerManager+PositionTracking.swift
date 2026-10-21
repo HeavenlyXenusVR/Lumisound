@@ -158,9 +158,31 @@ extension AudioPlayerManager {
             return
         }
 
-        // Three identical-position recoveries in a row means the exact same
-        // reschedule keeps failing — jump a few seconds past the dead spot
-        // rather than trying it a fourth time verbatim.
+        // First attempt: a cheap pause/play "kick" on the node that already
+        // has this exact segment scheduled — no file reopen, no reschedule,
+        // near-instant. This is deliberately the SAME two calls a user makes
+        // by manually hitting pause then play, which telemetry shows is how
+        // people were actually clearing this stall (`playback_stall_recovered`
+        // fired ~4.8k times in 30 days — far too often for the heavier fix
+        // below to be the right first move every single time). A node that's
+        // merely stuck in a non-rendering "playing" state resumes cleanly off
+        // a pause/play cycle alone; only a genuinely dead spot in the file
+        // itself survives this and needs the real reschedule, which still
+        // happens below once this kick fails to get `position` moving again.
+        if consecutiveStallRecoveriesAtSamePosition == 1 {
+            appWarn("Playback stalled — engine running but position frozen at \(String(format: "%.1f", resumeAt))s for 3s; kicking node \"\(currentSong?.displayName ?? "?")\"", category: "audio")
+            RemoteLogger.logError(category: "audio", event: "playback_stall_recovered",
+                                  message: "position frozen at \(Int(resumeAt))s",
+                                  detail: ["position": Int(resumeAt), "duration": Int(duration), "attempt": consecutiveStallRecoveriesAtSamePosition, "kicked": true])
+            activeNode.pause()
+            activeNode.play()
+            return
+        }
+
+        // The kick above didn't get it moving — three identical-position
+        // recoveries in a row means even a real reschedule of the exact same
+        // bytes keeps failing — jump a few seconds past the dead spot rather
+        // than trying it a fourth time verbatim.
         let nudging = consecutiveStallRecoveriesAtSamePosition >= 3
         let target = nudging ? min(resumeAt + 5, max(0, duration - 0.5)) : resumeAt
         appWarn("Playback stalled — engine running but position frozen at \(String(format: "%.1f", resumeAt))s for 3s; \(nudging ? "nudging to \(String(format: "%.1f", target))s" : "rescheduling") \"\(currentSong?.displayName ?? "?")\" (attempt \(consecutiveStallRecoveriesAtSamePosition))", category: "audio")
