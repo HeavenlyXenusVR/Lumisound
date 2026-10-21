@@ -413,6 +413,24 @@ final class AudioPlayerManager: ObservableObject {
     /// reschedule — see `rampNodeVolumeAfterSeek` in AudioPlayerManager+Scheduling.swift.
     var seekFadeTimer: Timer?
 
+    /// Set by `playCurrent`'s streamed-track branch, right before silencing
+    /// `activeNode`, when a seek/rewind/track-switch is reseeking a track
+    /// that was ALREADY playing — the volume to ramp back up to once
+    /// `downloadAndSchedule`/`transcodeAndSchedule` actually calls
+    /// `node.play()` on the freshly-scheduled segment. `nil` for a genuinely
+    /// fresh track start, where snapping straight to full volume is correct
+    /// (nothing was audible before it to click against). Consumed (and
+    /// cleared) at the one `node.play()` call site that ends up firing;
+    /// every call site that can give up without playing (the `catch` blocks'
+    /// fallback to `scheduleWithOpusPlayer`) also clears it, so a stale
+    /// target can't bleed into an unrelated later play. See
+    /// `rampNodeVolumeAfterSeek`'s doc comment for why this exists at all —
+    /// without it, every reseek of a STREAMED track (the common case for
+    /// this YouTube-sourced-library app) hit a hard `node.stop()` +
+    /// full-volume `node.play()` with no silence-then-fade step, audible as
+    /// a click/stutter on every rewind or track switch.
+    var pendingSeekRampTarget: Float?
+
     /// Ramps `crossfadeMixer.outputVolume`/`equalizer.globalGain` toward a new
     /// target instead of snapping — see `applyOutputGainRamped` in
     /// AudioPlayerManager+ApplySettings.swift.

@@ -33,6 +33,27 @@ extension AudioPlayerManager {
         // flow internally (including calling node.play() after the download completes).
         if let url = currentSong?.url,
            ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+            // Same "silence now, ramp back up once actually playing" treatment
+            // as the local-file path below, and for the same reason — a
+            // RESEEK of a track already playing (rewind/fast-forward/skip)
+            // that reaches `downloadAndSchedule`'s already-cached-file fast
+            // path does an immediate `node.stop()` + full-volume
+            // `node.play()` on the new segment with no other gap, which is
+            // audible as a click/stutter. Doesn't matter whether the stream
+            // is cached (near-instant reschedule, where the click would
+            // otherwise be audible) or genuinely downloading (silence is
+            // already expected during the wait either way) — silencing up
+            // front is harmless in both cases. See `pendingSeekRampTarget`'s
+            // doc comment; consumed once `downloadAndSchedule`/
+            // `transcodeAndSchedule` actually calls `node.play()`.
+            let wasAlreadyPlaying = isPlaying
+            let node = activeNode
+            if wasAlreadyPlaying {
+                pendingSeekRampTarget = node.volume
+                node.volume = 0
+            } else {
+                pendingSeekRampTarget = nil
+            }
             isPlaying = true  // optimistically set — confirmed once download finishes
             startTimer()
             updateNowPlaying()
@@ -704,6 +725,10 @@ extension AudioPlayerManager {
                     if isPlaying {
                         startEngineIfNeeded()
                         node.play()
+                        if let target = pendingSeekRampTarget {
+                            pendingSeekRampTarget = nil
+                            rampNodeVolumeAfterSeek(node, to: target)
+                        }
                         MusicHapticsService.shared.updatePlayback(
                             enabled: audioSettings.musicHapticsEnabled ?? false,
                             isPlaying: true,
@@ -755,6 +780,10 @@ extension AudioPlayerManager {
             if isPlaying {
                 startEngineIfNeeded()
                 node.play()
+                if let target = pendingSeekRampTarget {
+                    pendingSeekRampTarget = nil
+                    rampNodeVolumeAfterSeek(node, to: target)
+                }
                 MusicHapticsService.shared.updatePlayback(
                     enabled: audioSettings.musicHapticsEnabled ?? false,
                     isPlaying: true,
@@ -780,6 +809,16 @@ extension AudioPlayerManager {
             // URL without needing the temp-file download at all, so fall
             // back to it here too instead of only ever erroring out.
             appWarn("downloadAndSchedule: AVAudioFile open failed after \(String(format: "%.2f", Date().timeIntervalSince(playbackStartedAt)))s for \"\(currentSong?.displayName ?? "?")\" (\(error.localizedDescription)) — falling back to AVPlayer", category: "audio")
+            // The fallback below plays through `opusPlayer` (AVPlayer), not
+            // `activeNode` — if playCurrent silenced that node for a seek
+            // ramp that's never going to happen now (see
+            // `pendingSeekRampTarget`'s doc comment), restore it directly
+            // rather than leaving it stuck at 0 for whatever this node next
+            // gets reused for.
+            if let target = pendingSeekRampTarget {
+                pendingSeekRampTarget = nil
+                activeNode.volume = target
+            }
             scheduleWithOpusPlayer(url: url, startTime: startTime)
         }
     }
