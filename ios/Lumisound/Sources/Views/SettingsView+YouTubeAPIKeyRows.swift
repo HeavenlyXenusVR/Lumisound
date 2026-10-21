@@ -73,17 +73,20 @@ extension SettingsView {
         Button {
             Task {
                 isValidatingYouTubeKey = true
-                let status = await account.validateYouTubeAPIKey()
+                let result = await account.validateYouTubeAPIKey()
                 isValidatingYouTubeKey = false
-                switch status {
+                // Estimate only — the Data API has no endpoint for a key's
+                // real remaining quota. See `AccountService.YouTubeKeyValidation`.
+                let quotaSuffix = result.quotaUnitsUsedToday.map { " — ~\($0) quota units used today (est.)" } ?? ""
+                switch result.status {
                 case "valid":
                     youtubeKeyQuotaExceeded = false
-                    ToastCenter.shared.show("YouTube API key is valid", category: .success, icon: "checkmark.seal")
+                    ToastCenter.shared.show("YouTube API key is valid\(quotaSuffix)", category: .success, icon: "checkmark.seal")
                 case "invalid":
                     ToastCenter.shared.show("YouTube API key is invalid", category: .error, icon: "xmark.seal")
                 case "quota_exceeded":
                     youtubeKeyQuotaExceeded = true
-                    ToastCenter.shared.show("YouTube API quota exceeded for today", category: .warning, icon: "exclamationmark.triangle")
+                    ToastCenter.shared.show("YouTube API quota exceeded for today\(quotaSuffix)", category: .warning, icon: "exclamationmark.triangle")
                 default:
                     ToastCenter.shared.show("Couldn't validate key — check connection", category: .error, icon: "wifi.exclamationmark")
                 }

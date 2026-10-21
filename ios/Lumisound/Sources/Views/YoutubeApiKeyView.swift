@@ -137,15 +137,20 @@ struct YoutubeApiKeyView: View {
         errorText = nil
         Task {
             let result = await account.validateYouTubeAPIKey()
-            switch result {
+            // The Data API has no real "remaining quota" endpoint — this is
+            // this server's own running count of what IT has spent with this
+            // key today, so it's an estimate, not an exact remaining balance.
+            // See `AccountService.YouTubeKeyValidation`'s doc comment.
+            let quotaSuffix = result.quotaUnitsUsedToday.map { " — ~\($0) quota units used today (est.)" } ?? ""
+            switch result.status {
             case "valid":
                 quotaExceeded = false
-                ToastCenter.shared.show("YouTube API key is valid", category: .success, icon: "checkmark.seal")
+                ToastCenter.shared.show("YouTube API key is valid\(quotaSuffix)", category: .success, icon: "checkmark.seal")
             case "invalid":
                 ToastCenter.shared.show("YouTube API key is invalid", category: .error, icon: "xmark.seal")
             case "quota_exceeded":
                 quotaExceeded = true
-                ToastCenter.shared.show("YouTube API quota exceeded for today", category: .warning, icon: "exclamationmark.triangle")
+                ToastCenter.shared.show("YouTube API quota exceeded for today\(quotaSuffix)", category: .warning, icon: "exclamationmark.triangle")
             default:
                 ToastCenter.shared.show("Couldn't validate key — check connection", category: .error, icon: "wifi.exclamationmark")
             }

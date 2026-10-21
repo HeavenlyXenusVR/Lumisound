@@ -150,21 +150,45 @@ extension AccountService {
         }
     }
 
+    /// Result of validating a stored YouTube Data API key. `quotaUnitsUsedToday`
+    /// is this SERVER's own running count of the cost of calls it has made with
+    /// the key since the last Pacific-midnight reset — Google's Data API has no
+    /// endpoint that reports a key's real remaining/used quota (that only exists
+    /// in the Cloud Console, tied to the key's GCP project, not the key itself),
+    /// so this is a floor on real usage, not an authoritative total: a key used
+    /// anywhere else (another app, testing it directly) spends quota this count
+    /// never sees. `nil` only on a network/other failure where the server
+    /// couldn't be reached at all to ask.
+    struct YouTubeKeyValidation {
+        let status: String
+        let quotaUnitsUsedToday: Int?
+        let quotaCooldownActive: Bool
+    }
+
     /// Validates this account's stored YouTube Data API key with a minimal
-    /// server-side call. Returns "valid", "invalid", "quota_exceeded", or
+    /// server-side call. `status` is "valid", "invalid", "quota_exceeded", or
     /// "error" (network/other failure).
-    func validateYouTubeAPIKey() async -> String {
-        guard isLoggedIn else { return "error" }
-        struct Response: Decodable { let status: String }
+    func validateYouTubeAPIKey() async -> YouTubeKeyValidation {
+        guard isLoggedIn else { return YouTubeKeyValidation(status: "error", quotaUnitsUsedToday: nil, quotaCooldownActive: false) }
+        struct Response: Decodable {
+            let status: String
+            let quota_units_used_today: Int?
+            let quota_cooldown_active: Bool?
+        }
         do {
             let data = try await makeRequest("/youtube/validate-key", method: "POST")
-            return try JSONDecoder().decode(Response.self, from: data).status
+            let decoded = try JSONDecoder().decode(Response.self, from: data)
+            return YouTubeKeyValidation(
+                status: decoded.status,
+                quotaUnitsUsedToday: decoded.quota_units_used_today,
+                quotaCooldownActive: decoded.quota_cooldown_active ?? false
+            )
         } catch let err as AccountError {
             errorMessage = err.message
-            return "error"
+            return YouTubeKeyValidation(status: "error", quotaUnitsUsedToday: nil, quotaCooldownActive: false)
         } catch {
             errorMessage = error.localizedDescription
-            return "error"
+            return YouTubeKeyValidation(status: "error", quotaUnitsUsedToday: nil, quotaCooldownActive: false)
         }
     }
 
