@@ -158,24 +158,7 @@ struct TrackedPlaylistDetailView: View {
 
                 Divider().overlay(AppTheme.textSecondary.opacity(0.15))
 
-                Toggle(isOn: Binding(
-                    get: { trackedStore.playlists.first { $0.id == playlist.id }?.isAutoDownload ?? false },
-                    set: { trackedStore.setAutoDownload(id: playlist.id, $0) }
-                )) {
-                    Label("Auto-download new tracks", systemImage: "arrow.triangle.2.circlepath.circle")
-                        .foregroundStyle(AppTheme.textPrimary)
-                }
-                .tint(AppTheme.dynamicAccent)
-
-                HStack {
-                    Label("Save to", systemImage: "folder")
-                        .foregroundStyle(AppTheme.textPrimary)
-                    Spacer()
-                    DownloadFolderPicker(folderName: Binding(
-                        get: { trackedStore.playlists.first { $0.id == playlist.id }?.destinationFolder ?? "" },
-                        set: { trackedStore.setDestinationFolder(id: playlist.id, $0) }
-                    ))
-                }
+                TrackedPlaylistSettingsRow(playlistID: playlist.id)
             }
             .padding(.vertical, 6)
         } footer: {
@@ -502,5 +485,44 @@ struct TrackedPlaylistDetailView: View {
             token: token,
             metadata: TrackMetadata(title: track.title, artist: track.artist, durationSeconds: track.duration, hasArtwork: hasArtwork)
         )
+    }
+}
+
+/// Isolates the auto-download toggle and "Save to" folder-picker dropdown
+/// from the rest of `TrackedPlaylistDetailView` — which, being one `Section`/
+/// one computed property, re-rendered this row every time ANY of the
+/// parent's own state changed, including `downloadAllDone`/`isDownloadingAll`
+/// ticking on every track completed during an active "Download N New Tracks"
+/// run. A native `Menu` (the folder picker) is far more sensitive to its
+/// parent being torn down and rebuilt mid-presentation than plain SwiftUI
+/// content — reported (with a screen recording) as the dropdown visibly
+/// resetting/flickering open while several downloads completed in quick
+/// succession. Taking only `playlistID` (a plain value, not observed) and
+/// reading `TrackedPlaylistStore` itself here means this row now only
+/// re-renders when the store's own `playlists` actually changes — e.g. the
+/// user flips the toggle — not on every download-progress tick.
+private struct TrackedPlaylistSettingsRow: View {
+    let playlistID: UUID
+    @ObservedObject private var trackedStore = TrackedPlaylistStore.shared
+
+    var body: some View {
+        Toggle(isOn: Binding(
+            get: { trackedStore.playlists.first { $0.id == playlistID }?.isAutoDownload ?? false },
+            set: { trackedStore.setAutoDownload(id: playlistID, $0) }
+        )) {
+            Label("Auto-download new tracks", systemImage: "arrow.triangle.2.circlepath.circle")
+                .foregroundStyle(AppTheme.textPrimary)
+        }
+        .tint(AppTheme.dynamicAccent)
+
+        HStack {
+            Label("Save to", systemImage: "folder")
+                .foregroundStyle(AppTheme.textPrimary)
+            Spacer()
+            DownloadFolderPicker(folderName: Binding(
+                get: { trackedStore.playlists.first { $0.id == playlistID }?.destinationFolder ?? "" },
+                set: { trackedStore.setDestinationFolder(id: playlistID, $0) }
+            ))
+        }
     }
 }
