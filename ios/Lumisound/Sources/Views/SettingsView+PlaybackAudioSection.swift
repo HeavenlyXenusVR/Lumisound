@@ -247,7 +247,7 @@ extension SettingsView {
                     .foregroundStyle(AppTheme.textSecondary)
                     .padding(.leading, 16)
                     .transition(.opacity.combined(with: .move(edge: .top)))
-                EightDSpeedControl()
+                EightDSpeedControl(player: player)
                     .padding(.leading, 16)
             }
 
