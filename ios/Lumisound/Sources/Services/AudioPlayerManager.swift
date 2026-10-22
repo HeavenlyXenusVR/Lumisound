@@ -597,6 +597,11 @@ final class AudioPlayerManager: ObservableObject {
     // disappeared (e.g. Bluetooth disconnect) — used to auto-resume when a
     // route becomes available again.
     var pausedByRouteChange = false
+    // Armed by `handleRouteChange`'s `.oldDeviceUnavailable` case for the
+    // grace period before actually pausing — see that function for why.
+    // Cancelled (and the pause never happens) if `.newDeviceAvailable`
+    // arrives first, or if anything else calls `pause()` in the meantime.
+    var pendingRouteLossPauseTask: Task<Void, Never>?
 
     // Mirrors `LibraryManager.shared` — gives App Intents (invoked directly
     // by iOS/Siri via the AppIntents framework, with no SwiftUI environment

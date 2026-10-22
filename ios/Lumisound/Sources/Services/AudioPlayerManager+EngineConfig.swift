@@ -144,22 +144,47 @@ extension AudioPlayerManager {
 
         switch reason {
         case .oldDeviceUnavailable:
-            // Only arm the auto-resume-on-reconnect below for a device loss
-            // that actually interrupted something. `pause()` itself clears
-            // `pausedByRouteChange` (same reset-then-rearm shape as
-            // `wasInterrupted`, just below) so a route loss while already
-            // paused, or a deliberate pause made in between, can't leave this
-            // flag stuck true — without this, it stayed set until the NEXT
-            // `newDeviceAvailable` no matter how much later or how unrelated
-            // (even a different Bluetooth device, hours on), silently forcing
-            // playback back on for a listener who'd since paused on purpose.
-            let wasActuallyPlaying = isPlaying
-            appLog("Audio route changed — output device removed, pausing", category: "audio")
-            pause()
-            if wasActuallyPlaying {
-                pausedByRouteChange = true
+            // Not paused immediately — see the grace period below. Nothing to
+            // protect if playback wasn't even active.
+            guard isPlaying else { return }
+            // A Bluetooth A2DP connection can blip — a brief signal dropout, a
+            // codec renegotiation, a momentary handoff between two paired
+            // devices — and iOS reports every one of those as a full
+            // oldDeviceUnavailable/newDeviceAvailable pair, often resolving
+            // within a couple hundred ms. Pausing immediately on every one of
+            // those (the old behavior here) meant a transient blip that never
+            // actually left produced a full pause + engine stop/restart +
+            // resume cycle anyway — audible as "music randomly cuts out" on
+            // a route that, from the listener's perspective, never
+            // disconnected at all. Give it a short grace period to reappear
+            // before committing to a real pause: a genuine disconnect still
+            // pauses almost immediately (200ms), but a blip that resolves
+            // within that window now produces no audible interruption
+            // whatsoever — nothing was ever paused, so there's nothing to
+            // resume or rebind either. Not gated on the route actually being
+            // Bluetooth, since the exact same blip shape could in principle
+            // happen on AirPlay or a flaky wired connection too.
+            pendingRouteLossPauseTask?.cancel()
+            pendingRouteLossPauseTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard !Task.isCancelled, let self, self.isPlaying else { return }
+                appLog("Audio route changed — output device still unavailable after grace period, pausing", category: "audio")
+                self.pause()
+                // `pause()` just cleared this (see its own doc comment on
+                // why) — set it again now that THIS pause is the one that
+                // should arm the auto-resume-on-reconnect behavior below.
+                self.pausedByRouteChange = true
             }
         case .newDeviceAvailable:
+            // The route blipped and recovered before the grace period above
+            // elapsed — playback was never actually paused, so there's
+            // nothing to resume and no stale render-graph binding to fix.
+            if pendingRouteLossPauseTask != nil {
+                pendingRouteLossPauseTask?.cancel()
+                pendingRouteLossPauseTask = nil
+                appLog("Audio route changed — output device back before the grace period elapsed; no pause needed", category: "audio")
+                return
+            }
             // A Bluetooth device (or other output) just connected. If playback was
             // paused because the previous route disappeared (headphones unplugged,
             // Bluetooth dropped), resume now that audio has somewhere to go again —

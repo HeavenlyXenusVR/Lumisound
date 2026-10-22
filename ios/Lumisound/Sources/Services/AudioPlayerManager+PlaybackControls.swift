@@ -52,6 +52,8 @@ extension AudioPlayerManager {
         // handleAudioInterruption/handleRouteChange.
         wasInterrupted = false
         pausedByRouteChange = false
+        pendingRouteLossPauseTask?.cancel()
+        pendingRouteLossPauseTask = nil
         if isUsingOpusPlayer {
             opusPlayer?.pause()
             isPlaying = false
