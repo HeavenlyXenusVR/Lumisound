@@ -29,6 +29,14 @@ services:
       - ADMIN_TOKEN=${ADMIN_TOKEN:-}
       - GIPHY_API_KEY=${GIPHY_API_KEY:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      # Was missing entirely from this file (unlike GIPHY/GEMINI above) even
+      # though it's set in .env — found while wiring up the artist-images
+      # background job's YouTube-channel-icon fallback, which reads this same
+      # module-level default. Without it the container always saw an empty
+      # YOUTUBE_API_KEY, silently disabling every feature's server-wide
+      # fallback (search, channel resolution, subscriptions, this one) for
+      # any user who hasn't set a personal key in ios_user_settings.
+      - YOUTUBE_API_KEY=${YOUTUBE_API_KEY:-}
       # Aria Transcribe is Gemini-only by design (see lyrics_whisper.py's
       # is_available() gate) — local faster-whisper/ctranslate2 ASR hard-
       # crashes with SIGILL on hardware lacking AVX/SSSE3/SSE4, which is

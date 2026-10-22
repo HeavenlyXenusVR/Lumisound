@@ -1612,6 +1612,8 @@ async def lifespan(app: FastAPI):
     duplicate_scanner = asyncio.create_task(_duplicate_scan_loop())
     weekly_mix_generator = asyncio.create_task(_weekly_mix_loop())
     media_backfiller = asyncio.create_task(_media_backfill_loop())
+    artist_image_backfiller = asyncio.create_task(_artist_image_loop())
+    storage_quota_janitor = asyncio.create_task(_storage_quota_default_janitor())
     yield
     janitor.cancel()
     app_logs_janitor.cancel()
@@ -1622,6 +1624,8 @@ async def lifespan(app: FastAPI):
     duplicate_scanner.cancel()
     weekly_mix_generator.cancel()
     media_backfiller.cancel()
+    artist_image_backfiller.cancel()
+    storage_quota_janitor.cancel()
     # Shutdown: close the DB connection pool (Fix 8)
     import db as _db_module
     pool = _db_module._pool
@@ -7325,6 +7329,49 @@ class UpdateMeRequest(BaseModel):
     # endpoint deliberately cannot clear it back to NULL, because every path
     # that sets an address now requires a valid one.
     email: Optional[str] = None
+    # Previously there was NO way to change a username after registration at
+    # all (the only two INSERTs that set it are /auth/register and the
+    # Discord auto-register path) — this is that capability. Rate-limited,
+    # see _check_username_change_rate_limit below.
+    username: Optional[str] = None
+
+
+# Feature: rate-limit username changes to twice per rolling 30 days
+# (2026-10-22). Deliberately a ROLLING window, not a calendar month: counting
+# "changes since the 1st" would let someone change it twice on the 31st and
+# twice again the very next day just because a month boundary fell between
+# them, which defeats the point of the limit. Instead each change's own
+# timestamp ages out of the window exactly 30 days after IT happened.
+_USERNAME_CHANGE_LIMIT = 2
+_USERNAME_CHANGE_WINDOW = timedelta(days=30)
+
+
+async def _check_username_change_rate_limit(cur, user_id: str) -> None:
+    """Raises 429 if *user_id* has already used up their username-change
+    allowance (_USERNAME_CHANGE_LIMIT) within the trailing
+    _USERNAME_CHANGE_WINDOW. Must be called BEFORE the new username is
+    written/logged, from inside the same cursor's transaction as that write,
+    so a client can't race two concurrent requests past the check."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    window_start = now - _USERNAME_CHANGE_WINDOW
+    await cur.execute(
+        "SELECT changed_at FROM ios_username_change_log "
+        "WHERE user_id = %s AND changed_at >= %s "
+        "ORDER BY changed_at ASC",
+        (user_id, window_start),
+    )
+    rows = await cur.fetchall()
+    if len(rows) >= _USERNAME_CHANGE_LIMIT:
+        # The oldest change still inside the window is the one that has to
+        # age out before another change is allowed again.
+        next_allowed = rows[0][0] + _USERNAME_CHANGE_WINDOW
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"You've already changed your username {_USERNAME_CHANGE_LIMIT} times in the "
+                f"last 30 days. You can change it again on {next_allowed.strftime('%Y-%m-%d')}."
+            ),
+        )
 
 
 @app.put("/auth/me")
@@ -7338,6 +7385,37 @@ async def update_me(body: UpdateMeRequest, payload: dict = Depends(get_current_u
                 "UPDATE ios_users SET display_name = %s WHERE id = %s AND is_active = TRUE",
                 (display_name if display_name else None, user_id),
             )
+
+            if body.username is not None:
+                new_username = body.username.strip()
+                if len(new_username) < 3:
+                    raise HTTPException(status_code=400, detail="Username must be at least 3 characters")
+                await cur.execute("SELECT username FROM ios_users WHERE id = %s", (user_id,))
+                current_row = await cur.fetchone()
+                current_username = current_row[0] if current_row else None
+                # Re-submitting the username already on the account is a
+                # no-op, same as the email check below -- it doesn't burn
+                # one of the two monthly changes and doesn't need a
+                # uniqueness check against itself.
+                if current_username is not None and new_username != current_username:
+                    await _check_username_change_rate_limit(cur, user_id)
+                    await cur.execute(
+                        "SELECT id FROM ios_users WHERE username = %s AND id <> %s",
+                        (new_username, user_id),
+                    )
+                    if await cur.fetchone():
+                        raise HTTPException(status_code=409, detail="Username already taken")
+                    await cur.execute(
+                        "UPDATE ios_users SET username = %s WHERE id = %s AND is_active = TRUE",
+                        (new_username, user_id),
+                    )
+                    await cur.execute(
+                        "INSERT INTO ios_username_change_log (user_id, old_username, new_username) "
+                        "VALUES (%s, %s, %s)",
+                        (user_id, current_username, new_username),
+                    )
+                    await log_event("account", "username_changed", user_id=user_id,
+                                     message=f"username changed from {current_username!r} to {new_username!r}")
 
             if body.email is not None:
                 new_email = _normalize_email(body.email)
@@ -10030,6 +10108,237 @@ async def get_artist_bio(
 
 
 # ---------------------------------------------------------------------------
+# Artist Images (Feature: artist-images) — a real profile photo for artist
+# rows/grids, distinct from GET /api/artist/bio above (which is the bio
+# panel's facts+text). Resolution order:
+#   1. Deezer artist search (api.deezer.com/search/artist) — true artist
+#      photos, no API key.
+#   2. The same Wikipedia summary lookup /api/artist/bio uses — also no key.
+#   3. For artists whose only real presence is a YouTube channel (no
+#      Deezer/Wikipedia entry at all — typical of YouTube-only creators
+#      rather than "real world" recording artists), a YouTube Data API
+#      channel search, reusing the server's existing YOUTUBE_API_KEY/
+#      _resolve_youtube_channel rather than a new key or endpoint.
+#
+# Kept "smart" per the original request (don't constantly redownload/reset
+# an already-correct image): once `found = TRUE`, the periodic background
+# job (_artist_image_loop) only re-validates that the *stored* image_url
+# still resolves; it only re-runs the resolution chain (and so only
+# overwrites image_url) when that check finds the old one has actually
+# broken. A `found = FALSE` row is a real cache entry too — an obscure name
+# that matched nothing isn't re-queried against three APIs every tick.
+# ---------------------------------------------------------------------------
+
+_ARTIST_IMAGE_POLL_INTERVAL_SECONDS = 300  # matches _media_backfill_loop's cadence
+_ARTIST_IMAGE_BATCH_SIZE = 5  # small: each artist can cost up to ~4 outbound calls
+_ARTIST_IMAGE_RECHECK_DAYS = 60  # how rarely an already-resolved image is re-validated
+_ARTIST_IMAGE_NOTFOUND_RECHECK_DAYS = 14  # retry "not found" sooner — the catalog keeps growing
+
+
+def _deezer_artist_photo_sync(name: str) -> Optional[str]:
+    """Synchronous Deezer artist search — call via asyncio.to_thread. Mirrors
+    the iOS client's own ArtistImageService.fetchFromDeezer (that logic has
+    always been client-only/per-device; this is the same source made
+    server-side and shared so the background job + all three clients see the
+    same resolved image). No API key required. Returns the largest available
+    non-placeholder photo URL, or None."""
+    trimmed = name.strip()
+    if not trimmed or trimmed.lower() == "unknown artist":
+        return None
+    query = urlencode({"q": trimmed, "limit": "1"})
+    req = urllib.request.Request(f"https://api.deezer.com/search/artist?{query}")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+    except (urllib.error.URLError, urllib.error.HTTPError) as exc:
+        logger.debug("Deezer artist photo lookup failed for %r: %s", name, exc)
+        return None
+    results = data.get("data") or []
+    if not results:
+        return None
+    first = results[0]
+    for field in ("picture_xl", "picture_big", "picture_medium"):
+        url = first.get(field)
+        if url and "artist//" not in url:
+            return url
+    return None
+
+
+def _url_is_alive_sync(url: str) -> bool:
+    """HEAD-checks a previously-stored image URL — call via asyncio.to_thread.
+    Used only to decide whether an already-`found` artist image needs
+    re-resolving; a working URL is left completely untouched. Falls back to
+    a tiny ranged GET for hosts that reject HEAD (some CDNs do)."""
+    for method in ("HEAD", "GET"):
+        req = urllib.request.Request(url, method=method)
+        if method == "GET":
+            req.add_header("Range", "bytes=0-0")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status < 400:
+                    return True
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (403, 405):  # method not allowed/forbidden -> try GET
+                return False
+        except urllib.error.URLError:
+            return False
+    return False
+
+
+async def _resolve_artist_image(name: str, youtube_api_key: str) -> dict:
+    """Runs the full resolution chain described above. Never raises — a
+    failure at any step just falls through to the next source, and a
+    complete miss returns `found: False` (itself a cacheable result)."""
+    deezer_url = await asyncio.to_thread(_deezer_artist_photo_sync, name)
+    if deezer_url:
+        return {"found": True, "image_url": deezer_url, "source": "deezer"}
+
+    try:
+        wiki_title = await asyncio.to_thread(_wikipedia_search_sync, f"{name} musician")
+        wiki_summary = await asyncio.to_thread(_wikipedia_summary_sync, wiki_title) if wiki_title else None
+        wiki_image = (wiki_summary.get("thumbnail") or {}).get("source") if wiki_summary else None
+    except Exception:
+        wiki_image = None
+    if wiki_image:
+        return {"found": True, "image_url": wiki_image, "source": "wikipedia"}
+
+    if youtube_api_key:
+        try:
+            resolved = await _resolve_youtube_channel(name, youtube_api_key)
+            if resolved.get("channel_thumbnail"):
+                return {"found": True, "image_url": resolved["channel_thumbnail"], "source": "youtube"}
+        except Exception as exc:
+            logger.debug("artist image: YouTube channel fallback failed for %r: %s", name, exc)
+
+    return {"found": False, "image_url": None, "source": None}
+
+
+async def _upsert_artist_image_cache(cache_key: str, result: dict) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO ios_artist_image_cache "
+                "(artist_name, image_url, image_source, found, last_checked_at, resolved_at) "
+                "VALUES (%s, %s, %s, %s, NOW(), CASE WHEN %s THEN NOW() ELSE NULL END) "
+                "ON CONFLICT (artist_name) DO UPDATE SET "
+                "image_url = EXCLUDED.image_url, image_source = EXCLUDED.image_source, "
+                "found = EXCLUDED.found, last_checked_at = NOW(), "
+                "resolved_at = CASE WHEN EXCLUDED.found THEN NOW() ELSE ios_artist_image_cache.resolved_at END",
+                (cache_key, result.get("image_url"), result.get("source"), result["found"], result["found"]),
+            )
+
+
+async def _touch_artist_image_checked(cache_key: str) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE ios_artist_image_cache SET last_checked_at = NOW() WHERE artist_name = %s",
+                (cache_key,),
+            )
+
+
+@app.get("/api/artist/image")
+async def get_artist_image(
+    name: str = Query(..., min_length=1, max_length=255),
+    payload: dict = Depends(get_current_user),
+):
+    """Resolved artist profile photo for artist rows/grids. Cached
+    indefinitely once found — the periodic background job
+    (_artist_image_loop) is what keeps the whole catalog backfilled/
+    validated over time; this endpoint only does a same-request resolve the
+    first time any client asks about a name nobody has looked up yet, so
+    first paint for a brand new artist isn't stuck waiting on the batch job."""
+    cache_key = name.strip().lower()
+    if not cache_key:
+        raise HTTPException(status_code=400, detail="name is required")
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT image_url, image_source, found FROM ios_artist_image_cache WHERE artist_name = %s",
+                (cache_key,),
+            )
+            row = await cur.fetchone()
+    if row is not None:
+        image_url, image_source, found = row
+        return {"found": bool(found), "image_url": image_url, "source": image_source}
+
+    user_id = payload["sub"]
+    api_key = await _youtube_api_key_for_user(user_id)
+    result = await _resolve_artist_image(name, api_key)
+    await _upsert_artist_image_cache(cache_key, result)
+    return {"found": result["found"], "image_url": result.get("image_url"), "source": result.get("source")}
+
+
+async def _artist_image_loop() -> None:
+    """Constantly-running background job: backfills ios_artist_image_cache
+    for real artist names pulled from the user's actual library/history
+    (ios_user_music_metadata + ios_play_history — there is no dedicated
+    "artists" table in this schema, so the roster is derived from where
+    artist names already live) rather than waiting for a client to ask.
+    Runs one small batch per tick, same courtesy the other periodic jobs
+    (_duplicate_scan_loop, _media_backfill_loop) observe for the host."""
+    while True:
+        await asyncio.sleep(_ARTIST_IMAGE_POLL_INTERVAL_SECONDS)
+        try:
+            await _artist_image_tick()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("artist image loop: tick failed")
+
+
+async def _artist_image_tick() -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                WITH all_artists AS (
+                    SELECT DISTINCT TRIM(artist) AS artist FROM ios_user_music_metadata
+                    WHERE artist IS NOT NULL AND TRIM(artist) != ''
+                    UNION
+                    SELECT DISTINCT TRIM(artist) AS artist FROM ios_play_history
+                    WHERE artist IS NOT NULL AND TRIM(artist) != ''
+                )
+                SELECT a.artist, c.image_url, c.found, c.last_checked_at
+                FROM all_artists a
+                LEFT JOIN ios_artist_image_cache c ON c.artist_name = LOWER(a.artist)
+                WHERE c.artist_name IS NULL
+                   OR (c.found IS FALSE AND c.last_checked_at < NOW() - make_interval(days => %s))
+                   OR (c.found IS TRUE AND c.last_checked_at < NOW() - make_interval(days => %s))
+                ORDER BY c.last_checked_at IS NULL DESC, c.last_checked_at ASC
+                LIMIT %s
+                """,
+                (_ARTIST_IMAGE_NOTFOUND_RECHECK_DAYS, _ARTIST_IMAGE_RECHECK_DAYS, _ARTIST_IMAGE_BATCH_SIZE),
+            )
+            rows = await cur.fetchall()
+
+    if not rows:
+        return
+
+    for artist_name, existing_url, existing_found, _last_checked_at in rows:
+        cache_key = artist_name.strip().lower()
+        try:
+            if existing_found and existing_url:
+                # Already resolved — only re-resolve if the stored URL has
+                # actually broken. A working image is never re-fetched.
+                still_alive = await asyncio.to_thread(_url_is_alive_sync, existing_url)
+                if still_alive:
+                    await _touch_artist_image_checked(cache_key)
+                    continue
+                logger.info("artist image: stored image for %r is no longer reachable, re-resolving", artist_name)
+
+            result = await _resolve_artist_image(artist_name, YOUTUBE_API_KEY)
+            await _upsert_artist_image_cache(cache_key, result)
+        except Exception:
+            logger.exception("artist image loop: failed to resolve %r", artist_name)
+
+
+# ---------------------------------------------------------------------------
 # User Settings Endpoints
 # ---------------------------------------------------------------------------
 
@@ -11628,6 +11937,17 @@ def _user_music_dir(user_id: str) -> Optional[pathlib.Path]:
 # ---------------------------------------------------------------------------
 
 
+# Product decision (2026-10-22): every account gets a flat 10GB storage
+# quota by default, admin-exempt (OPERATOR_USER_ID is never given one -- see
+# _storage_quota_default_janitor below -- so it keeps falling through to
+# USER_MUSIC_QUOTA_BYTES, i.e. unlimited). Binary GB (10 * 1024^3), matching
+# every other byte-size constant in this file (_MAX_GALLERY_IMAGE_BYTES, the
+# 100MB upload cap, etc. are all `n * 1024 * 1024[ * 1024]`, never a decimal
+# 10**9-style GB) -- see schema.sql's matching comment on the
+# storage_quota_bytes column default.
+_DEFAULT_USER_STORAGE_QUOTA_BYTES = 10 * 1024 * 1024 * 1024
+
+
 async def _get_user_quota_bytes(user_id: str) -> int:
     """Returns this user's effective quota in bytes (0 = unlimited): their
     per-user override if set, otherwise the server-wide default."""
@@ -11642,6 +11962,65 @@ async def _get_user_quota_bytes(user_id: str) -> int:
     if row and row[0]:
         return int(row[0])
     return USER_MUSIC_QUOTA_BYTES
+
+
+_STORAGE_QUOTA_REASSERT_INTERVAL = 86400  # once a day, same cadence as the log janitors
+
+
+async def _storage_quota_default_janitor() -> None:
+    """Periodically re-asserts the product's storage-quota policy: every
+    non-admin account's ios_user_settings.storage_quota_bytes is exactly
+    _DEFAULT_USER_STORAGE_QUOTA_BYTES (10GB) -- admin-exempt, so
+    OPERATOR_USER_ID is explicitly excluded here and stays NULL (falls
+    through to USER_MUSIC_QUOTA_BYTES / unlimited, same as before this
+    feature existed).
+
+    This corrects the LIMIT column only -- it never touches a file on disk,
+    even for an account already sitting above 10GB (that account simply
+    can't upload anything further until it's back under quota; see the
+    quota check in upload_user_music / upload_gallery_image). Runs the same
+    UPDATE schema.sql applies once at migration time, on a loop, so the
+    invariant holds even after a manual DB edit or an admin override via
+    PUT /admin/api/users/{id}/quota -- deliberately so: the product decision
+    here is a flat, non-negotiable 10GB per account, not a default a one-off
+    override can escape forever.
+
+    Also backfills any ios_users row that somehow has no matching
+    ios_user_settings row yet (both /auth/register and the Discord
+    auto-register path always insert one, so this should be a no-op in
+    practice -- just cheap insurance against a future bug leaving an account
+    silently unlimited)."""
+    while True:
+        await asyncio.sleep(_STORAGE_QUOTA_REASSERT_INTERVAL)
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "UPDATE ios_user_settings SET storage_quota_bytes = %s "
+                        "WHERE user_id <> %s "
+                        "AND (storage_quota_bytes IS NULL OR storage_quota_bytes <> %s)",
+                        (_DEFAULT_USER_STORAGE_QUOTA_BYTES, OPERATOR_USER_ID,
+                         _DEFAULT_USER_STORAGE_QUOTA_BYTES),
+                    )
+                    reasserted = cur.rowcount  # see _app_logs_janitor's comment on this pattern
+                    await cur.execute(
+                        "INSERT INTO ios_user_settings (user_id, storage_quota_bytes) "
+                        "SELECT id, %s FROM ios_users "
+                        "WHERE id <> %s AND id NOT IN (SELECT user_id FROM ios_user_settings) "
+                        "ON CONFLICT (user_id) DO NOTHING",
+                        (_DEFAULT_USER_STORAGE_QUOTA_BYTES, OPERATOR_USER_ID),
+                    )
+                    backfilled = cur.rowcount
+            if reasserted or backfilled:
+                logger.info(
+                    "storage quota janitor: reasserted %d account(s) to the %d-byte default"
+                    "%s",
+                    reasserted, _DEFAULT_USER_STORAGE_QUOTA_BYTES,
+                    f", created {backfilled} missing settings row(s)" if backfilled else "",
+                )
+        except Exception:
+            logger.exception("storage quota janitor: reassert failed")
 
 
 async def _compute_storage_usage(user_id: str) -> dict:
@@ -13560,6 +13939,19 @@ async def upload_gallery_image(
         raise HTTPException(status_code=400, detail="Empty file body")
     if len(body) > _MAX_GALLERY_IMAGE_BYTES:
         raise HTTPException(status_code=413, detail="Image too large (max 10 MB)")
+
+    # Same quota enforcement as /user/music/upload -- gallery bytes count
+    # toward the same total (_compute_storage_usage sums both), so this
+    # endpoint was the one way to blow straight through a quota that only the
+    # music upload path was actually checking.
+    quota_bytes = await _get_user_quota_bytes(user_id)
+    if quota_bytes:
+        current_usage = await _compute_storage_usage(user_id)
+        if current_usage["used_bytes"] + len(body) > quota_bytes:
+            raise HTTPException(
+                status_code=507,
+                detail=f"Storage quota exceeded ({current_usage['used_bytes']} + {len(body)} > {quota_bytes} bytes)",
+            )
 
     image_id = str(uuid.uuid4())
     # Always store as .jpg filename regardless of source type

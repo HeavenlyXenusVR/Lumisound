@@ -1705,3 +1705,97 @@ CREATE TABLE IF NOT EXISTS ios_known_devices (
     PRIMARY KEY (user_id, device_hash),
     FOREIGN KEY (user_id) REFERENCES ios_users(id) ON DELETE CASCADE
 );
+
+-- Feature: artist images (see main.py GET /api/artist/image +
+-- _artist_image_loop). One row per distinct artist name — global and
+-- lowercased, same key convention as ios_artist_bio_cache above — rather
+-- than per-user, since a real artist's photo/channel icon isn't something
+-- each user resolves separately. There is no dedicated "artists" table in
+-- this schema (artist is a free-text column on ios_user_music_metadata /
+-- ios_play_history / etc.), so this cache is keyed loosely by that same
+-- free-text name rather than a foreign key.
+--
+-- Populated two ways: lazily by GET /api/artist/image the first time any
+-- client asks about a name nobody has looked up yet, and proactively by the
+-- _artist_image_loop background job, which walks real artist names out of
+-- the user's own library/history so the cache fills in even for names no
+-- client has requested yet. Resolution order (see _resolve_artist_image):
+-- Deezer artist search -> Wikipedia artist photo -> the artist's own
+-- YouTube channel icon (via the existing YouTube Data API key) as the
+-- fallback for artists who only really exist as a YouTube channel.
+--
+-- `found = FALSE` is a real cache entry too, so an obscure/YouTube-only
+-- name isn't re-queried against three APIs on every tick — see
+-- _ARTIST_IMAGE_NOTFOUND_RECHECK_DAYS. Once `found = TRUE`, last_checked_at
+-- gates a re-VALIDATION (does image_url still resolve?), not a blind
+-- re-fetch: the background loop only touches image_url again if that
+-- validation finds the stored URL has actually broken. This is the "don't
+-- constantly redownload/reset once correctly set" behavior the feature was
+-- asked for — a correct image is left alone indefinitely unless it
+-- actually goes stale.
+CREATE TABLE IF NOT EXISTS ios_artist_image_cache (
+    artist_name VARCHAR(255) PRIMARY KEY,
+    image_url TEXT NULL,
+    image_source VARCHAR(16) NULL,  -- 'deezer', 'wikipedia', or 'youtube'
+    found BOOLEAN NOT NULL DEFAULT FALSE,
+    last_checked_at TIMESTAMP NULL,
+    resolved_at TIMESTAMP NULL
+);
+
+-- Feature: default 10GB per-user storage quota, admin-exempt (2026-10-22).
+--
+-- storage_quota_bytes (added above, in the "per-user storage quota override"
+-- feature) started life as a pure OVERRIDE: NULL/0 meant "use the server-wide
+-- USER_MUSIC_QUOTA_BYTES default", itself unlimited unless an operator opted
+-- a specific user into a cap. Product decision now is a flat 10GB quota for
+-- every account BY DEFAULT, with the single admin/operator account
+-- (OPERATOR_USER_ID in main.py, 'ca8a4c53-5603-472e-9287-5fb879f28090')
+-- exempt.
+--
+-- `ALTER COLUMN ... SET DEFAULT` only changes what NEW rows get going
+-- forward -- both /auth/register and the Discord auto-register path INSERT
+-- INTO ios_user_settings (user_id) with no storage_quota_bytes, so new
+-- signups pick this default up for free. It does nothing for rows that
+-- already exist with storage_quota_bytes NULL (or some other value), hence
+-- the one-time-per-deploy UPDATE below, which backfills every CURRENT
+-- non-admin account to the same 10GB figure. (main.py's
+-- _storage_quota_default_janitor repeats this same UPDATE on a daily loop
+-- so the invariant holds on an ongoing basis too -- e.g. after an admin
+-- override via PUT /admin/api/users/{id}/quota -- not just at migration
+-- time; this statement here just means a brand-new deploy doesn't have to
+-- wait for that loop's first tick.)
+--
+-- 10GB here is binary (10 * 1024^3 = 10737418240), matching every other
+-- byte-size constant in this codebase (_MAX_GALLERY_IMAGE_BYTES, the 100MB
+-- upload cap, etc. are all `n * 1024 * 1024[ * 1024]`, never a decimal
+-- 10**9-style GB) -- see main.py's _DEFAULT_USER_STORAGE_QUOTA_BYTES.
+--
+-- The operator account is deliberately excluded from both statements below,
+-- so it stays NULL -> falls through to USER_MUSIC_QUOTA_BYTES (0/unlimited),
+-- exactly as before this feature existed.
+ALTER TABLE ios_user_settings ALTER COLUMN storage_quota_bytes SET DEFAULT 10737418240;
+UPDATE ios_user_settings SET storage_quota_bytes = 10737418240
+    WHERE user_id <> 'ca8a4c53-5603-472e-9287-5fb879f28090'
+      AND (storage_quota_bytes IS NULL OR storage_quota_bytes <> 10737418240);
+
+-- Feature: rate-limit username changes to twice per rolling 30 days
+-- (2026-10-22).
+--
+-- There was previously no way at all to change a username after
+-- registration -- the only two places that ever INSERT one are
+-- /auth/register and the Discord auto-register path. PUT /auth/me now
+-- accepts a `username` field; this table is the audit trail that endpoint's
+-- rate limit is built on (see _check_username_change_rate_limit in
+-- main.py): one row per successful change, so "how many times in the last
+-- 30 days" is a plain COUNT/SELECT over a rolling window keyed off each
+-- change's own timestamp, not a calendar-month counter that resets on the
+-- 1st regardless of when the changes actually happened.
+CREATE TABLE IF NOT EXISTS ios_username_change_log (
+    id SERIAL PRIMARY KEY,
+    user_id VARCHAR(36) NOT NULL,
+    old_username VARCHAR(255) NOT NULL,
+    new_username VARCHAR(255) NOT NULL,
+    changed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES ios_users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS ios_username_change_log_idx_user_time ON ios_username_change_log (user_id, changed_at);
