@@ -231,7 +231,11 @@ struct LumisoundApp: App {
                     }
 
                     // Restore audio settings — player must be configured before any resume.
-                    player.restoreDefaultAudioSettings(PersistenceService.shared.loadAudioSettings() ?? AudioSettings())
+                    player.restoreDefaultAudioSettings(
+                        AudioEffectsService.migratingLegacyExclusiveEffect(
+                            PersistenceService.shared.loadAudioSettings() ?? AudioSettings()
+                        )
+                    )
 
                     // Wire the sleep-timer fade to the player's volume control.
                     sleepTimer.getVolume = { player.audioSettings.volume }

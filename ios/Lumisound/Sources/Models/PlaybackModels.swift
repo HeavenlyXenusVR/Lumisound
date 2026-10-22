@@ -109,6 +109,17 @@ struct AudioSettings: Codable, Equatable, Hashable {
     var replayGainEnabled: Bool = false
     var bassBoostEnabled: Bool = false
     var bassBoostGain: Float = 0.0  // 0–15 dB extra on 32 Hz and 64 Hz bands
+    /// Independent of `activeEffectID` — same shape as `bassBoostEnabled`
+    /// above. 8D Audio used to only exist as one of the mutually-exclusive
+    /// entries in `AudioEffectsService.allEffects`, so picking it meant
+    /// giving up whatever other effect (Nightcore, Tremolo, …) was already
+    /// active, the same limitation Bass Boost had before IT was pulled out
+    /// into its own toggle. Pulled out the same way, so 8D Audio, Bass
+    /// Boost, and one exclusive effect can now all run at once — the three
+    /// mechanisms touch different engine parameters (stereo pan, EQ bands,
+    /// and whatever the exclusive effect defines) with no shared resource
+    /// to conflict over.
+    var eightDAudioEnabled: Bool = false
     var activeEffectID: String = "none"
     /// When true, the EQ preset automatically switches to match each track's
     /// tempo (see `EQPreset.auto(forBPM:)`) instead of staying on whatever

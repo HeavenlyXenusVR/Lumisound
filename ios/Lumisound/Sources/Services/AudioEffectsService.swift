@@ -54,13 +54,18 @@ enum AudioEffectsService {
 
     // MARK: All Presets
 
-    /// All 27 effects — the original 24 (retuned, see each preset's comment)
-    /// plus 4 new genre presets (Jazz, Hip-Hop, Acoustic, Vocal Boost), minus
-    /// Karaoke (removed — center-channel cancellation never reliably worked
-    /// across mixes and was pulled rather than kept half-working).
+    /// All 25 effects — the previous 27 (Karaoke was pulled earlier still;
+    /// center-channel cancellation never reliably worked across mixes)
+    /// minus Bass Boost and 8D Audio, both now independent toggles
+    /// (`AudioSettings.bassBoostEnabled`/`eightDAudioEnabled`) that can run
+    /// alongside whichever effect from THIS list is picked, rather than one
+    /// of the entries in it — the whole point being that they no longer
+    /// have to compete with the rest of this list for the single "active
+    /// effect" slot. `bassboost`/`eightD` stay defined as `AudioEffect`
+    /// values below (Lua custom effects or other direct callers can still
+    /// reference them by id), just no longer listed here.
     static let allEffects: [AudioEffect] = [
         none,
-        bassboost,
         nightcore,
         vaporwave,
         lofi,
@@ -83,7 +88,6 @@ enum AudioEffectsService {
         slowmo,
         pitchUp,
         pitchDown,
-        eightD,
         tremolo,
         vibrato,
     ]
@@ -426,6 +430,29 @@ enum AudioEffectsService {
     /// Returns the effect matching the given id, or nil if not found.
     static func effect(id: String) -> AudioEffect? {
         allEffects.first { $0.id == id }
+    }
+
+    /// One-time migration for settings saved before Bass Boost and 8D Audio
+    /// became independent toggles. A saved `activeEffectID` of "bassboost"
+    /// or "8d" used to be the only way either was ever turned on; neither id
+    /// is in `allEffects` any more, so silently leaving it as-is would look
+    /// up nothing and leave both sounding off for anyone who had either
+    /// selected. Carries it forward into the matching toggle instead — idempotent,
+    /// safe to run on every load (a settings value already migrated, or one
+    /// that never had either id, passes through unchanged).
+    static func migratingLegacyExclusiveEffect(_ settings: AudioSettings) -> AudioSettings {
+        var s = settings
+        switch s.activeEffectID {
+        case "bassboost":
+            s.bassBoostEnabled = true
+            s.activeEffectID = "none"
+        case "8d":
+            s.eightDAudioEnabled = true
+            s.activeEffectID = "none"
+        default:
+            break
+        }
+        return s
     }
 
     // MARK: Apply

@@ -27,6 +27,7 @@ extension AudioPlayerManager {
             ("gaplessEnabled", old.gaplessEnabled, new.gaplessEnabled),
             ("replayGainEnabled", old.replayGainEnabled, new.replayGainEnabled),
             ("bassBoostEnabled", old.bassBoostEnabled, new.bassBoostEnabled),
+            ("eightDAudioEnabled", old.eightDAudioEnabled, new.eightDAudioEnabled),
             ("autoEQEnabled", old.autoEQEnabled, new.autoEQEnabled),
             ("reverbEnabled", old.reverbEnabled, new.reverbEnabled),
             ("spatialAudioEnabled", old.spatialAudioEnabled ?? false, new.spatialAudioEnabled ?? false),
@@ -170,6 +171,22 @@ extension AudioPlayerManager {
         // configureEngine) — enabling/disabling it is just a bypass flip, so
         // it's safe to set on every settings pass with no reconnect cost.
         nightModeCompressor.bypass = !(audioSettings.nightModeEnabled ?? false)
+
+        // 8D Audio — independent of `activeEffectID` now (see
+        // `eightDAudioEnabled`'s doc comment), so it's driven declaratively
+        // from this settings pass the same way Bass Boost/Night Mode are,
+        // rather than only from `applyEffect`'s one-shot picker action. The
+        // `is8DActive`/`isPlaying` guards make this a no-op on every OTHER
+        // settings pass once it's already in the state it should be in —
+        // only a real on/off flip actually starts or stops the
+        // CADisplayLink. Only started while actually playing; `playCurrent`/
+        // `reapplyActiveEffect` starts it once playback resumes if it's
+        // still enabled from a paused state.
+        if audioSettings.eightDAudioEnabled {
+            if !is8DActive, isPlaying { start8DRotation(hz: rotationHz) }
+        } else if is8DActive {
+            stop8DRotation()
+        }
 
         // ReplayGain + master volume/boost: re-combine the current track's analysed
         // gain (replayGainLinearGain, computed asynchronously in scheduleCurrent/

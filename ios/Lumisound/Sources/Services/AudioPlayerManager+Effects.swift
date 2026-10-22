@@ -10,8 +10,10 @@ extension AudioPlayerManager {
 
     func applyEffect(_ effect: AudioEffect) {
         appLog("Effect applied: \(effect.name) (id: \(effect.id))", category: "audio")
-        // Stop all running special effects before switching to a new one.
-        stop8DRotation()
+        // Stops only the exclusive-picker-driven special modes. 8D Audio is
+        // no longer one of them (see `eightDAudioEnabled`'s doc comment) —
+        // it's independently toggled and must keep running across an
+        // unrelated exclusive-effect switch, not get silently stopped by one.
         stopTremolo()
         stopVibrato()
 
@@ -20,10 +22,15 @@ extension AudioPlayerManager {
         s.activeEffectID = effect.id
         audioSettings = s   // triggers didSet → applyAudioSettings()
 
-        // Start the special mode for this effect.
+        // Start the special mode for this effect. `.rotation` is only
+        // reachable here via a custom Lua-scripted effect now — 8D Audio
+        // itself was removed from `AudioEffectsService.allEffects` — and
+        // even then, only if the independent toggle isn't already running
+        // it (avoids stopping and immediately restarting the same
+        // CADisplayLink, which would reset its phase for no reason).
         switch effect.specialMode.type {
         case .rotation:
-            start8DRotation(hz: effect.specialMode.hz)
+            if !is8DActive { start8DRotation(hz: effect.specialMode.hz) }
         case .tremolo:
             startTremolo(frequency: effect.specialMode.freq, depth: effect.specialMode.depth)
         case .vibrato:
@@ -36,6 +43,14 @@ extension AudioPlayerManager {
     /// Re-starts any dynamic effect (8D, tremolo, vibrato) that was active before
     /// playback began. Called after the engine starts so CADisplayLink effects actually run.
     func reapplyActiveEffect() {
+        // Independent 8D toggle — see `eightDAudioEnabled`'s doc comment.
+        // Checked unconditionally (unlike the exclusive effect below, this
+        // doesn't depend on `activeEffectID` at all), so it resumes
+        // alongside whichever exclusive effect (if any) is also active.
+        if audioSettings.eightDAudioEnabled, !is8DActive {
+            start8DRotation(hz: rotationHz)
+        }
+
         let effectID = audioSettings.activeEffectID
         guard !effectID.isEmpty, effectID != "none" else { return }
         let effect: AudioEffect?

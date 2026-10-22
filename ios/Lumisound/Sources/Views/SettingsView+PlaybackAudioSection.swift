@@ -231,6 +231,26 @@ extension SettingsView {
                 .padding(.leading, 16)
             }
 
+            // 8D Audio toggle — independent of the Now Playing effects picker
+            // now (see AudioSettings.eightDAudioEnabled's doc comment), same
+            // "its own toggle, not an exclusive-picker entry" shape as Bass
+            // Boost above, so both (plus one picked effect) can run together.
+            Toggle(isOn: $player.audioSettings.eightDAudioEnabled) {
+                Label("8D Audio", systemImage: "rotate.3d")
+                    .foregroundStyle(AppTheme.textPrimary)
+            }
+            .tint(.teal)
+
+            if player.audioSettings.eightDAudioEnabled {
+                Text("Rotates the stereo image left and right to simulate a sound source circling you. Works on any stereo output.")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .padding(.leading, 16)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                EightDSpeedControl()
+                    .padding(.leading, 16)
+            }
+
             // Reverb toggle — on by default, applies live to whatever is playing.
             Toggle(isOn: $player.audioSettings.reverbEnabled) {
                 Label("Reverb", systemImage: "circle.hexagonpath")
@@ -518,5 +538,75 @@ private struct ReverbPresetPickerRow: View {
             .tint(.teal)
         }
         .padding(.leading, 16)
+    }
+}
+
+/// Moved here from the Now Playing effects grid (`EffectsView.swift`) along
+/// with 8D Audio becoming its own toggle above — this control's binding
+/// (`player.rotationHz`/`set8DSpeed`) never actually depended on 8D being
+/// the picker's "active effect" in the first place, so it needed no changes
+/// beyond relocating.
+private struct EightDSpeedControl: View {
+    @ObservedObject var player: AudioPlayerManager
+
+    // Preset speeds: label, hz value
+    private let presets: [(label: String, hz: Double)] = [
+        ("Slow", 0.08), ("Smooth", 0.15), ("Default", 0.18),
+        ("Fast", 0.35), ("Wild", 0.70),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "rotate.3d")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.dynamicAccent)
+                Text("Rotation Speed")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.textPrimary)
+                Spacer()
+                Text(String(format: "%.2f Hz", player.rotationHz))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(AppTheme.textSecondary)
+            }
+
+            // Speed presets
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(presets, id: \.hz) { preset in
+                        Button {
+                            player.set8DSpeed(hz: preset.hz)
+                        } label: {
+                            Text(preset.label)
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(
+                                    abs(player.rotationHz - preset.hz) < 0.01 ? .white : AppTheme.textSecondary
+                                )
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(
+                                    abs(player.rotationHz - preset.hz) < 0.01
+                                        ? AnyShapeStyle(AppTheme.dynamicAccent)
+                                        : AnyShapeStyle(AppTheme.elevatedSurface),
+                                    in: Capsule()
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .animation(.easeInOut(duration: 0.15), value: player.rotationHz)
+                    }
+                }
+            }
+
+            // Fine-tune slider
+            Slider(
+                value: Binding(
+                    get: { player.rotationHz },
+                    set: { player.set8DSpeed(hz: $0) }
+                ),
+                in: 0.02...2.0
+            )
+            .tint(AppTheme.dynamicAccent)
+        }
+        .padding(.top, 4)
     }
 }

@@ -74,7 +74,11 @@ extension AudioPlayerManager {
     /// Replaces the entire per-track settings map (used when restoring from a
     /// server sync). If the currently playing track has an override in the new
     /// map, it's applied immediately.
-    func restorePerTrackAudioSettings(_ map: [String: AudioSettings]) {
+    func restorePerTrackAudioSettings(_ rawMap: [String: AudioSettings]) {
+        // Same legacy Bass Boost/8D Audio migration applied to the default
+        // settings at launch (see AudioEffectsService.migratingLegacyExclusiveEffect) —
+        // a per-track override can carry the same stale `activeEffectID`.
+        let map = rawMap.mapValues { AudioEffectsService.migratingLegacyExclusiveEffect($0) }
         perTrackAudioSettings = map
         PersistenceService.shared.saveTrackAudioSettings(map)
         if let id = currentSong?.id, let saved = map[id] {

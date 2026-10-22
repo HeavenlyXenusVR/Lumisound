@@ -39,11 +39,6 @@ struct EffectsView: View {
                 }
             }
 
-            // 8D-specific speed controls shown when the 8D effect is active
-            if player.audioSettings.activeEffectID == "8d" {
-                EightDSpeedControl()
-            }
-
             Button {
                 showLuaEffects = true
             } label: {
@@ -69,76 +64,6 @@ struct EffectsView: View {
                     .environmentObject(player)
             }
         }
-    }
-}
-
-// MARK: - 8D Speed Control
-
-private struct EightDSpeedControl: View {
-    @EnvironmentObject private var player: AudioPlayerManager
-
-    // Preset speeds: label, hz value
-    private let presets: [(label: String, hz: Double)] = [
-        ("Slow", 0.08), ("Smooth", 0.15), ("Default", 0.18),
-        ("Fast", 0.35), ("Wild", 0.70),
-    ]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Divider()
-                .overlay(AppTheme.elevatedSurface)
-
-            HStack {
-                Image(systemName: "rotate.3d")
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.dynamicAccent)
-                Text("8D Rotation Speed")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.textPrimary)
-                Spacer()
-                Text(String(format: "%.2f Hz", player.rotationHz))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(AppTheme.textSecondary)
-            }
-
-            // Speed presets
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(presets, id: \.hz) { preset in
-                        Button {
-                            player.set8DSpeed(hz: preset.hz)
-                        } label: {
-                            Text(preset.label)
-                                .font(.caption2.weight(.medium))
-                                .foregroundStyle(
-                                    abs(player.rotationHz - preset.hz) < 0.01 ? .white : AppTheme.textSecondary
-                                )
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(
-                                    abs(player.rotationHz - preset.hz) < 0.01
-                                        ? AnyShapeStyle(AppTheme.dynamicAccent)
-                                        : AnyShapeStyle(AppTheme.elevatedSurface),
-                                    in: Capsule()
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .animation(.easeInOut(duration: 0.15), value: player.rotationHz)
-                    }
-                }
-            }
-
-            // Fine-tune slider
-            Slider(
-                value: Binding(
-                    get: { player.rotationHz },
-                    set: { player.set8DSpeed(hz: $0) }
-                ),
-                in: 0.02...2.0
-            )
-            .tint(AppTheme.dynamicAccent)
-        }
-        .padding(.top, 4)
     }
 }
 
