@@ -18,6 +18,19 @@ import CryptoKit
 final class FolderCoverArtService: ObservableObject {
     static let shared = FolderCoverArtService()
 
+    /// Bumped on every `setCover`/`removeCover` — this class had no
+    /// `@Published` property at all before, so changing a cover from
+    /// `LocalFolderDetailView` never notified anything, including the
+    /// Folders grid's own cells. `onAppear` only fires when a cell is
+    /// first created; SwiftUI doesn't tear down and recreate a grid's
+    /// already-mounted cells just because the user navigated to a detail
+    /// screen and back, so a cell that was on screen before the change
+    /// kept showing whatever it had cached from ITS OWN first appearance
+    /// — "the folder icon only changes inside the detail screen, not in
+    /// the folders section itself." `FolderGridCell` observes this to know
+    /// when to re-check.
+    @Published private(set) var changeCount: Int = 0
+
     /// In-memory cache of loaded covers, keyed by the same digest used for
     /// the on-disk filename — avoids re-reading from disk on every header
     /// render for a folder already visited this launch.
@@ -112,6 +125,7 @@ final class FolderCoverArtService: ObservableObject {
             let k = key(for: folderURL)
             cache[k] = downsized
             noCoverKeys.remove(k)
+            changeCount += 1
             appLog("FolderCoverArtService: set custom cover for \"\(folderURL.lastPathComponent)\"", category: "library")
         } catch {
             appWarn("FolderCoverArtService: failed to save cover for \"\(folderURL.lastPathComponent)\": \(error.localizedDescription)", category: "library")
@@ -124,6 +138,7 @@ final class FolderCoverArtService: ObservableObject {
         let k = key(for: folderURL)
         cache.removeValue(forKey: k)
         try? FileManager.default.removeItem(at: fileURL(for: folderURL))
+        changeCount += 1
         appLog("FolderCoverArtService: removed custom cover for \"\(folderURL.lastPathComponent)\"", category: "library")
     }
 }

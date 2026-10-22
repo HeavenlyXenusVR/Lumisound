@@ -850,6 +850,11 @@ private struct HubSpeedDialTile: View {
     // here specifically, inconsistent with every other place the same
     // folder's artwork appears.
     @State private var customFolderCover: UIImage? = nil
+    // Observed so a cover change made from LocalFolderDetailView while this
+    // tile was already mounted still reaches it — see
+    // `FolderCoverArtService.changeCount`'s doc comment. `.task(id: songsKey)`
+    // above only refires on a song-list change, not a cover change.
+    @ObservedObject private var coverService = FolderCoverArtService.shared
 
     var body: some View {
         NavigationLink {
@@ -907,6 +912,10 @@ private struct HubSpeedDialTile: View {
             } else {
                 customFolderCover = nil
             }
+        }
+        .onChange(of: coverService.changeCount) { _ in
+            guard case .folder(let folder) = shortcut.kind else { return }
+            Task { customFolderCover = await FolderCoverArtService.shared.cover(for: folder.dirURL) }
         }
     }
 

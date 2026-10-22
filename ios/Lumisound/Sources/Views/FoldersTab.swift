@@ -166,6 +166,11 @@ private struct FolderGridCell: View {
     // default (first song's artwork / folder glyph) the moment you backed
     // out to the grid.
     @State private var customCover: UIImage? = nil
+    // Observed so a cover change made elsewhere (LocalFolderDetailView,
+    // while this cell was already mounted and off the `.onAppear` path)
+    // still reaches this cell — see `FolderCoverArtService.changeCount`'s
+    // doc comment.
+    @ObservedObject private var coverService = FolderCoverArtService.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -259,6 +264,9 @@ private struct FolderGridCell: View {
             }
         }
         .onAppear {
+            Task { customCover = await FolderCoverArtService.shared.cover(for: folder.dirURL) }
+        }
+        .onChange(of: coverService.changeCount) { _ in
             Task { customCover = await FolderCoverArtService.shared.cover(for: folder.dirURL) }
         }
     }
