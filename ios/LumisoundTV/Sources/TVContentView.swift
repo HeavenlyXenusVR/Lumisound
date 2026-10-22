@@ -95,6 +95,15 @@ struct TVContentView: View {
                 TVAdvancedTelemetry.HitchMonitor.shared.start()
                 TVAdvancedTelemetry.noteScreen(selection.rawValue)
                 if client.notifications.isEmpty { await client.fetchNotifications(token: token) }
+                // Eagerly primes the stream-ticket cache (see TVBridgeClient's
+                // doc comment on it) right at session start — covers both a
+                // cold launch already signed in and a fresh interactive
+                // sign-in, since this `.task` fires either way the first time
+                // this branch of the view appears. Without this, the very
+                // first track played each session would still go out with no
+                // ticket (streamURL(for:)'s own opportunistic refresh only
+                // helps from the SECOND track onward).
+                await client.refreshStreamTicketIfNeeded(token: token)
             }
             .onChange(of: selection) { newValue in
                 TVAdvancedTelemetry.noteScreen(newValue.rawValue)

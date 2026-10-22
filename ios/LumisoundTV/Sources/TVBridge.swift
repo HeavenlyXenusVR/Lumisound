@@ -526,6 +526,54 @@ final class TVBridgeClient: ObservableObject {
     static let officialBridgeAPIKey: String =
         (Bundle.main.object(forInfoDictionaryKey: "LumisoundBridgeAPIKey") as? String) ?? ""
 
+    // MARK: - Stream ticket
+    //
+    // Mirrors the iOS app's StreamingService+StreamTicket.swift — see that
+    // file's header comment for the full reasoning. Short version: AVPlayer
+    // does not reliably reapply AVURLAsset's HTTP-header auth to the byte-
+    // range requests that follow a stream's opening request, so the bridge
+    // issues a short-lived ticket this app instead carries in the URL's
+    // query string, which every request (ranged or not) always includes.
+    //
+    // tvOS never adopted this — `streamURL(for:)` below only ever sent
+    // `X-Account-Token` as a header via `TVPlayerView`'s `AVURLAssetHTTPHeaderFieldsKey`,
+    // so every tvOS stream played its opening chunk and then 401'd on the
+    // very first range request. Confirmed in production telemetry:
+    // `stream_proxy_auth_rejected` is overwhelmingly Apple TV traffic
+    // (23.6k of ~24.8k recorded events, 100% ranged, 100% missing both the
+    // auth header and the account token by the time the request reached the
+    // bridge) — this is the "tracks stop partway through" bug on tvOS.
+    private var cachedStreamTicket: String?
+    private var cachedStreamTicketExpiry: Date = .distantPast
+
+    /// Fetches (or reuses) a stream ticket for `token`. Safe to call
+    /// opportunistically — results are cached and refreshed at half their
+    /// TTL, same policy as the iOS app's `streamTicket()`.
+    @discardableResult
+    func refreshStreamTicketIfNeeded(token: String) async -> String? {
+        if let ticket = cachedStreamTicket, Date() < cachedStreamTicketExpiry {
+            return ticket
+        }
+        guard let url = URL(string: baseURL + "/api/stream/ticket") else { return nil }
+        struct Response: Decodable { let ticket: String; let expires_in: Double? }
+        do {
+            var req = URLRequest(url: url)
+            req.setValue(token, forHTTPHeaderField: "X-Account-Token")
+            req.timeoutInterval = 15
+            let (data, response) = try await URLSession.shared.data(for: req)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                return nil
+            }
+            let decoded = try JSONDecoder().decode(Response.self, from: data)
+            let ttl = decoded.expires_in ?? 3600
+            cachedStreamTicket = decoded.ticket
+            cachedStreamTicketExpiry = Date().addingTimeInterval(ttl / 2)
+            return decoded.ticket
+        } catch {
+            return nil
+        }
+    }
+
     // Search
     @Published var results: [TVTrack] = []
     @Published var isSearching = false
@@ -1211,6 +1259,15 @@ final class TVBridgeClient: ObservableObject {
     // MARK: URL builders
 
     /// Bridge proxy stream URL for a search result — AVPlayer streams this directly.
+    ///
+    /// Appends whatever stream ticket is currently cached (see above) — this
+    /// function stays synchronous (its ~16 call sites across the TV app all
+    /// build queues synchronously via `compactMap`), so a cold cache simply
+    /// means this one URL goes out without a ticket, same graceful
+    /// degradation the iOS app's `streamURL(for:)` already has for a
+    /// signed-out user. If `token` is available, also kicks off a background
+    /// refresh so the NEXT call — i.e. every subsequent track in the same
+    /// queue/session — has one ready.
     func streamURL(for track: TVTrack) -> URL? {
         guard var comps = URLComponents(string: baseURL + "/api/stream/proxy") else { return nil }
         comps.queryItems = [
@@ -1220,6 +1277,11 @@ final class TVBridgeClient: ObservableObject {
         ]
         if track.source == "soundcloud" {
             comps.queryItems?.append(URLQueryItem(name: "url", value: track.youtubeURL))
+        }
+        if let ticket = cachedStreamTicket, Date() < cachedStreamTicketExpiry {
+            comps.queryItems?.append(URLQueryItem(name: "ticket", value: ticket))
+        } else if let token = TVAccount.shared.token {
+            Task { await refreshStreamTicketIfNeeded(token: token) }
         }
         return comps.url
     }
