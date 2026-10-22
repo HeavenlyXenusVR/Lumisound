@@ -207,27 +207,41 @@ async def call_intelligence(
     # spike silently cost the user the feature. Kept short and bounded: a DJ
     # blurb is worth a second attempt, not a long one, because the track it
     # introduces is already playing.
+    # The retry loop and the JSON parse below share ONE try/except: a 429 (or
+    # any other non-retryable APIError) raised inside the loop used to
+    # propagate straight out of this function uncaught, because the only
+    # places that `except`'d APIError were (a) the retry loop itself, which
+    # re-`raise`s anything non-retryable rather than handling it, and (b) a
+    # second try/except wrapped around `json.loads(text)` ONLY — which can
+    # never actually raise `genai_errors.APIError` in the first place, so
+    # that second block's `if exc.code == 429: ...cooldown...` branch was
+    # unreachable dead code. Net effect: a real 429 bypassed the cooldown
+    # entirely AND violated this module's own documented contract ("never
+    # raises past its own boundary") — it broke whatever endpoint called
+    # `call_intelligence` instead of degrading to the caller's heuristic.
+    # Wrapping both stages in the same try/except is what actually lets the
+    # single `except genai_errors.APIError` below catch the real error.
     last_error: Exception | None = None
-    for attempt in range(_MAX_TRANSIENT_ATTEMPTS):
-        try:
-            text = await asyncio.to_thread(
-                _run_gemini_request, system_prompt, user_content, schema, image_urls or []
-            )
-            break
-        except genai_errors.APIError as exc:
-            last_error = exc
-            if exc.code in _RETRYABLE_STATUSES and attempt < _MAX_TRANSIENT_ATTEMPTS - 1:
-                delay = _TRANSIENT_BACKOFF_SECONDS * (attempt + 1)
-                logger.info("intelligence task %s got %s; retrying in %.1fs", task, exc.code, delay)
-                await asyncio.sleep(delay)
-                continue
-            raise
-    else:
-        # Exhausted every attempt on a retryable status.
-        if last_error is not None:
-            raise last_error
-
     try:
+        for attempt in range(_MAX_TRANSIENT_ATTEMPTS):
+            try:
+                text = await asyncio.to_thread(
+                    _run_gemini_request, system_prompt, user_content, schema, image_urls or []
+                )
+                break
+            except genai_errors.APIError as exc:
+                last_error = exc
+                if exc.code in _RETRYABLE_STATUSES and attempt < _MAX_TRANSIENT_ATTEMPTS - 1:
+                    delay = _TRANSIENT_BACKOFF_SECONDS * (attempt + 1)
+                    logger.info("intelligence task %s got %s; retrying in %.1fs", task, exc.code, delay)
+                    await asyncio.sleep(delay)
+                    continue
+                raise
+        else:
+            # Exhausted every attempt on a retryable status.
+            if last_error is not None:
+                raise last_error
+
         parsed = json.loads(text)
         # Fire-and-forget: don't let the event-log write add latency to a
         # request that already got its answer. One row per call (never

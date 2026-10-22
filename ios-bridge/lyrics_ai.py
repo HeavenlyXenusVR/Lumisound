@@ -99,6 +99,16 @@ out" over confidently wrong text.
 # 429 in particular is what intelligence.py's own per-task cooldown exists for.
 _RETRYABLE_STATUSES = frozenset({500, 502, 503, 504})
 
+# Shared with intelligence.py's own per-task cooldown dict/window — deliberately
+# the SAME Gemini key/quota as every other Aria feature (metadata-resolve,
+# duplicate-resolve, DJ transitions), so a 429 here should suppress further
+# transcription attempts for the same reason `call_intelligence` suppresses
+# further calls for ITS tasks: repeatedly re-hitting an exhausted quota (e.g. a
+# user tapping "Generate Lyrics" again right after it failed) only spends more
+# of what's already gone, with zero chance of succeeding until the window
+# resets. `transcribe_lyrics` previously had no cooldown of its own at all.
+_COOLDOWN_TASK = "lyrics_transcribe"
+
 # Tried in order. The primary is whatever the rest of the app is configured to
 # use; the fallback is a different model generation, which matters because the
 # 503s are per-model load — during one overload window the primary failed while
@@ -387,6 +397,9 @@ async def _transcribe_one_chunk(
                 # 429 is quota, not load: this model has nothing left to give, so
                 # move to the next one in the chain rather than retrying it.
                 if code == 429:
+                    intelligence._cooldown_until[_COOLDOWN_TASK] = (
+                        time.monotonic() + intelligence._COOLDOWN_SECONDS
+                    )
                     logger.warning("lyrics chunk at %.1fs: %s is rate-limited, trying next model",
                                    start, model)
                     break
@@ -496,6 +509,10 @@ async def transcribe_lyrics(
     """
     if intelligence._client is None:
         return None
+    until = intelligence._cooldown_until.get(_COOLDOWN_TASK)
+    if until is not None and time.monotonic() < until:
+        logger.info("transcribe_lyrics: skipping, cooling down after a recent 429")
+        return None
 
     started = time.monotonic()
     models = [intelligence.INTELLIGENCE_MODEL]
@@ -578,6 +595,14 @@ async def transcribe_lyrics(
                     "transcribe_lyrics: %s attempt %d/%d failed (code=%s, retryable=%s)",
                     model, attempt, _MAX_ATTEMPTS_PER_MODEL, code, retryable,
                 )
+                if code == 429:
+                    intelligence._cooldown_until[_COOLDOWN_TASK] = (
+                        time.monotonic() + intelligence._COOLDOWN_SECONDS
+                    )
+                    logger.warning(
+                        "transcribe_lyrics: rate-limited; cooling down %ds",
+                        intelligence._COOLDOWN_SECONDS,
+                    )
                 if not retryable:
                     break  # a different model won't fix a 400/404/429 either
                 if attempt < _MAX_ATTEMPTS_PER_MODEL:
