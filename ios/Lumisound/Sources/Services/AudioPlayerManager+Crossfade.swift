@@ -8,6 +8,22 @@ extension AudioPlayerManager {
 
     // MARK: - Crossfade
 
+    /// Sets a beatmatch node's rate and bypasses it whenever that rate is
+    /// unity. `primaryBeatMatch`/`secondaryBeatMatch` sit permanently wired
+    /// into the signal path for whichever player node is active — not just
+    /// during the few seconds of an actual crossfade — and
+    /// `AVAudioUnitTimePitch` is one of the heavier stock AudioUnits
+    /// (phase-vocoder-style processing), categorically more expensive than
+    /// a passthrough. Outside a beatmatched crossfade, both nodes sat at
+    /// rate 1.0 but kept running full DSP to produce output identical to
+    /// bypass. Every call site that touches either node's `.rate` goes
+    /// through this one function so the bypass flag can never drift out of
+    /// sync with the rate it should track.
+    private func setBeatMatchRate(_ node: AVAudioUnitTimePitch, _ rate: Float) {
+        node.rate = rate
+        node.bypass = (rate == 1.0)
+    }
+
     /// The plan for the transition out of the current track.
     ///
     /// Computed from the same inputs wherever it is needed — the scheduling
@@ -102,15 +118,15 @@ extension AudioPlayerManager {
             let oRatio = target / oBPM
             let iRatio = target / iBPM
             if (0.92...1.08).contains(oRatio), (0.92...1.08).contains(iRatio) {
-                outgoingBeatMatch.rate = Float(oRatio)
+                setBeatMatchRate(outgoingBeatMatch, Float(oRatio))
                 incomingRate = Float(iRatio)
             } else {
-                outgoingBeatMatch.rate = 1.0
+                setBeatMatchRate(outgoingBeatMatch, 1.0)
             }
         } else {
-            outgoingBeatMatch.rate = 1.0
+            setBeatMatchRate(outgoingBeatMatch, 1.0)
         }
-        incomingBeatMatch.rate = incomingRate
+        setBeatMatchRate(incomingBeatMatch, incomingRate)
 
         incoming.volume = 0
         let gen = scheduleGeneration &+ 1
@@ -212,7 +228,7 @@ extension AudioPlayerManager {
                 // native tempo (1.0) over the course of the fade, so by the time
                 // the outgoing track is fully silent, the new track is playing
                 // at its own correct speed.
-                incomingBeatMatch.rate = incomingRate + (1.0 - incomingRate) * clipped
+                setBeatMatchRate(incomingBeatMatch, incomingRate + (1.0 - incomingRate) * clipped)
                 if step >= steps {
                     t.invalidate()
                     self.crossfadeTimer = nil
@@ -230,7 +246,7 @@ extension AudioPlayerManager {
         outgoing.volume = audioSettings.volume
         // Reset the abandoned node's beatmatch rate to neutral so it's ready
         // for reuse on the next crossfade.
-        (outgoing === primaryNode ? primaryBeatMatch : secondaryBeatMatch).rate = 1.0
+        setBeatMatchRate(outgoing === primaryNode ? primaryBeatMatch : secondaryBeatMatch, 1.0)
         isCrossfading = false
     }
 
@@ -247,8 +263,8 @@ extension AudioPlayerManager {
             let abandoned = usingPrimaryNode ? secondaryNode : primaryNode
             abandoned.stop()
             abandoned.volume = audioSettings.volume
-            (abandoned === primaryNode ? primaryBeatMatch : secondaryBeatMatch).rate = 1.0
-            (activeNode === primaryNode ? primaryBeatMatch : secondaryBeatMatch).rate = 1.0
+            setBeatMatchRate(abandoned === primaryNode ? primaryBeatMatch : secondaryBeatMatch, 1.0)
+            setBeatMatchRate(activeNode === primaryNode ? primaryBeatMatch : secondaryBeatMatch, 1.0)
             activeNode.volume = audioSettings.volume
             isCrossfading = false
         }

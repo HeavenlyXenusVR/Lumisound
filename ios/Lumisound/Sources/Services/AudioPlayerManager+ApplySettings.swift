@@ -75,7 +75,16 @@ extension AudioPlayerManager {
         primaryNode.volume = isCrossfading ? primaryNode.volume : audioSettings.volume
         if !isCrossfading { secondaryNode.volume = audioSettings.volume }
 
-        // Speed / pitch
+        // Speed / pitch — `AVAudioUnitTimePitch` is one of the heavier stock
+        // AudioUnits (phase-vocoder-style processing), run on every buffer
+        // for the life of every playback session regardless of whether
+        // anything is actually being shifted. Most listening happens at the
+        // 1.0x/0-semitone defaults, where this node's output is identical
+        // to passthrough — bypass it then and only pay the real DSP cost
+        // when speed or pitch is actually changed from default. Same
+        // "zero reconnect cost, just a bypass flip" shape already used for
+        // nightModeCompressor/reverb below.
+        timePitch.bypass = audioSettings.speed == 1.0 && audioSettings.pitchSemitones == 0
         timePitch.rate = audioSettings.speed
         timePitch.pitch = audioSettings.pitchSemitones * 100
 
@@ -143,6 +152,17 @@ extension AudioPlayerManager {
         let dryGain = cos(wetFraction * .pi / 2)
         reverbWetMixer.outputVolume = Float(wetGain)
         reverbDryMixer.outputVolume = Float(dryGain)
+        // `reverb` itself (the actual AVAudioUnitReverb doing the feedback-
+        // delay-network tail generation — one of the heavier stock AudioUnits,
+        // in the same cost class as timePitch above) used to run on every
+        // buffer even with Reverb off, since the wet bus's gain already being
+        // zeroed above makes its output inaudible but not free to compute.
+        // Reverb defaults to off, so most users paid this continuously for
+        // zero audible benefit. Bypassing is safe even mid-wet-signal: the
+        // wet bus volume already governs how much of its (now unprocessed,
+        // dry-passthrough) output reaches the mix, so a bypass at the exact
+        // moment wetFraction is 0 changes nothing audible either way.
+        reverb.bypass = !audioSettings.reverbEnabled
 
         setSpatialAudioRouting(audioSettings.spatialAudioEnabled ?? false, monoEnabled: audioSettings.monoAudioEnabled ?? false)
 
