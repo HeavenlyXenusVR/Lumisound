@@ -71,7 +71,23 @@ extension LibraryManager {
         RemoteLogger.log(category: "sync", event: "watched_folders_scan_completed",
                           detail: ["newSongs": newSongs.count, "folders": urls.count])
         importedSongs.append(contentsOf: newSongs)
-        importedSongs = Array(Dictionary(grouping: importedSongs, by: { song in song.url.map { $0.standardizedFileURL.absoluteString } ?? song.id }).compactMap { $0.value.first })
+        // Off the main actor — this was the same O(whole library) cost that
+        // `runLocalDocumentsScan`'s "scan.dedupe" fix addressed for the
+        // Documents scan path: `Dictionary(grouping:)` allocates a fresh
+        // array per distinct key just to throw away every element but the
+        // first, over the ENTIRE library, not just `newSongs` — and it ran
+        // synchronously on the main actor on every watched-folder scan. That
+        // fix never got applied here even though this path runs the exact
+        // same dedupe; same Set-based filter, same detach, applied here too.
+        let currentImportedSongs = importedSongs
+        importedSongs = await Task.detached(priority: .userInitiated) {
+            var seenKeys = Set<String>()
+            seenKeys.reserveCapacity(currentImportedSongs.count)
+            return currentImportedSongs.filter { song in
+                let key = song.url.map { $0.standardizedFileURL.absoluteString } ?? song.id
+                return seenKeys.insert(key).inserted
+            }
+        }.value
         rebuildAllSongs()
 
         // Push the updated folder structure (new tracks in watched folders)
@@ -126,7 +142,18 @@ extension LibraryManager {
 
             appLog("scanSpecificDirectory: \(newSongs.count) song(s) from \(url.lastPathComponent)", category: "library")
             importedSongs.append(contentsOf: newSongs)
-            importedSongs = Array(Dictionary(grouping: importedSongs, by: { song in song.url.map { $0.standardizedFileURL.absoluteString } ?? song.id }).compactMap { $0.value.first })
+            // Off the main actor — same O(whole library) `Dictionary(grouping:)`
+            // cost as `scanWatchedFoldersAsync`'s identical fix above; see that
+            // one's comment for why this ran synchronously on the main actor.
+            let currentImportedSongs = importedSongs
+            importedSongs = await Task.detached(priority: .userInitiated) {
+                var seenKeys = Set<String>()
+                seenKeys.reserveCapacity(currentImportedSongs.count)
+                return currentImportedSongs.filter { song in
+                    let key = song.url.map { $0.standardizedFileURL.absoluteString } ?? song.id
+                    return seenKeys.insert(key).inserted
+                }
+            }.value
             rebuildAllSongs()
             lastScanResult = "Found \(newSongs.count) song\(newSongs.count == 1 ? "" : "s") in \(url.lastPathComponent)"
         }
@@ -155,10 +182,18 @@ extension LibraryManager {
                 RemoteLogger.log(category: "sync", event: "file_import_completed",
                                   detail: ["imported": imported.count, "requested": urls.count])
                 importedSongs.append(contentsOf: imported)
-                importedSongs = Array(
-                    Dictionary(grouping: importedSongs, by: { song in song.url.map { $0.standardizedFileURL.absoluteString } ?? song.id })
-                        .compactMap { $0.value.first }
-                )
+                // Off the main actor — same O(whole library) `Dictionary(grouping:)`
+                // cost as `scanWatchedFoldersAsync`'s identical fix above; see that
+                // one's comment for why this ran synchronously on the main actor.
+                let currentImportedSongs = importedSongs
+                importedSongs = await Task.detached(priority: .userInitiated) {
+                    var seenKeys = Set<String>()
+                    seenKeys.reserveCapacity(currentImportedSongs.count)
+                    return currentImportedSongs.filter { song in
+                        let key = song.url.map { $0.standardizedFileURL.absoluteString } ?? song.id
+                        return seenKeys.insert(key).inserted
+                    }
+                }.value
                 let songWord = imported.count == 1 ? "song" : "songs"
                 ToastCenter.shared.show("Imported \(imported.count) \(songWord)", category: .success, icon: "tray.and.arrow.down.fill")
             } catch {

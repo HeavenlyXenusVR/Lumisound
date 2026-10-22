@@ -107,8 +107,23 @@ struct SongsTab: View {
 
     /// Synchronous — only for the first appearance, so the list opens in its
     /// final order without a visible reshuffle.
+    ///
+    /// Wrapped in `MainThreadActivity.measure` (unlike the background path
+    /// below) because this one actually runs ON the main actor: a full
+    /// O(n log n) sort plus an O(n) index/alpha-section rebuild over
+    /// `songs`, synchronously, every time this view is freshly mounted —
+    /// which per the `.searchable` note on `body` is EVERY switch between
+    /// Library's Songs/Albums/Artists/Genres/Folders sub-tabs, not just
+    /// first launch. Unconfirmed whether this is a measurable contributor
+    /// to the Library-tab hangs telemetry keeps showing (no prior
+    /// instrumentation existed here to say either way, which is the gap
+    /// this closes) — left as the deliberate synchronous tradeoff described
+    /// above rather than also moved off-main, since doing so would bring
+    /// back the visible reshuffle-on-open this was written to avoid.
     private func recomputeSortedSongs() {
-        applyLayout(Self.buildLayout(from: layoutInputs()))
+        MainThreadActivity.measure("songsTab.recomputeSync") {
+            applyLayout(Self.buildLayout(from: layoutInputs()))
+        }
     }
 
     /// Everything after the first appearance: the sort, index and sections

@@ -52,7 +52,20 @@ struct CacheManagerView: View {
         .onAppear {
             cacheManager.scanOnAppear()
             Task {
-                let known = Set(library.allSongs.compactMap { $0.url?.lastPathComponent })
+                // `library.allSongs` is main-actor-isolated, so building
+                // `known` here runs on the main actor, not off it like the
+                // rest of this file's work — on a several-thousand-song
+                // library that's a full-library `compactMap` plus a `Set`
+                // build every time this screen (reachable from Settings →
+                // Storage & Cache) appears. Unconfirmed as an actual
+                // contributor (no prior instrumentation existed to say
+                // either way); measured rather than moved off-main for now
+                // since `cacheManager.scanOrphans` needs `known` either way
+                // and this screen's main concern was the cache scan, not
+                // this lookup.
+                let known = MainThreadActivity.measure("cacheManager.knownFilenames") {
+                    Set(library.allSongs.compactMap { $0.url?.lastPathComponent })
+                }
                 await cacheManager.scanOrphans(knownFilenames: known)
             }
         }
