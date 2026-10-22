@@ -212,6 +212,21 @@ struct LumisoundApp: App {
                     // announcement expire unseen by exactly the people who use
                     // the app most. Costs one GET that normally returns [].
                     Task { await account.showPendingAnnouncements() }
+
+                    // Settings/appearance (theme_color, bg_* and the rest of
+                    // SyncData) used to be pulled only from the launch `.task`
+                    // below, never on a return to the foreground — the exact
+                    // asymmetry Android's gallery sync was built to avoid (see
+                    // GalleryBackgroundStore.syncIfStale). A value changed on
+                    // another device, or by a fresh pullSync completing just
+                    // after this device's own cold launch raced it, sat stale
+                    // here until the app was force-quit and relaunched. Throttled
+                    // to once a minute, same cadence as the gallery, so this
+                    // doesn't fire on every quick app-switch.
+                    if account.isLoggedIn,
+                       account.lastSyncDate.map({ Date().timeIntervalSince($0) > 60 }) ?? true {
+                        Task { await account.pullSync(library: libraryManager, player: player) }
+                    }
                 }
             }
             .task {
