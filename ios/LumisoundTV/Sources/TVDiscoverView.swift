@@ -181,18 +181,16 @@ struct TVSmartPlaylistDetailView: View {
     let token: String
     let bucket: TVSmartPlaylistBucket
 
-    /// Resolved against the loaded library by filename — see
-    /// `TVBridgeClient.resolvedTrack(for:)`. An entry that doesn't resolve
-    /// (library not loaded yet, or a genuine mismatch) is dropped rather
-    /// than shown unplayable.
-    private var resolvedTracks: [UserMusicTrack] {
-        bucket.tracks.compactMap { client.resolvedTrack(for: $0) }
-    }
-    private var queue: [TVPlayable] {
-        resolvedTracks.compactMap { client.playable(from: $0, token: token) }
-    }
-
     var body: some View {
+        // Computed ONCE per render rather than as instance `var`s — each was
+        // previously re-read (and recomputed from scratch) by `meta`, the
+        // Play button, AND once per row's `ForEach` closure, so an N-track
+        // bucket paid O(N) work (itself O(N · client.library.count) on a
+        // `resolvedTrack(for:)` cache miss, since that's an unindexed linear
+        // scan) N+2 times per render — O(N²) overall. Same fix shape as
+        // `TVPlaylistDetailView`.
+        let resolvedTracks: [UserMusicTrack] = bucket.tracks.compactMap { client.resolvedTrack(for: $0) }
+        let queue: [TVPlayable] = resolvedTracks.compactMap { client.playable(from: $0, token: token) }
         ScrollView {
             VStack(alignment: .leading, spacing: 40) {
                 TVDetailHeader(

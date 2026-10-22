@@ -301,8 +301,15 @@ struct TVAccountView: View {
         .task {
             if client.notifications.isEmpty { await client.fetchNotifications(token: token) }
             if client.stats == nil { await client.fetchStats(token: token) }
-            await client.fetchFriendsListening(token: token)
-            await client.fetchSocialActivity(token: token)
+            // Unlike the two guards above, these ran unconditionally — every
+            // navigation into Account re-issued both round trips (plus
+            // whatever `fetchFriendsListening` itself fans out to for
+            // presence) even when already loaded this session. Same
+            // `.isEmpty` guard shape as `notifications` above; genuinely
+            // having zero friends/activity means this re-fetches each visit,
+            // same accepted tradeoff that row already has.
+            if client.friendsListening.isEmpty { await client.fetchFriendsListening(token: token) }
+            if client.socialActivity.isEmpty { await client.fetchSocialActivity(token: token) }
         }
     }
 

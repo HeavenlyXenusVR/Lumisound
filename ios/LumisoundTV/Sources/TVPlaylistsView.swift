@@ -216,21 +216,22 @@ struct TVPlaylistDetailView: View {
         client.playlists.first(where: { $0.id == playlist.id }) ?? playlist
     }
 
-    /// Only remotely-playable tracks form the actual playback queue; a track
-    /// that isn't playable here is skipped over entirely rather than queued
-    /// and immediately failing.
-    private var queue: [TVPlayable] {
-        current.tracks.compactMap { client.playable(from: $0, token: token) }
-    }
-
-    private var meta: String {
-        let playable = queue.count
-        let total = current.tracks.count
-        if playable == total { return tvSongCount(total) }
-        return "\(tvSongCount(total)) · \(playable) playable on Apple TV"
+    private func meta(playableCount: Int, totalCount: Int) -> String {
+        if playableCount == totalCount { return tvSongCount(totalCount) }
+        return "\(tvSongCount(totalCount)) · \(playableCount) playable on Apple TV"
     }
 
     var body: some View {
+        // Computed ONCE per render and threaded through explicitly below —
+        // `current`/`queue` were both computed `var`s read fresh by `meta`,
+        // the Play button, AND once per row inside `row(for:)`'s `ForEach`,
+        // so a K-track playlist's render recomputed the full `compactMap`
+        // (itself O(K), and O(K · client.library.count) on a cache miss via
+        // `client.playable(from:)`'s `libraryMatch` fallback) K+2 times —
+        // O(K²) total for one screen draw. Same shape as the old
+        // `smartTempoOrder` bug fixed on the main iOS app.
+        let current = current
+        let queue: [TVPlayable] = current.tracks.compactMap { client.playable(from: $0, token: token) }
         let urls = client.artworkURLs(for: current, token: token)
         ScrollView {
             VStack(alignment: .leading, spacing: 40) {
@@ -238,7 +239,7 @@ struct TVPlaylistDetailView: View {
                     eyebrow: "Playlist",
                     title: current.name,
                     subtitle: current.description,
-                    meta: meta
+                    meta: meta(playableCount: queue.count, totalCount: current.tracks.count)
                 ) {
                     TVPlaylistArtwork(name: current.name, artworkURLs: urls, token: token, showsTitle: false)
                 } actions: {
@@ -258,7 +259,7 @@ struct TVPlaylistDetailView: View {
                 } else {
                     TVTrackList {
                         ForEach(current.tracks) { track in
-                            row(for: track)
+                            row(for: track, queue: queue)
                         }
                     }
                 }
@@ -269,7 +270,7 @@ struct TVPlaylistDetailView: View {
     }
 
     @ViewBuilder
-    private func row(for track: TVPlaylistTrack) -> some View {
+    private func row(for track: TVPlaylistTrack, queue: [TVPlayable]) -> some View {
         let playable = client.playable(from: track, token: token)
         let label = TVTrackRow(
             artworkURL: playable?.artworkURL,

@@ -96,6 +96,12 @@ final class TVPlayerModel: ObservableObject {
     private var crossfadeTask: Task<Void, Never>?
     private var hasCrossfadedForCurrentTrack = false
 
+    // MARK: Stall watchdog state — see `checkForPlaybackStall()`.
+    private var lastStallCheckPosition: Double = 0
+    private var stalledTickCount = 0
+    private var lastStallRecoveryPosition: Double?
+    private var consecutiveStallRecoveriesAtSamePosition = 0
+
     /// Queue order before shuffling — restored when shuffle is toggled off.
     private var originalQueue: [TVPlayable] = []
     private var endObservers: [NSObjectProtocol] = []
@@ -143,6 +149,92 @@ final class TVPlayerModel: ObservableObject {
         let target = max(0, min(newPosition, duration))
         position = target
         player.seek(to: CMTime(seconds: target, preferredTimescale: 600))
+    }
+
+    /// Watches for the AVPlayer-reports-playing-but-position-frozen stall —
+    /// buffering indefinitely on a flaky connection, or AVPlayer just
+    /// getting internally stuck, both real AVPlayer failure modes. Without
+    /// this, tvOS had NO recovery at all for a hung stream: `isPlaying`
+    /// stays true, nothing is audible, and nothing ever retries — the main
+    /// iOS app's AVPlayer fallback path already had to fix this exact gap
+    /// (`checkForOpusPlayerStall`, `AudioPlayerManager+PositionTracking.swift`)
+    /// after it showed up in production; this mirrors that fix for tvOS's
+    /// own AVPlayer-only playback path, which never got it. Called every
+    /// 0.2s from the periodic time observer above, so the tick counts below
+    /// are scaled from that function's 0.5s-tick thresholds to the same
+    /// wall-clock durations.
+    private func checkForPlaybackStall() {
+        // Every condition here is a state where position legitimately does
+        // not advance — treating any of them as a stall would restart
+        // playback on top of itself.
+        guard isPlaying, !isBuffering, crossfadeTask == nil,
+              duration > 0, position < duration - 1.0
+        else {
+            stalledTickCount = 0
+            lastStallCheckPosition = position
+            return
+        }
+
+        // A tick is 0.2s, so anything genuinely playing moves well beyond this.
+        if position > lastStallCheckPosition + 0.02 {
+            stalledTickCount = 0
+            lastStallCheckPosition = position
+            if let recoveredAt = lastStallRecoveryPosition, position > recoveredAt + 3 {
+                lastStallRecoveryPosition = nil
+                consecutiveStallRecoveriesAtSamePosition = 0
+            }
+            return
+        }
+
+        stalledTickCount += 1
+        // 15 ticks at 0.2s = 3 seconds of believing we play while rendering
+        // nothing — same 3s budget as the main app's 6 ticks at 0.5s.
+        guard stalledTickCount >= 15 else { return }
+
+        let resumeAt = position
+        stalledTickCount = 0
+        lastStallCheckPosition = resumeAt
+
+        if let lastPosition = lastStallRecoveryPosition, abs(resumeAt - lastPosition) < 1.5 {
+            consecutiveStallRecoveriesAtSamePosition += 1
+        } else {
+            consecutiveStallRecoveriesAtSamePosition = 1
+        }
+        lastStallRecoveryPosition = resumeAt
+
+        if consecutiveStallRecoveriesAtSamePosition >= 5 {
+            tvWarn("Playback stall at \(String(format: "%.1f", resumeAt))s recurred \(consecutiveStallRecoveriesAtSamePosition)x — giving up and skipping", category: "playback")
+            TVRemoteLogger.logError(category: "playback", event: "playback_stall_unrecoverable",
+                                     message: "position frozen at \(Int(resumeAt))s, \(consecutiveStallRecoveriesAtSamePosition) recovery attempts")
+            lastStallRecoveryPosition = nil
+            consecutiveStallRecoveriesAtSamePosition = 0
+            next()
+            return
+        }
+
+        // First attempt: a cheap pause/play "kick" — no reseek, near-
+        // instant. Only escalate to a real re-seek (which forces AVPlayer
+        // to drop and refill its buffer from scratch) once that's confirmed
+        // not to be enough; and only nudge a few seconds past the dead spot
+        // once even a same-position re-seek has failed repeatedly, same
+        // escalation shape as the main app's version.
+        if consecutiveStallRecoveriesAtSamePosition == 1 {
+            tvWarn("Playback stalled — reports playing but position frozen at \(String(format: "%.1f", resumeAt))s for 3s; kicking", category: "playback")
+            TVRemoteLogger.log(category: "playback", event: "playback_stall_recovered",
+                                detail: ["position": Int(resumeAt), "attempt": consecutiveStallRecoveriesAtSamePosition, "kicked": true])
+            player.pause()
+            player.play()
+            return
+        }
+
+        let nudging = consecutiveStallRecoveriesAtSamePosition >= 3
+        let target = nudging ? min(resumeAt + 5, max(0, duration - 0.5)) : resumeAt
+        tvWarn("Playback stalled — reports playing but position frozen at \(String(format: "%.1f", resumeAt))s for 3s; \(nudging ? "nudging to \(String(format: "%.1f", target))s" : "re-seeking") (attempt \(consecutiveStallRecoveriesAtSamePosition))", category: "playback")
+        TVRemoteLogger.log(category: "playback", event: "playback_stall_recovered",
+                            detail: ["position": Int(resumeAt), "attempt": consecutiveStallRecoveriesAtSamePosition, "nudged": nudging])
+        player.seek(to: CMTime(seconds: target, preferredTimescale: 600)) { [weak self] _ in
+            self?.player.play()
+        }
     }
 
     private func setupObservers() {
@@ -197,6 +289,7 @@ final class TVPlayerModel: ObservableObject {
                         self.duration = d
                     }
                     self.checkCrossfadeTrigger()
+                    self.checkForPlaybackStall()
                     self.updateNowPlayingInfo()
                 }
             }

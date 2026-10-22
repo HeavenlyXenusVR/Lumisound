@@ -32,6 +32,16 @@ import SwiftUI
 /// means scrolling back to a row costs nothing — the previous behaviour refetched
 /// every cover every time it came back on screen, which was most of the load
 /// causing the starvation in the first place.
+/// Decoded-image cache, separate from `tvArtworkSession`'s `URLCache` above.
+/// `URLCache` only saves the re-DOWNLOAD — `UIImage(data:)` still re-decodes
+/// the same JPEG/PNG bytes from scratch every single time a `TVAuthImage`
+/// view instance is (re)created, which happens whenever a row scrolls far
+/// enough off-screen to be recycled by a `LazyVStack`/`LazyHGrid` and then
+/// scrolled back — exactly the "shelf scrolling" pattern this screen exists
+/// for. `NSCache` is thread-safe and purges itself under memory pressure, so
+/// this is a pure win with no manual eviction logic needed.
+private let tvArtworkImageCache = NSCache<NSURL, UIImage>()
+
 private let tvArtworkSession: URLSession = {
     let config = URLSessionConfiguration.default
     config.httpMaximumConnectionsPerHost = 12
@@ -74,6 +84,16 @@ struct TVAuthImage<Placeholder: View>: View {
     private func load() async {
         guard let url else {
             currentImage = nil
+            incomingImage = nil
+            showIncoming = false
+            return
+        }
+
+        if let cached = tvArtworkImageCache.object(forKey: url as NSURL) {
+            // Already decoded — show it immediately with no cross-dissolve;
+            // there's no stale frame to fade from since this is the real
+            // image for this exact URL, not a placeholder.
+            currentImage = cached
             incomingImage = nil
             showIncoming = false
             return
@@ -157,6 +177,7 @@ struct TVAuthImage<Placeholder: View>: View {
         guard let ui = UIImage(data: data) else {
             return (nil, -2)
         }
+        tvArtworkImageCache.setObject(ui, forKey: url as NSURL)
         return (ui, status)
     }
 }

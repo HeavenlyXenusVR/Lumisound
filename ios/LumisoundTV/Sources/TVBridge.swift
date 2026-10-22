@@ -785,7 +785,15 @@ final class TVBridgeClient: ObservableObject {
                     : "Library is taking a while to load. Tap Retry."
                 return
             }
-            let decoded = try JSONDecoder().decode(Response.self, from: data)
+            // Decoding is real CPU work that scales with account size (this
+            // request's own `limit=100000` says the server expects to need
+            // to) — offloaded the same way `TVHomeView.rebuildRecentlyAdded()`
+            // already offloads its sort over this same `library`, rather
+            // than running a potentially-large decode directly on the
+            // @MainActor like every other request here does.
+            let decoded = try await Task.detached(priority: .userInitiated) {
+                try JSONDecoder().decode(Response.self, from: data)
+            }.value
             libraryConfigured = decoded.configured
             if !decoded.configured {
                 libraryError = "User music storage is not configured on the server."

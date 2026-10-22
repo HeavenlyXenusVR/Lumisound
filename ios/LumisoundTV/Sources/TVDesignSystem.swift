@@ -978,7 +978,13 @@ struct TVShelfSection<Content: View>: View {
             .padding(.horizontal, TVMetrics.margin)
 
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .top, spacing: 34) { content() }
+                // `LazyHStack`, not a plain `HStack` — every other large
+                // collection in this codebase (the card grids via
+                // `TVCardGrid`'s `LazyVGrid`, lists via `TVTrackList`'s
+                // `LazyVStack`) already renders lazily; this was the one
+                // container still building every child eagerly regardless
+                // of what's actually on/near screen.
+                LazyHStack(alignment: .top, spacing: 34) { content() }
                     .padding(.leading, TVMetrics.margin)
                     // Room on the trailing edge so the row runs out in empty
                     // space instead of being cut through a card, and vertical

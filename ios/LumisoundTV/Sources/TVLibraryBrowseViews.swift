@@ -405,15 +405,17 @@ struct TVFavoritesGridView: View {
     @ObservedObject var client: TVBridgeClient
     let token: String
 
-    /// Favorites resolved against the already-loaded library — a favorite
-    /// whose track no longer exists in the cloud library (deleted since) is
-    /// silently dropped rather than shown unplayable.
-    private var favoriteTracks: [UserMusicTrack] {
-        client.library.filter { client.favoriteSongIDs.contains($0.id) }
-    }
-    private var queue: [TVPlayable] {
-        favoriteTracks.compactMap { client.playable(from: $0, token: token) }
-    }
+    /// Cached rather than a plain computed `var` — `client.library` can be
+    /// up to the 100,000-track fetch limit, and a computed property here
+    /// re-filtered the WHOLE thing from scratch on every read, including
+    /// reads triggered by ANY of `client`'s ~20 other `@Published`
+    /// properties changing while this screen happens to be visible (not
+    /// just a `favoriteSongIDs`/`library` change). Same fix shape as
+    /// `TVAlbumsGridView`/`TVArtistsGridView`/`TVGenresGridView`'s
+    /// `cachedAlbums` etc. — recomputed only when the inputs that actually
+    /// matter change, via `.task(id:)` below.
+    @State private var favoriteTracks: [UserMusicTrack] = []
+    @State private var queue: [TVPlayable] = []
 
     var body: some View {
         ScrollView {
@@ -449,6 +451,22 @@ struct TVFavoritesGridView: View {
         }
         .task {
             if client.favoriteSongIDs.isEmpty { await client.fetchFavorites(token: token) }
+        }
+        // Keyed on both counts — either the library or the favorites set
+        // changing is exactly when this needs to recompute, and nothing
+        // else does.
+        .task(id: "\(client.library.count)-\(client.favoriteSongIDs.count)") {
+            let library = client.library
+            let favoriteIDs = client.favoriteSongIDs
+            // Only the filter itself (the part that scales with the whole
+            // library) is detached — `client.playable(from:)` is MainActor-
+            // isolated (it reads `client`'s own state), so that mapping
+            // happens back here after the detached work returns.
+            let resolved = await Task.detached(priority: .userInitiated) {
+                library.filter { favoriteIDs.contains($0.id) }
+            }.value
+            favoriteTracks = resolved
+            queue = resolved.compactMap { client.playable(from: $0, token: token) }
         }
     }
 }
