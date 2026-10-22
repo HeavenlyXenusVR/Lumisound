@@ -5397,6 +5397,25 @@ async def _do_download_job(
         duration_ms=int((time.monotonic() - job_start) * 1000),
     ))
 
+    # Feature: force-sync already-cached lyrics onto future downloads. This
+    # cache (ios_lyrics_cache) is keyed by title+artist, not per-user — a
+    # track time-synced once (via Aria transcription, a user correction, or
+    # a previous automatic LRCLIB fetch for anyone's copy of this exact
+    # song) should apply immediately to every later download of a matching
+    # title/artist, not stay sitting idle until whoever downloads it next
+    # happens to open Now Playing and trigger a fresh lookup. Fire-and-
+    # forget: `_fetch_and_cache_lyrics` is itself cache-first and a no-op
+    # when already cached, so this costs nothing on a hit and only reaches
+    # lrclib.net on a genuine miss — which also means a brand-new song's
+    # FIRST download is what seeds the cache for every later download of
+    # it, same as this one benefits from whoever downloaded it before.
+    # Skipped when `display_title` fell all the way back to the bare
+    # source id (very old clients that send neither `title` nor
+    # `full_title`) — that string is not a real title and would only
+    # pollute the cache under a garbage key.
+    if full_title or title:
+        asyncio.create_task(_fetch_and_cache_lyrics(display_title, artist or "", duration))
+
     content_type_map = {
         "mp3":  "audio/mpeg",
         "m4a":  "audio/mp4",
