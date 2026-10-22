@@ -60,21 +60,7 @@ extension SettingsView {
             #endif
 
             // Audio Format picker
-            HStack {
-                Label("Audio Format", systemImage: "waveform")
-                    .foregroundStyle(AppTheme.textPrimary)
-                Spacer()
-                Picker("Audio Format", selection: Binding(
-                    get: { streaming.preferredFormat },
-                    set: { streaming.preferredFormat = $0 }
-                )) {
-                    ForEach(StreamingService.availableFormats, id: \.value) { fmt in
-                        Text(fmt.label).tag(fmt.value)
-                    }
-                }
-                .pickerStyle(.menu)
-                .tint(.cyan)
-            }
+            AudioFormatPickerRow(streaming: streaming, tint: .cyan, hidesLabel: false)
 
             // Wi-Fi Only Downloads — blocks the single downloadToLibrary
             // chokepoint (see that function's guard) whenever the device is
@@ -117,5 +103,50 @@ extension SettingsView {
             sectionHeader("Streaming & Downloads", icon: "arrow.down.circle.fill", tint: .cyan)
         }
         .listRowBackground(tintedRowBackground(.cyan))
+    }
+}
+
+/// Isolates the Audio Format picker from `SettingsView`'s body — same
+/// "dropdown resets while open" root cause as `FadeCurvePickerRow`/
+/// `EQPresetPickerRow`/`ReverbPresetPickerRow` in
+/// `SettingsView+PlaybackAudioSection.swift` (see that file's doc comment),
+/// just via `streaming` instead of `player`. `preferredFormat` is a plain
+/// `UserDefaults`-backed computed property on `StreamingService`, not
+/// `@Published` — forcing the `Binding(get:set:)` shape both prior
+/// "Save to" dropdown fixes identified as the strongest fingerprint of this
+/// bug. Shared by both Settings screens that surface this picker
+/// (Streaming & Downloads, yt-dlp) since it's the exact same control with
+/// only cosmetic differences between them.
+struct AudioFormatPickerRow: View {
+    @ObservedObject var streaming: StreamingService
+    var tint: Color
+    var hidesLabel: Bool
+
+    var body: some View {
+        HStack {
+            Label("Audio Format", systemImage: "waveform")
+                .foregroundStyle(AppTheme.textPrimary)
+            Spacer()
+            Group {
+                if hidesLabel {
+                    picker.labelsHidden()
+                } else {
+                    picker
+                }
+            }
+            .pickerStyle(.menu)
+            .tint(tint)
+        }
+    }
+
+    private var picker: some View {
+        Picker("Audio Format", selection: Binding(
+            get: { streaming.preferredFormat },
+            set: { streaming.preferredFormat = $0 }
+        )) {
+            ForEach(StreamingService.availableFormats, id: \.value) { fmt in
+                Text(fmt.label).tag(fmt.value)
+            }
+        }
     }
 }

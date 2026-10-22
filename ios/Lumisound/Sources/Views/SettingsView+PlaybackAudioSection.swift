@@ -76,23 +76,7 @@ extension SettingsView {
             }
 
             if player.audioSettings.crossfadeActive {
-                HStack {
-                    Label("Fade Curve", systemImage: "waveform.path")
-                        .foregroundStyle(AppTheme.textSecondary)
-                        .font(AppTheme.bodyFont(size: 14))
-                    Spacer()
-                    Picker("", selection: Binding(
-                        get: { player.audioSettings.crossfadeCurve ?? .equalPower },
-                        set: { player.audioSettings.crossfadeCurve = $0 }
-                    )) {
-                        ForEach(CrossfadeCurve.allCases) { curve in
-                            Text(curve.displayName).tag(curve)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .tint(.teal)
-                }
-                .padding(.leading, 16)
+                FadeCurvePickerRow(player: player)
             }
 
             // Gapless playback
@@ -205,22 +189,7 @@ extension SettingsView {
                 }
 
                 if !player.audioSettings.autoEQEnabled {
-                    HStack {
-                        Label("EQ Preset", systemImage: "waveform")
-                            .foregroundStyle(AppTheme.textPrimary)
-                        Spacer()
-                        Picker("", selection: $player.audioSettings.eqPreset) {
-                            ForEach(EQPreset.allCases) { preset in
-                                Text(preset.displayName)
-                                    .tag(preset)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .tint(.teal)
-                        .onChange(of: player.audioSettings.eqPreset) { newPreset in
-                            player.applyEQPreset(newPreset)
-                        }
-                    }
+                    EQPresetPickerRow(player: player)
                 }
             }
 
@@ -276,21 +245,7 @@ extension SettingsView {
                     .padding(.leading, 16)
                     .transition(.opacity.combined(with: .move(edge: .top)))
 
-                HStack {
-                    Label("Room", systemImage: "square.stack.3d.up")
-                        .foregroundStyle(AppTheme.textSecondary)
-                        .font(AppTheme.bodyFont(size: 14))
-                    Spacer()
-                    Picker("", selection: $player.audioSettings.reverbPreset) {
-                        ForEach(ReverbRoomPreset.allCases) { preset in
-                            Text(preset.displayName)
-                                .tag(preset)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .tint(.teal)
-                }
-                .padding(.leading, 16)
+                ReverbPresetPickerRow(player: player)
 
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
@@ -478,5 +433,90 @@ extension SettingsView {
         .animation(.easeInOut(duration: 0.22), value: silenceTrim.isEnabled)
         .animation(.easeInOut(duration: 0.22), value: player.audioSettings.monoAudioEnabled)
         .animation(.easeInOut(duration: 0.22), value: bluetoothBattery.isEnabled)
+    }
+}
+
+/// Isolates one Settings Picker row from `SettingsView`'s own body — which
+/// holds ELEVEN other `@EnvironmentObject`/`@ObservedObject` services
+/// (`library`, `streaming`, `account`, `cacheManager`, `sleepTimer`, …)
+/// besides `player`, every one of which re-ran this whole section (and
+/// rebuilt this `Picker`'s native `UIMenu` right along with it) on every
+/// publish from ANY of them — exactly the "dropdown menus reset while open"
+/// shape already found and fixed for the tracked-playlist and pending-
+/// imports "Save to" pickers (see those fixes' commits). `LibraryManager`'s
+/// own `isScanning`/background-sync churn alone is independently documented
+/// (`LibraryManager+LocalDocumentsScan.swift`) as firing in bursts on
+/// foreground-return and routine navigation — exactly when a listener would
+/// otherwise have this picker open. Taking only `player` (an `@ObservedObject`,
+/// not inherited through the parent's wider environment) means this row now
+/// only re-renders on `player`'s own — much less frequent — publishes.
+private struct FadeCurvePickerRow: View {
+    @ObservedObject var player: AudioPlayerManager
+
+    var body: some View {
+        HStack {
+            Label("Fade Curve", systemImage: "waveform.path")
+                .foregroundStyle(AppTheme.textSecondary)
+                .font(AppTheme.bodyFont(size: 14))
+            Spacer()
+            Picker("", selection: Binding(
+                get: { player.audioSettings.crossfadeCurve ?? .equalPower },
+                set: { player.audioSettings.crossfadeCurve = $0 }
+            )) {
+                ForEach(CrossfadeCurve.allCases) { curve in
+                    Text(curve.displayName).tag(curve)
+                }
+            }
+            .pickerStyle(.menu)
+            .tint(.teal)
+        }
+        .padding(.leading, 16)
+    }
+}
+
+/// Same isolation as `FadeCurvePickerRow` above, for the EQ Preset picker.
+private struct EQPresetPickerRow: View {
+    @ObservedObject var player: AudioPlayerManager
+
+    var body: some View {
+        HStack {
+            Label("EQ Preset", systemImage: "waveform")
+                .foregroundStyle(AppTheme.textPrimary)
+            Spacer()
+            Picker("", selection: $player.audioSettings.eqPreset) {
+                ForEach(EQPreset.allCases) { preset in
+                    Text(preset.displayName)
+                        .tag(preset)
+                }
+            }
+            .pickerStyle(.menu)
+            .tint(.teal)
+            .onChange(of: player.audioSettings.eqPreset) { newPreset in
+                player.applyEQPreset(newPreset)
+            }
+        }
+    }
+}
+
+/// Same isolation as `FadeCurvePickerRow` above, for the Reverb Room picker.
+private struct ReverbPresetPickerRow: View {
+    @ObservedObject var player: AudioPlayerManager
+
+    var body: some View {
+        HStack {
+            Label("Room", systemImage: "square.stack.3d.up")
+                .foregroundStyle(AppTheme.textSecondary)
+                .font(AppTheme.bodyFont(size: 14))
+            Spacer()
+            Picker("", selection: $player.audioSettings.reverbPreset) {
+                ForEach(ReverbRoomPreset.allCases) { preset in
+                    Text(preset.displayName)
+                        .tag(preset)
+                }
+            }
+            .pickerStyle(.menu)
+            .tint(.teal)
+        }
+        .padding(.leading, 16)
     }
 }

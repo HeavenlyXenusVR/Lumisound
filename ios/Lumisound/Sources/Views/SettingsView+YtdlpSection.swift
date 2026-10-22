@@ -60,31 +60,14 @@ extension SettingsView {
             .listRowBackground(tintedRowBackground(.orange))
 
             // Audio format also governs yt-dlp's output, so surface it here too.
+            // `hidesLabel: true` because this row already draws its own
+            // `Label` above — a `.menu` picker in a List renders its title
+            // too, so this row read "Audio Format  Audio Format" with the
+            // real value pushed to the far edge. See `AudioFormatPickerRow`
+            // (SettingsView+StreamingDownloadsSection.swift) for the shared
+            // implementation and why it's its own isolated row.
             Section {
-                HStack {
-                    Label("Audio Format", systemImage: "waveform")
-                        .foregroundStyle(AppTheme.textPrimary)
-                    Spacer()
-                    // `.labelsHidden()` because the row already draws its own
-                    // `Label` above — a `.menu` picker in a List renders its
-                    // title too, so this row read "Audio Format  Audio Format"
-                    // with the real value pushed to the far edge. Every other
-                    // picker row in Settings (Fade Curve, Scan on Launch, …)
-                    // avoids this by passing an empty title; hiding the label
-                    // instead fixes the duplicate the same way while keeping a
-                    // real accessibility label on the control.
-                    Picker("Audio Format", selection: Binding(
-                        get: { streaming.preferredFormat },
-                        set: { streaming.preferredFormat = $0 }
-                    )) {
-                        ForEach(StreamingService.availableFormats, id: \.value) { fmt in
-                            Text(fmt.label).tag(fmt.value)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .tint(.gray)
-                }
+                AudioFormatPickerRow(streaming: streaming, tint: .gray, hidesLabel: true)
             } header: {
                 sectionHeader("Format", icon: "doc.fill", tint: .gray)
             } footer: {
