@@ -250,17 +250,29 @@ struct SongRow: View {
             .monospacedDigit()
     }
 
-    /// Small outlined tag calling out lossless/Hi-Res files — deliberately
-    /// silent for the common case (compressed, standard-rate audio) rather
-    /// than labeling every row, so it only draws attention to the notable ones.
-    @ViewBuilder
     private var formatBadge: some View {
+        SongFormatBadge(song: song)
+    }
+}
+
+/// Small outlined tag calling out lossless/Hi-Res files — deliberately
+/// silent for the common case (compressed, standard-rate audio) rather than
+/// labeling every row/card, so it only draws attention to the notable ones.
+/// Shared by `SongRow` (the list presentation) and `SongGridCell` (the card/
+/// grid presentation) — the grid cell previously had no format indicator at
+/// all, unlike every row-style layout, so a hi-res or lossless file looked
+/// identical to any other track whenever the library was viewed as a grid.
+struct SongFormatBadge: View {
+    let song: Song
+
+    var body: some View {
         if song.isKnownLosslessContainer || song.isHiResSampleRate {
             Text(song.isHiResLossless ? "HI-RES LOSSLESS" : song.isKnownLosslessContainer ? (song.formatTag ?? "LOSSLESS") : "HI-RES")
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(AppTheme.dynamicAccent)
                 .padding(.horizontal, 4)
                 .padding(.vertical, 1)
+                .background(.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 3, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 3, style: .continuous)
                         .strokeBorder(AppTheme.dynamicAccent.opacity(0.5), lineWidth: 1)
@@ -339,6 +351,10 @@ struct SongGridCell: View {
                                 .background(.black.opacity(0.5), in: Capsule())
                                 .padding(4)
                         }
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        SongFormatBadge(song: song)
+                            .padding(4)
                     }
             }
             .aspectRatio(1, contentMode: .fit)

@@ -190,6 +190,9 @@ struct LumenSongGridContent: View {
                             .padding(8)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                     }
+                    SongFormatBadge(song: song)
+                        .padding(7)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
             .aspectRatio(1, contentMode: .fit)

@@ -221,6 +221,9 @@ struct CustomLibraryGridCellView: View {
                 ArtworkThumbnail(song: song, size: geo.size.width)
                     .overlay(alignment: .bottomTrailing) { nowPlayingBadge }
                     .overlay(alignment: .topLeading) { trackNumberBadge }
+                    .overlay(alignment: .topTrailing) {
+                        SongFormatBadge(song: song).padding(4)
+                    }
             }
             .aspectRatio(1, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: cellCornerRadius, style: .continuous))
