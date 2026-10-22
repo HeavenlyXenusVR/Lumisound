@@ -14,6 +14,14 @@
       "screenshotURLs": [],
       "versions": [
         {
+          "version": "1.9.0.100",
+          "date": "2026-10-22T18:38:02Z",
+          "downloadURL": "https://github.com/HollowHeavenXR/Lumisound/releases/download/ios%2Fv1.9.0.100/Lumisound-1.9.0.100-unsigned.ipa",
+          "localizedDescription": "See release notes on GitHub.",
+          "size": 10996290,
+          "minOSVersion": "26.0"
+        },
+        {
           "version": "1.9.0.99",
           "date": "2026-10-22T18:13:23Z",
           "downloadURL": "https://github.com/HollowHeavenXR/Lumisound/releases/download/ios%2Fv1.9.0.99/Lumisound-1.9.0.99-unsigned.ipa",
