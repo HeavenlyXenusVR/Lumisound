@@ -159,7 +159,7 @@ struct FavoritesView: View {
                     ForEach(visible) { song in
                         FavoriteRow(song: song, isCurrent: player.currentSong?.id == song.id)
                             .contentShape(Rectangle())
-                            .onTapGesture { player.play(song: song, in: visible) }
+                            .onTapGesture { player.play(song: song, in: visible, uiSource: "favorites") }
                             .listRowBackground(
                                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                                     .fill(AppTheme.elevatedSurface.opacity(0.6))
@@ -205,7 +205,7 @@ struct FavoritesView: View {
                     LazyVGrid(columns: gridColumns, spacing: 18) {
                         ForEach(visible) { song in
                             Button {
-                                player.play(song: song, in: visible)
+                                player.play(song: song, in: visible, uiSource: "favorites")
                             } label: {
                                 SongGridCell(song: song, isCurrent: player.currentSong?.id == song.id)
                             }

@@ -234,6 +234,7 @@ final class SocialService: ObservableObject {
                 "/api/social/friends/request", method: "POST",
                 body: Body(to_user_id: toUserId, to_username: toUsername)
             )
+            appLog("Friend request sent", category: "social")
             await fetchFriendRequests()
             return true
         } catch {
@@ -258,6 +259,7 @@ final class SocialService: ObservableObject {
         guard let account, account.isLoggedIn else { return }
         do {
             _ = try await account.makeRequest("/api/social/friends/request/\(requestId)/\(action)", method: "POST")
+            appLog("Friend request \(action)ed", category: "social")
             async let requests: () = fetchFriendRequests()
             async let friendsList: () = fetchFriends()
             _ = await (requests, friendsList)
@@ -295,6 +297,7 @@ final class SocialService: ObservableObject {
         guard let account, account.isLoggedIn else { return }
         do {
             _ = try await account.makeRequest("/api/social/friends/\(userId)", method: "DELETE")
+            appLog("Friend removed", category: "social")
             await fetchFriends()
         } catch {
             handle(error)

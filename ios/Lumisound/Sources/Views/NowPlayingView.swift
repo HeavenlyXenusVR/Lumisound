@@ -413,6 +413,14 @@ struct NowPlayingView: View {
             triggerTrackInfoAnimation()
             loadLyrics()
         }
+        // Screen-view telemetry for which Now Playing panel is showing —
+        // `.onChange` here catches every path that changes `selectedPanel`
+        // (the panel picker's own tap, and the "Playing from"/Queue
+        // shortcuts in showPanel()) rather than needing a log call added at
+        // each one individually.
+        .onChange(of: selectedPanel) { panel in
+            appLog("screen_entered: NowPlaying.\(panel.rawValue)", category: "navigation")
+        }
         .onChange(of: player.currentPlaylistID) { playlistID in
             guard let playlistID,
                   let playlist = library.playlists.first(where: { $0.id == playlistID }),

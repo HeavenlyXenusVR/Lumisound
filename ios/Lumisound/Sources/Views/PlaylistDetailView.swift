@@ -87,7 +87,7 @@ struct PlaylistDetailView: View {
                 ForEach(songs) { song in
                     Button {
                         if !isEditing {
-                            player.play(song: song, in: songs, playlistID: currentPlaylist.id)
+                            player.play(song: song, in: songs, playlistID: currentPlaylist.id, uiSource: "playlist")
                         }
                     } label: {
                         SongRow(song: song, isCurrent: player.currentSong?.id == song.id)

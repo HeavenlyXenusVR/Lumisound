@@ -362,7 +362,18 @@ struct ClassicContentView: View {
             // like "it just freezes/crashes sometimes". See AppLogger.breadcrumb.
             .onChange(of: selectedTab) { newValue in
                 let names = ["Library", "Playing", "Queue", "Cloud Services", "Friends", "Profile", "Settings"]
-                appBreadcrumb("Switched to \(names.indices.contains(newValue) ? names[newValue] : "tab \(newValue)") tab")
+                let name = names.indices.contains(newValue) ? names[newValue] : "tab \(newValue)"
+                appBreadcrumb("Switched to \(name) tab")
+                // Screen-view telemetry — there was previously no record at
+                // all of what screen a user is actually looking at (only
+                // the crash-context breadcrumb above, which stays on-device
+                // and is only ever read back after a crash). Routed through
+                // the existing batched/15s-flush AppLogger pipeline, not
+                // RemoteLogger's unbatched one-POST-per-call path — a tab
+                // switch is a discrete, low-frequency event (nothing like a
+                // position tick), but it's still exactly the kind of thing
+                // that pipeline's batching exists for.
+                appLog("screen_entered: \(name)", category: "navigation")
 
                 // Settle-in transition on the newly-selected tab's content —
                 // style picked in Settings → Appearance. iOS 16 doesn't expose

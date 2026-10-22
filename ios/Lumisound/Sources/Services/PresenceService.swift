@@ -53,6 +53,7 @@ final class PresenceService: ObservableObject {
     func startHeartbeat(account: AccountService, player: AudioPlayerManager) {
         stopHeartbeat()
         guard account.isLoggedIn else { return }
+        appLog("Presence heartbeat started", category: "social")
         Task { [weak self, weak account, weak player] in
             guard let self, let account, let player else { return }
             await self.sendHeartbeat(account: account, player: player)

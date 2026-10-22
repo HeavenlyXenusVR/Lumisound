@@ -346,7 +346,7 @@ struct SongsTab: View {
             if isSelecting {
                 toggleSelection(song)
             } else {
-                player.play(song: song, in: sortedSongs)
+                player.play(song: song, in: sortedSongs, uiSource: "library_songs")
             }
         } label: {
             HStack(spacing: 12) {
@@ -496,7 +496,7 @@ struct SongsTab: View {
                             LazyVGrid(columns: gridColumns, spacing: 20) {
                                 ForEach(sortedSongs) { song in
                                     Button {
-                                        player.play(song: song, in: sortedSongs)
+                                        player.play(song: song, in: sortedSongs, uiSource: "library_songs")
                                     } label: {
                                         SongGridCell(song: song, isCurrent: player.currentSong?.id == song.id)
                                             .shadow(color: .black.opacity(0.35), radius: 10, y: 6)

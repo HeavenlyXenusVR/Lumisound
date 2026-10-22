@@ -297,7 +297,17 @@ extension AudioPlayerManager {
         let desired = fileSampleRate.rounded()
         guard desired > 0,
               abs(desired - lastRequestedSampleRate) > 0.5 else { return }
+        let previous = lastRequestedSampleRate
         lastRequestedSampleRate = desired
+        // "What the audio engine sees" telemetry — this guard above only
+        // passes when the rate is actually changing, so every call that
+        // reaches here is a real hardware renegotiation (a stop+restart,
+        // below), not a no-op. Worth knowing about specifically because a
+        // queue that keeps alternating between e.g. 44.1kHz (CD-ripped
+        // FLAC/ALAC) and 48kHz (this app's YouTube-sourced AAC/Opus-
+        // transcoded content) sources pays this cost at every such track
+        // boundary, not just once per session.
+        appLog("ensureSampleRate: \(previous)Hz -> \(desired)Hz", category: "audio")
 
         let session = AVAudioSession.sharedInstance()
         let wasRunning = engine.isRunning

@@ -30,10 +30,18 @@ extension AudioPlayerManager {
         applyAutoEQIfNeeded(bpm: currentSong?.bpm ?? bpmCache[currentSong?.id ?? ""])
     }
 
-    func play(song: Song, in songs: [Song], playlistID: UUID? = nil) {
+    /// `uiSource` names WHERE this tap originated (a library row, a search
+    /// result, a playlist, the queue, autoplay, …) — purely for the
+    /// "what happens when a user taps a song" telemetry below. Defaults to
+    /// "unknown" rather than being required everywhere, since threading an
+    /// exact label through every one of this app's ~28 call sites in one
+    /// pass isn't worth the risk of a typo'd/mismatched edit at any one of
+    /// them; the highest-traffic call sites (library rows, search results,
+    /// playlists, queue) pass a real value, the rest fall back to this.
+    func play(song: Song, in songs: [Song], playlistID: UUID? = nil, uiSource: String = "unknown") {
         let source = songs.isEmpty ? [song] : songs
         let index = source.firstIndex(where: { $0.id == song.id }) ?? 0
-        appLog("Play: \"\(song.displayName)\" by \(song.artistName) (\(source.count) in queue)", category: "audio")
+        appLog("Play: \"\(song.displayName)\" by \(song.artistName) (\(source.count) in queue) [\(uiSource)]", category: "audio")
         appBreadcrumb("Playing \"\(song.displayName)\"")
         setQueue(source, startIndex: index, autoplay: true, playlistID: playlistID)
     }

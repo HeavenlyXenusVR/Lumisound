@@ -97,7 +97,7 @@ struct AlbumDetailView: View {
                         } else {
                             ForEach(songs) { song in
                                 Button {
-                                    player.play(song: song, in: songs)
+                                    player.play(song: song, in: songs, uiSource: "album")
                                 } label: {
                                     SongRow(
                                         song: song,
@@ -137,7 +137,7 @@ struct AlbumDetailView: View {
                             LazyVGrid(columns: gridColumns, spacing: 14) {
                                 ForEach(songs) { song in
                                     Button {
-                                        player.play(song: song, in: songs)
+                                        player.play(song: song, in: songs, uiSource: "album")
                                     } label: {
                                         SongGridCell(
                                             song: song,

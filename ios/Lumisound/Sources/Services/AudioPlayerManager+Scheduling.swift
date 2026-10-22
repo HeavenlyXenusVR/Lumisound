@@ -14,6 +14,12 @@ extension AudioPlayerManager {
     }
 
     func playCurrent(from startTime: TimeInterval) {
+        // For the "what does the audio engine see" telemetry below — the
+        // streamed/transcoded branches already log their own elapsed time
+        // relative to when THEIR async work starts (see downloadAndSchedule's
+        // `playbackStartedAt`); this covers the local-file synchronous path,
+        // which previously had no success log of any kind.
+        let scheduleStartedAt = Date()
         // Invalidate any pending completion callbacks BEFORE cancelCrossfade() or node.stop()
         // so that the stopped node's completion block never fires handleTrackEnded().
         scheduleGeneration &+= 1
@@ -93,6 +99,12 @@ extension AudioPlayerManager {
         updateNowPlaying()
         reapplyActiveEffect()
         startSmartCrossfadeAnalysisIfNeeded()
+        appLog(
+            "playCurrent: local file playing — \(currentSong?.displayName ?? "?") "
+                + "(\(String(format: "%.0f", audioFile?.processingFormat.sampleRate ?? 0))Hz) "
+                + "scheduled in \(String(format: "%.3f", Date().timeIntervalSince(scheduleStartedAt)))s",
+            category: "audio"
+        )
         if wasAlreadyPlaying {
             rampNodeVolumeAfterSeek(node, to: resumeVolume)
         }

@@ -87,7 +87,7 @@ struct ArtistDetailView: View {
                     Section {
                         ForEach(album.songs) { song in
                             Button {
-                                player.play(song: song, in: songs)
+                                player.play(song: song, in: songs, uiSource: "artist")
                             } label: {
                                 SongRow(
                                     song: song,
