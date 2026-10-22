@@ -227,7 +227,14 @@ def write_config(token: str, bridge_url: str | None) -> None:
             config = {}
 
     config["access_token"] = token
-    config.setdefault("poll_interval_seconds", 5)
+    # Matches the daemon's own fallback default (lumisound_discord_rpc.py) —
+    # this used to default to 5s, which is where most real installs actually
+    # got their poll interval from (this installer is how config.json first
+    # gets written for nearly everyone), and was the dominant reason a
+    # track/play-pause change could sit for up to 5s before Discord ever saw
+    # it, even though the bridge itself had already been updated instantly.
+    # 1s trades one extra lightweight GET/sec for a real latency win.
+    config.setdefault("poll_interval_seconds", 1)
     if bridge_url:
         config["bridge_url"] = bridge_url
     # Credentials left by an older setup (or by the daemon's own

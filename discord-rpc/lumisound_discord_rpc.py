@@ -314,7 +314,21 @@ def main() -> None:
     last_activity_signature = None
     last_sent_at = 0.0
     last_rpc_check = time.time()
-    poll_interval = config.get("poll_interval_seconds", 2)
+    # Default tightened from 2s: the bridge has no caching of its own (a
+    # fresh GET /user/playback-state always reflects whatever the phone last
+    # PUT — see ios-bridge's get_playback_state, direct DB read, no TTL
+    # cache) and the iOS app already pushes every real event (track change/
+    # play-pause/seek) to the bridge SYNCHRONOUSLY the instant it happens
+    # (AudioPlayerManager's isPlaying/currentSong didSet and seek() all call
+    # pushPlaybackStateToBridge() directly, not just the ~5s steady-playback
+    # tick). So once an event lands on the bridge, THIS poll loop is the
+    # only remaining source of lag before Discord sees it — at the old 2s
+    # interval that is up to 2 full seconds of "obviously stale, should be
+    # instant" delay on every track/play-pause change, on top of whatever
+    # the network round-trip costs. Halving it to 1s halves that worst case
+    # for one extra lightweight GET/sec against a single indexed row — a
+    # fair trade, and still well short of hammering the bridge.
+    poll_interval = config.get("poll_interval_seconds", 1)
 
     while True:
         if time.time() - last_rpc_check > 300:

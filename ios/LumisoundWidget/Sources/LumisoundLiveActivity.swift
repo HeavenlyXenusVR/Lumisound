@@ -52,12 +52,37 @@ private struct LiveActivityProgressBar: View {
     var tint: Color = .cyan
 
     var body: some View {
-        GeometryReader { geo in
-            let fraction = state.duration > 0 ? min(1, max(0, state.position / state.duration)) : 0
-            ZStack(alignment: .leading) {
-                Capsule().fill(Color.white.opacity(0.25))
-                Capsule().fill(tint)
-                    .frame(width: geo.size.width * fraction)
+        Group {
+            if state.isPlaying, state.duration > 0 {
+                // Self-advancing, same mechanism as the elapsed-time `Text
+                // (timerInterval:)` label elsewhere in this file: the system
+                // (not this process) animates the fill continuously between
+                // `LiveActivityManager` pushes, from `state.trackRange`'s
+                // fixed anchor. A manually-computed `position / duration`
+                // fraction (the old implementation) is a snapshot that only
+                // moves when a NEW ContentState is pushed — since nothing
+                // pushes on a steady playback cadence (pushes are event-
+                // driven: track change/play-pause/seek/favorite), that bar
+                // sat frozen at wherever it was for the entire rest of the
+                // track, which is the literal "stuck a few seconds (or
+                // minutes) behind" symptom. `ProgressView(timerInterval:)`
+                // needs no extra pushes to stay accurate, so this costs
+                // nothing extra in battery/network over the old approach.
+                ProgressView(timerInterval: state.trackRange, countsDown: false)
+                    .progressViewStyle(.linear)
+                    .tint(tint)
+            } else {
+                // Paused (or no duration yet): there is nothing to animate
+                // toward, so fall back to the old static fraction-based fill
+                // anchored at the frozen position.
+                GeometryReader { geo in
+                    let fraction = state.duration > 0 ? min(1, max(0, state.position / state.duration)) : 0
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.white.opacity(0.25))
+                        Capsule().fill(tint)
+                            .frame(width: geo.size.width * fraction)
+                    }
+                }
             }
         }
         .frame(height: 3)

@@ -2,7 +2,7 @@
   "//": "You normally do NOT write this file by hand -- run install.sh (Linux), install-macos.sh, or install-windows.ps1 and sign in with your Lumisound email/username + password. The installer exchanges those for the token below and never stores your password.",
 
   "access_token": "written for you by the installer; or paste one from Lumisound -> Account -> Discord Rich Presence -> Generate Rich Presence Token",
-  "poll_interval_seconds": 2,
+  "poll_interval_seconds": 1,
 
   "//show_when_paused": "Optional. Default false: while playback is paused, Rich Presence is cleared rather than leaving the track on screen. Set true to keep showing the paused track (without an elapsed timer).",
   "show_when_paused": false,
