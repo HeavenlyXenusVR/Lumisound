@@ -23430,6 +23430,49 @@ async def _giphy_request(path: str, params: dict) -> list:
     return [r for r in (_giphy_result_from_item(item) for item in data.get("data", [])) if r]
 
 
+# GIPHY's search appears to need most/all query words to match a GIF's own
+# tags rather than ranking by partial overlap -- confirmed live, the query
+# "Zoey pfp from KPop Demon Hunters" returns ZERO results even though every
+# individual word in it ("Zoey", "KPop Demon Hunters") returns hundreds on
+# its own. The filler words a natural-language search phrase accumulates
+# ("pfp", "from", "a", "picture of") aren't themselves tags, so they drag a
+# verbose query's match count to nothing instead of just diluting relevance.
+_GIF_QUERY_STOPWORDS = {
+    "a", "an", "the", "of", "for", "with", "my", "your", "his", "her", "their",
+    "this", "that", "these", "those", "some", "any", "please", "looking",
+    "look", "need", "want", "like", "from", "pic", "pics", "picture",
+    "pictures", "pfp", "photo", "photos", "image", "images", "avatar",
+    "icon", "wallpaper", "gif", "gifs", "me", "to", "find", "get", "show",
+}
+_GIF_QUERY_MAX_VARIANTS = 5
+
+
+def _gif_query_variants(q: str) -> list:
+    """Query strings to try against GIPHY, in order: the original query as
+    typed, then that query with filler words (`_GIF_QUERY_STOPWORDS`)
+    stripped, then that stripped version with trailing words progressively
+    dropped -- so a verbose/conversational query degrades toward whatever
+    subset of it actually has a shot at matching real tags, instead of
+    returning nothing (or GIPHY's own fallback behavior for a near-zero-match
+    query, which empirically skews toward oddly generic/unrelated top hits)."""
+    words = q.split()
+    stripped_words = [w for w in words if w.lower().strip(string.punctuation) not in _GIF_QUERY_STOPWORDS]
+    variants = []
+    seen = set()
+    for candidate in (q, " ".join(stripped_words)):
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            variants.append(candidate)
+    tail = stripped_words[:]
+    while len(tail) > 1 and len(variants) < _GIF_QUERY_MAX_VARIANTS:
+        tail = tail[:-1]
+        candidate = " ".join(tail)
+        if candidate not in seen:
+            seen.add(candidate)
+            variants.append(candidate)
+    return variants[:_GIF_QUERY_MAX_VARIANTS]
+
+
 @app.get("/api/gif-search")
 async def gif_search(
     q: str = Query(..., min_length=1, max_length=100),
@@ -23437,7 +23480,12 @@ async def gif_search(
     offset: int = Query(0, ge=0, le=4975),
     payload: dict = Depends(get_current_user),
 ):
-    return {"results": await _giphy_request("search", {"q": q, "limit": limit, "offset": offset})}
+    results: list = []
+    for variant in _gif_query_variants(q):
+        results = await _giphy_request("search", {"q": variant, "limit": limit, "offset": offset})
+        if results:
+            break
+    return {"results": results}
 
 
 @app.get("/api/gif-search/trending")
