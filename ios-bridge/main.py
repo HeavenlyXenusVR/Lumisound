@@ -7396,14 +7396,22 @@ async def _check_username_change_rate_limit(cur, user_id: str) -> None:
 @app.put("/auth/me")
 async def update_me(body: UpdateMeRequest, payload: dict = Depends(get_current_user)):
     user_id = payload["sub"]
-    display_name = (body.display_name or "").strip()[:100]
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(
-                "UPDATE ios_users SET display_name = %s WHERE id = %s AND is_active = TRUE",
-                (display_name if display_name else None, user_id),
-            )
+            # Was unconditional -- every PUT /auth/me silently wiped
+            # display_name to NULL unless the caller also resent it, which
+            # iOS's own setDateOfBirth/updateEmail flows never did (each
+            # sends a body with ONLY its own field, by design, same as this
+            # endpoint's username/email handling below). Gated on `is not
+            # None` like those two so omitting the key truly means "leave
+            # this alone," not "clear it."
+            if body.display_name is not None:
+                display_name = body.display_name.strip()[:100]
+                await cur.execute(
+                    "UPDATE ios_users SET display_name = %s WHERE id = %s AND is_active = TRUE",
+                    (display_name if display_name else None, user_id),
+                )
 
             if body.username is not None:
                 new_username = body.username.strip()
