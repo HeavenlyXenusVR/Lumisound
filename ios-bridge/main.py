@@ -11540,9 +11540,10 @@ async def _ffprobe_tags(path: str) -> dict:
     """
     abs_path = os.path.abspath(path)
     cached = _FFPROBE_CACHE.get(abs_path)
-    # Require the newer `lumisound_id` field; entries cached before it was added
-    # fall through and re-probe once (auto-migration, no global cache wipe).
-    if cached is not None and "lumisound_id" in cached:
+    # Require the newer `lumisound_id`/`sample_rate` fields; entries cached
+    # before either was added fall through and re-probe once (auto-migration,
+    # no global cache wipe).
+    if cached is not None and "lumisound_id" in cached and "sample_rate" in cached:
         return cached
 
     async with _FFPROBE_SEMAPHORE:
@@ -11609,6 +11610,15 @@ async def _ffprobe_tags(path: str) -> dict:
         except (ValueError, TypeError):
             duration = 0.0
 
+    # ffprobe reports this as a string ("44100"); kept as an int here so
+    # clients can threshold on it directly (hi-res badge: >44.1kHz) rather
+    # than each having to parse it themselves.
+    raw_sample_rate = audio_stream.get("sample_rate")
+    try:
+        sample_rate = int(raw_sample_rate) if raw_sample_rate else None
+    except (ValueError, TypeError):
+        sample_rate = None
+
     result = {
         "title": tags_lower.get("title") or tags_lower.get("name") or "",
         "artist": tags_lower.get("artist") or tags_lower.get("album_artist") or "",
@@ -11620,6 +11630,7 @@ async def _ffprobe_tags(path: str) -> dict:
         # Embedded source identifier ("youtube:<id>") written at download time —
         # used to build the per-user yt-dlp download archive for dedup.
         "lumisound_id": tags_lower.get("lumisound_id") or "",
+        "sample_rate": sample_rate,
     }
     _FFPROBE_CACHE.put(abs_path, result)
     return result
@@ -12344,19 +12355,20 @@ async def get_user_music(
                 await cur.execute(
                     "SELECT relative_path, title, artist, album, genre, duration_seconds, has_artwork, uploaded_at, bpm, "
                     "trailing_silence_s, outro_slope_db, outro_cold_stop, intro_lead_in_s, intro_onset_hardness, "
-                    "spectral_profile "
+                    "spectral_profile, sample_rate "
                     "FROM ios_user_music_metadata WHERE user_id = %s AND relative_path IS NOT NULL",
                     (user_id,),
                 )
                 rows = await cur.fetchall()
         for (rp, m_title, m_artist, m_album, m_genre, m_duration, m_has_artwork, m_uploaded_at, m_bpm,
-             m_trailing, m_slope, m_cold, m_lead, m_hardness, m_spectral) in rows:
+             m_trailing, m_slope, m_cold, m_lead, m_hardness, m_spectral, m_sample_rate) in rows:
             stored_meta[rp] = {
                 "title": m_title, "artist": m_artist, "album": m_album,
                 "genre": m_genre, "duration": m_duration, "has_artwork": m_has_artwork, "bpm": m_bpm,
                 "trailing_silence_s": m_trailing, "outro_slope_db": m_slope,
                 "outro_cold_stop": m_cold, "intro_lead_in_s": m_lead,
                 "intro_onset_hardness": m_hardness, "spectral_profile": m_spectral,
+                "sample_rate": m_sample_rate,
             }
             if m_uploaded_at is not None:
                 uploaded_at_by_path[rp] = m_uploaded_at.isoformat()
@@ -12444,6 +12456,11 @@ async def get_user_music(
             "ext": ext,
             "is_locked": is_locked,
             "uploaded_at": uploaded_at,
+            # Hz, e.g. 44100/48000/96000 — drives the hi-res badge on clients
+            # (iOS's `Song.isHiResSampleRate`: >44.1kHz). Unlocked files come
+            # from ffprobe (see `_ffprobe_tags`); locked ones from whatever was
+            # captured at upload time (same source as the rest of `meta` here).
+            "sample_rate": meta.get("sample_rate"),
         })
 
     tracks.sort(key=lambda t: (t["album"].lower(), t["title"].lower()))
