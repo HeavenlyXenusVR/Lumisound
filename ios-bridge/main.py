@@ -3051,6 +3051,12 @@ class UpdateSettingsRequest(BaseModel):
     audio_settings_json: Optional[str] = None
     track_audio_settings_json: Optional[str] = None
     theme_color: Optional[str] = None
+    # Already a plain column on ios_user_settings, previously only reachable
+    # through the much larger legacy /user/sync/push blob (SyncPushRequest
+    # below) -- exposed here too so a client that only wants this one field
+    # (the Android port's format picker) doesn't have to adopt that whole
+    # sync system just to read/write it.
+    preferred_audio_format: Optional[str] = None
 
 
 class BugReportRequest(BaseModel):
@@ -10377,7 +10383,8 @@ async def get_settings(payload: dict = Depends(get_current_user)):
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT audio_settings_json, track_audio_settings_json, theme_color, updated_at "
+                "SELECT audio_settings_json, track_audio_settings_json, theme_color, updated_at, "
+                "preferred_audio_format "
                 "FROM ios_user_settings WHERE user_id = %s",
                 (user_id,),
             )
@@ -10389,6 +10396,7 @@ async def get_settings(payload: dict = Depends(get_current_user)):
             "track_audio_settings_json": None,
             "theme_color": "#EC4079",
             "updated_at": None,
+            "preferred_audio_format": "m4a",
         }
 
     return {
@@ -10396,6 +10404,7 @@ async def get_settings(payload: dict = Depends(get_current_user)):
         "track_audio_settings_json": row[1],
         "theme_color": row[2],
         "updated_at": row[3].isoformat() if row[3] else None,
+        "preferred_audio_format": row[4] or "m4a",
     }
 
 
@@ -10412,28 +10421,33 @@ async def update_settings(
             await cur.execute(
                 """
                 INSERT INTO ios_user_settings
-                    (user_id, audio_settings_json, track_audio_settings_json, theme_color)
-                VALUES (%s, %s, %s, %s)
+                    (user_id, audio_settings_json, track_audio_settings_json, theme_color, preferred_audio_format)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (user_id) DO UPDATE SET
                     audio_settings_json = CASE WHEN %s IS NULL THEN ios_user_settings.audio_settings_json ELSE %s END,
                     track_audio_settings_json = CASE WHEN %s IS NULL THEN ios_user_settings.track_audio_settings_json ELSE %s END,
-                    theme_color = CASE WHEN %s IS NULL THEN ios_user_settings.theme_color ELSE %s END
+                    theme_color = CASE WHEN %s IS NULL THEN ios_user_settings.theme_color ELSE %s END,
+                    preferred_audio_format = CASE WHEN %s IS NULL THEN ios_user_settings.preferred_audio_format ELSE %s END
                 """,
                 (
                     user_id,
                     body.audio_settings_json,
                     body.track_audio_settings_json,
                     body.theme_color or "#EC4079",
+                    body.preferred_audio_format or "m4a",
                     body.audio_settings_json,
                     body.audio_settings_json,
                     body.track_audio_settings_json,
                     body.track_audio_settings_json,
                     body.theme_color,
                     body.theme_color,
+                    body.preferred_audio_format,
+                    body.preferred_audio_format,
                 ),
             )
             await cur.execute(
-                "SELECT audio_settings_json, track_audio_settings_json, theme_color, updated_at "
+                "SELECT audio_settings_json, track_audio_settings_json, theme_color, updated_at, "
+                "preferred_audio_format "
                 "FROM ios_user_settings WHERE user_id = %s",
                 (user_id,),
             )
@@ -10444,6 +10458,7 @@ async def update_settings(
         "track_audio_settings_json": row[1],
         "theme_color": row[2],
         "updated_at": row[3].isoformat() if row[3] else None,
+        "preferred_audio_format": row[4] or "m4a",
     }
 
 
