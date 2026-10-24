@@ -90,6 +90,7 @@ final class AIDJService: NSObject, ObservableObject {
     private var previousArtist: String?
     private var lastAnnouncedSongID: Song.ID?
     private var volumeBeforeDuck: Float = 1.0
+    private var duckFadeTimer: Timer?
 
     /// Mirrors `AccountService.shared`/`LibraryManager.shared` — gives
     /// non-view code (e.g. `DiagnosticsSnapshotService`) a way to reach the
@@ -149,31 +150,107 @@ final class AIDJService: NSObject, ObservableObject {
     }
 
     private func speak(_ text: String) {
-        guard let getVolume, let setVolume else { return }
-        volumeBeforeDuck = getVolume()
-        setVolume(volumeBeforeDuck * 0.25)
+        guard let getVolume, setVolume != nil else { return }
+        // BUGFIX (reported: playback volume drifts down over a listening
+        // session and doesn't fully come back — "it should never be
+        // under-setting itself like that"): `handleTrackChange` fetches
+        // each transition line over the network, so a second track change
+        // can land and resolve while the FIRST blurb is still speaking
+        // (`AVSpeechSynthesizer.speak` queues rather than replacing). Without
+        // this guard, that second call re-ran `volumeBeforeDuck = getVolume()`
+        // while the first duck was still active — capturing the ALREADY-
+        // ducked (25%) level as the new "before" — then ducked again on top
+        // of it (to 6.25%), and each `didFinish` restored to whichever
+        // `volumeBeforeDuck` happened to be in the shared variable at that
+        // moment, not the true pre-duck level. Repeat across a few quick
+        // skips and the real volume/boost setting ratchets down with no way
+        // back except the user noticing and re-raising it themselves.
+        // Dropping (not queuing) an overlapping announcement keeps exactly
+        // one duck/restore pair in flight at a time, so `volumeBeforeDuck`
+        // can only ever be the genuine baseline.
+        guard !isSpeaking else { return }
         isSpeaking = true
         lastBlurb = text
         appendToSessionLog(.transition(text))
 
-        let utterance = AVSpeechUtterance(string: text)
-        // Falls back to the device's default language voice if the user
-        // never picked one, or if a previously-picked voice was removed
-        // (e.g. an enhanced/premium voice pack deleted to save space) —
-        // `AVSpeechSynthesisVoice(identifier:)` returns nil in that case.
-        utterance.voice = voiceIdentifier.flatMap(AVSpeechSynthesisVoice.init(identifier:))
-            ?? AVSpeechSynthesisVoice(language: AVSpeechSynthesisVoice.currentLanguageCode())
-        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
-        utterance.pitchMultiplier = pitchMultiplier
-        utterance.postUtteranceDelay = 0.2
-        synthesizer.speak(utterance)
+        let baseline = getVolume()
+        volumeBeforeDuck = baseline
+        // Fade rather than snap — matches how every other transient volume
+        // change in this app (crossfade, seek-click prevention, output-gain
+        // correction) avoids an instant jump, and reads as a deliberate
+        // "ducking for the DJ" rather than the audio abruptly cutting out.
+        fadeVolume(from: baseline, to: baseline * 0.25) { [weak self] in
+            guard let self else { return }
+            let utterance = AVSpeechUtterance(string: text)
+            // Falls back to the device's default language voice if the user
+            // never picked one, or if a previously-picked voice was removed
+            // (e.g. an enhanced/premium voice pack deleted to save space) —
+            // `AVSpeechSynthesisVoice(identifier:)` returns nil in that case.
+            utterance.voice = self.voiceIdentifier.flatMap(AVSpeechSynthesisVoice.init(identifier:))
+                ?? AVSpeechSynthesisVoice(language: AVSpeechSynthesisVoice.currentLanguageCode())
+            utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+            utterance.pitchMultiplier = self.pitchMultiplier
+            utterance.postUtteranceDelay = 0.2
+            self.synthesizer.speak(utterance)
+        }
+    }
+
+    /// Ramps the player's volume from `from` to `to` over a short fade
+    /// instead of snapping it, used for both the pre-speech duck and the
+    /// post-speech restore. `isSpeaking` stays true for the full duck ->
+    /// speak -> restore-fade span (see callers) so a new announcement can
+    /// never start while a previous duck is still being restored — that
+    /// window is exactly where the compounding-duck bug above could still
+    /// slip in even with the `!isSpeaking` guard alone.
+    private func fadeVolume(from: Float, to: Float, duration: TimeInterval = 0.2, completion: (() -> Void)? = nil) {
+        duckFadeTimer?.invalidate()
+        guard let setVolume else { completion?(); return }
+        let steps = 8
+        let interval = duration / Double(steps)
+        var step = 0
+        duckFadeTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] t in
+            Task { @MainActor [weak self] in
+                guard let self else { t.invalidate(); return }
+                step += 1
+                let progress = Float(step) / Float(steps)
+                setVolume(from + (to - from) * progress)
+                if step >= steps {
+                    t.invalidate()
+                    self.duckFadeTimer = nil
+                    completion?()
+                }
+            }
+        }
+    }
+
+    /// Fades back to the pre-duck volume and only then clears `isSpeaking` —
+    /// shared by both the normal "finished speaking" and the "cancelled
+    /// mid-speech" delegate callbacks below.
+    private func restoreVolumeAfterSpeaking() {
+        let target = volumeBeforeDuck
+        fadeVolume(from: getVolume?() ?? target, to: target) { [weak self] in
+            self?.isSpeaking = false
+        }
     }
 
     /// Immediately stops any in-progress announcement and restores volume —
     /// called when the user turns AI DJ Mode off mid-speech.
     func stopSpeaking() {
-        guard synthesizer.isSpeaking else { return }
-        synthesizer.stopSpeaking(at: .immediate)
+        guard isSpeaking else { return }
+        if synthesizer.isSpeaking {
+            // Triggers `didCancel` below, which restores volume.
+            synthesizer.stopSpeaking(at: .immediate)
+        } else {
+            // `isSpeaking` can be true before the synthesizer actually has
+            // anything queued — `speak(_:)` sets it at the start of the
+            // pre-speech duck fade, before `synthesizer.speak()` is called
+            // once that fade completes. Toggling AI DJ Mode off inside that
+            // window would otherwise fail this function's old
+            // `synthesizer.isSpeaking` guard and return having done nothing
+            // — leaving the player ducked at 25% with no delegate callback
+            // ever going to fire to undo it. Restore directly instead.
+            restoreVolumeAfterSpeaking()
+        }
     }
 }
 
@@ -221,17 +298,13 @@ struct AIDJVoiceOption: Identifiable {
 extension AIDJService: AVSpeechSynthesizerDelegate {
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         Task { @MainActor [weak self] in
-            guard let self else { return }
-            self.setVolume?(self.volumeBeforeDuck)
-            self.isSpeaking = false
+            self?.restoreVolumeAfterSpeaking()
         }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
         Task { @MainActor [weak self] in
-            guard let self else { return }
-            self.setVolume?(self.volumeBeforeDuck)
-            self.isSpeaking = false
+            self?.restoreVolumeAfterSpeaking()
         }
     }
 }

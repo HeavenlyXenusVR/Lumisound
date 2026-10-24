@@ -193,6 +193,25 @@ extension AudioPlayerManager {
             if let gain = gainDB {
                 await MainActor.run { [weak self] in
                     guard let self else { return }
+                    // BUGFIX (reported: volume dips or jumps shortly after a
+                    // track starts, then settles back to the regular/boosted
+                    // level): this whole function runs off a detached Task
+                    // (metadata load, or the RMS fallback's audio decode),
+                    // with no bound on how long it takes. Skip ahead to a
+                    // DIFFERENT track while this is still in flight — a
+                    // perfectly normal thing to do while browsing a library
+                    // — and there was nothing here checking that `url` is
+                    // still the track actually playing. `resetReplayGainForNewTrack`
+                    // had already set the NEW track's gain to neutral by the
+                    // time this fired; without this guard, this stale result
+                    // for the OLD track clobbered it, ramping the output to a
+                    // gain computed for a song that isn't even playing
+                    // anymore — then, once the new track's OWN (separately
+                    // kicked-off) analysis eventually resolved, the sound
+                    // ramped AGAIN to the actually-correct value. Two
+                    // uncalled-for ramps per skip, in whichever direction the
+                    // old track's tag happened to point.
+                    guard self.currentSong?.url == url else { return }
                     let linear = pow(10.0, gain / 20.0)
                     self.replayGainLinearGain = linear
                     // Re-derive the output gain split (mixer attenuation +

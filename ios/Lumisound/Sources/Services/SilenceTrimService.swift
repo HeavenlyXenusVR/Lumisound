@@ -50,7 +50,26 @@ final class SilenceTrimService: ObservableObject {
             let silence = await SilenceTrimAnalyzer.shared.leadingSilence(for: url)
             guard silence >= Self.minimumWorthTrimming,
                   let self, let player = self.player,
-                  player.currentSong?.id == song.id else { return }
+                  player.currentSong?.id == song.id,
+                  // BUGFIX (reported: audio goes quiet right after a track
+                  // starts, then comes back up): a cache-miss analysis
+                  // decodes several seconds of audio off-thread and can
+                  // resolve well after playback has already moved past the
+                  // detected silence window — most often on a track's very
+                  // first play, before this result is cached. Seeking at
+                  // that point lands `player.seek(to:)` on its "reseek of
+                  // already-playing audio" path, which mutes the node and
+                  // ramps it back in to avoid a waveform-discontinuity
+                  // click — but by then real, audible music is already
+                  // playing, so that mute/ramp is exactly the "silent, then
+                  // back to regular/boosted" dip being reported. While
+                  // we're still inside the silent window there is nothing
+                  // audible to protect — the node is already producing
+                  // near-silence — so only trim there; once playback has
+                  // caught up past it, skip the trim entirely rather than
+                  // snap into content the listener is already hearing.
+                  player.position < silence
+            else { return }
             player.seek(to: silence)
         }
     }
